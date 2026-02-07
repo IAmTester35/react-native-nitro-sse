@@ -1,6 +1,6 @@
 {
   "name": "react-native-nitro-sse",
-  "version": "0.1.0-beta.0",
+  "version": "0.1.0-beta.1",
   "description": "High-performance Server-Sent Events (SSE) for React Native, powered by Nitro Modules.",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
