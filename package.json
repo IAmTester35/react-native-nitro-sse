@@ -1,6 +1,6 @@
 {
   "name": "react-native-nitro-sse",
-  "version": "0.1.0",
+  "version": "0.1.0-beta.0",
   "description": "High-performance Server-Sent Events (SSE) for React Native, powered by Nitro Modules.",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
@@ -55,14 +55,14 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MaiThanhNam141/react-native-nitro-sse.git"
+    "url": "git+https://github.com/IAmTester35/react-native-nitro-sse.git"
   },
-  "author": "maithanhnam <maithanhnam141@gmail.com> (https://github.com/MaiThanhNam141)",
+  "author": "IAmTester35 <maithanhnam141@gmail.com> (https://github.com/IAmTester35)",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/MaiThanhNam141/react-native-nitro-sse/issues"
+    "url": "https://github.com/IAmTester35/react-native-nitro-sse/issues"
   },
-  "homepage": "https://github.com/MaiThanhNam141/react-native-nitro-sse#readme",
+  "homepage": "https://github.com/IAmTester35/react-native-nitro-sse#readme",
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },
