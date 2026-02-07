@@ -1,36 +1,38 @@
 # 🚀 react-native-nitro-sse
 
-Thư viện Server-Sent Events (SSE) hiệu năng cao cho React Native, được xây dựng trên nền tảng **Nitro Modules (JSI)**. Được thiết kế cho các hệ thống yêu cầu độ ổn định cực cao, xử lý dữ liệu lớn (Big Data stream) và tối ưu hóa pin tuyệt đối.
+High-performance Server-Sent Events (SSE) client for React Native, built on top of **Nitro Modules (JSI)**. Designed for mission-critical systems requiring extreme stability, high-throughput data streaming, and absolute battery optimization.
 
-## 🌟 Tại sao chọn NitroSSE?
+## 🌟 Why NitroSSE?
 
-Khác với các thư viện EventSource thông thường chạy trên tầng JS hoặc Bridge truyền thống, NitroSSE đưa toàn bộ logic điều khiển xuống tầng Native sâu nhất:
+Unlike traditional EventSource libraries that run on the JS thread or use the legacy Bridge, NitroSSE moves the entire control logic down to the deepest Native layer:
 
--   **🚀 Tốc độ JSI**: Giao tiếp giữa JS và Native với độ trễ gần như bằng 0.
--   **🧠 Smart Reconnect**: Tự động kết nối lại với chiến lược **Exponential Backoff** và **Jitters** (chống thundering herd).
--   **🛡️ Bảo vệ Server (DoS Protection)**: Tuân thủ header `Retry-After` (RFC) và giới hạn cứng tần suất kết nối.
--   **🌊 Chống ngập lụt (Backpressure)**: Cơ chế **Batching** gom tin nhắn và **Tail Drop** để bảo vệ UI khỏi bị đóng băng khi server quá tải.
--   **🔋 Mobile-First (Battery Saving)**: Tự động "ngủ đông" (Hibernate) khi app vào background và tái kết nối mượt mà khi quay lại.
--   **💓 Heartbeat Detection**: Phát hiện các tín hiệu keep-alive (comments) từ server để duy trì watchdog.
--   **🛠️ Full Method Support**: Hỗ trợ đầy đủ GET/POST và tùy chỉnh Headers động (Dynamic Headers).
+-   **🚀 Zero-Latency JSI**: Communication between JS and Native is instantaneous, bypassing the asynchronous bridge.
+-   **🧠 Smart Reconnect**: Automatic reconnection strategy using **Exponential Backoff** and **Jitter** to prevent thundering herd problems.
+-   **🛡️ DoS Protection**: Respects RFC `Retry-After` headers and enforces strict connection frequency limits.
+-   **🌊 Backpressure Handling**: Advanced **Batching** mechanism aggregates messages and employs **Tail Drop** strategies to protect the UI thread from freezing during data surges.
+-   **🔋 Mobile-First Architecture**: Automatically hibernates when the app enters the background and seamlessly reconnects upon foregrounding to conserve battery.
+-   **💓 Heartbeat Detection**: Native-side detection of keep-alive signals (comments) to maintain a reliable connection watchdog.
+-   **🛠️ Full Protocol Support**: Comprehensive support for GET/POST methods and dynamic header updates.
 
 ---
 
-## 📦 Cài đặt
+## 📦 Installation
 
 ```sh
 yarn add react-native-nitro-sse react-native-nitro-modules
-# hoặc
+# or
 npm install react-native-nitro-sse react-native-nitro-modules
 ```
 
-> **Lưu ý**: Yêu cầu `react-native-nitro-modules` vì đây là hạt nhân giúp thư viện đạt hiệu năng cao.
+> **Note**: `react-native-nitro-modules` is required as the core foundation for JSI performance.
 
 ---
 
-## 🚀 Hướng dẫn sử dụng
+## 🚀 Usage
 
-### 1. Khởi tạo cơ bản
+### 1. Basic Initialization
+
+Initialize the module with your endpoint configuration and an event listener.
 
 ```tsx
 import { NitroSseModule } from 'react-native-nitro-sse';
@@ -42,32 +44,41 @@ NitroSseModule.setup(
     headers: {
       'Authorization': 'Bearer active-token',
     },
-    // Gom tin nhắn mỗi 100ms để tối ưu UI render
+    // Batch messages every 100ms to optimize UI rendering
     batchingIntervalMs: 100,
-    // Chỉ giữ tối đa 1000 tin nhắn trong hàng đợi
+    // Maximum of 1000 messages in the native queue before tail-drop
     maxBufferSize: 1000,
   },
   (events) => {
     events.forEach((event) => {
       if (event.type === 'message') {
-        console.log('Nhận dữ liệu:', event.data);
+        console.log('Data received:', event.data);
       } else if (event.type === 'heartbeat') {
-        console.log('Server vẫn đang sống...');
+        console.log('Server heartbeat detected...');
       }
     });
   }
 );
 
-// Bắt đầu kết nối
+// Start the connection
 NitroSseModule.start();
 
-// Ngắt kết nối khi không cần thiết
+// Stop the connection when unmounting or no longer needed
 // NitroSseModule.stop();
 ```
 
-### 2. Cập nhật Token mà không cần Restart
+### 2. Check Connection Status
 
-Khi token hết hạn, bạn có thể cập nhật header ngay lập tức. Native sẽ sử dụng nó cho lần tự động reconnect tiếp theo.
+You can synchronously check the connection status at any time:
+
+```tsx
+const connected = NitroSseModule.isConnected();
+console.log('Is Connected:', connected);
+```
+
+### 3. Dynamic Token Updates
+
+When your authentication token expires, update the headers instantly. The native layer will apply these headers to the next automatic reconnection attempt without interrupting the current flow if not necessary.
 
 ```tsx
 NitroSseModule.updateHeaders({
@@ -77,30 +88,31 @@ NitroSseModule.updateHeaders({
 
 ---
 
-## ⚙️ Cấu hình (SseConfig)
+## ⚙️ Configuration (SseConfig)
 
-| Tham số | Kiểu dữ liệu | Mô tả |
+| Parameter | Type | Description |
 | :--- | :--- | :--- |
-| `url` | `string` | **Bắt buộc**. URL của endpoint SSE. |
-| `method` | `'get' \| 'post'` | Phương thức HTTP (Mặc định: `get`). |
-| `headers` | `Record<string, string>` | Các custom headers (Auth, Content-Type...). |
-| `body` | `string` | Thân bản tin (dùng cho POST). |
-| `batchingIntervalMs` | `number` | Thời gian gom event trước khi đẩy lên JS (Mặc định: 0 - đẩy ngay). |
-| `maxBufferSize` | `number` | Giới hạn hàng đợi Native giúp chống tràn bộ nhớ (Mặc định: 1000). |
-| `backgroundExecution` | `boolean` | (iOS) Cố gắng duy trì task ngắn hạn khi vào background. |
+| `url` | `string` | **Required**. The URL of the SSE endpoint. |
+| `method` | `'get' \| 'post'` | HTTP method (Default: `get`). |
+| `headers` | `Record<string, string>` | Custom headers (e.g., Auth, Content-Type). |
+| `body` | `string` | Request body (payload) for POST requests. |
+| `batchingIntervalMs` | `number` | Time window to buffer events before flushing to JS (Default: 0 - immediate). |
+| `maxBufferSize` | `number` | Native queue limit to prevent memory overflow (Default: 1000). |
+| `backgroundExecution` | `boolean` | (iOS) Attempt to maintain a background task for a short period. |
 
 ---
 
-## 🏗️ Kiến trúc hệ thống
+## 🏗️ System Architecture
 
-Dự án sử dụng mô hình **Producer-Consumer** an toàn:
-1.  **Native (Producer)**: Thu thập dữ liệu từ Socket ở Background Thread, xử lý Backpressure.
-2.  **Nitro (Bridge)**: Snapshot dữ liệu và vận chuyển an toàn qua JSI CallInvoker.
-3.  **JavaScript (Consumer)**: Tiêu thụ dữ liệu theo từng Batch, đảm bảo UI Loop luôn mượt mà.
+This project employs a robust **Producer-Consumer** model:
+
+1.  **Native (Producer)**: Collects data from the socket on a dedicated Background Thread, handling all backpressure logic.
+2.  **Nitro (Bridge)**: Snapshots data and securely transports it via the JSI CallInvoker.
+3.  **JavaScript (Consumer)**: Consumes data in batches, ensuring the UI Loop remains buttery smooth even under heavy load.
 
 ---
 
-## 📄 Giấy phép
+## 📄 License
 
 MIT
 
