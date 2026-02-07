@@ -1,26 +1,69 @@
-name: Publish to npm
+name: Continuous Release
 
 on:
-  release:
-    types: [created]
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: 18
           registry-url: 'https://registry.npmjs.org'
-      
+
+      - name: Check if version changed
+        id: check
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ $(git tag -l "v$VERSION") ]; then
+            echo "Version $VERSION already exists as a tag. Skipping release."
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "New version detected: $VERSION"
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+          fi
+
       - name: Install dependencies
+        if: steps.check.outputs.changed == 'true'
         run: yarn install --frozen-lockfile
 
       - name: Build package
+        if: steps.check.outputs.changed == 'true'
         run: yarn prepare
 
+      - name: Create GitHub Release
+        if: steps.check.outputs.changed == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.check.outputs.version }}
+          name: Release v${{ steps.check.outputs.version }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: ${{ contains(steps.check.outputs.version, 'beta') || contains(steps.check.outputs.version, 'alpha') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Publish to npm
-        run: npm publish --access public
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          if [[ "${{ steps.check.outputs.version }}" == *"beta"* ]]; then
+            npm publish --access public --tag beta
+          elif [[ "${{ steps.check.outputs.version }}" == *"alpha"* ]]; then
+            npm publish --access public --tag alpha
+          else
+            npm publish --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

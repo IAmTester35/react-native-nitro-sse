@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-beta.4 (2026-02-07)
+
+### CI/CD
+
+*   **Continuous Release**: Enabled fully automated releases. Pushing a new version to `main` now automatically creates a GitHub Release and publishes to npm.
+
 ## 0.1.0-beta.3 (2026-02-07)
 
 ### Fixes
