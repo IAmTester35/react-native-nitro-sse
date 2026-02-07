@@ -1,0 +1,17 @@
+{
+  "cxxNamespace": ["nitrosse"],
+  "ios": {
+    "iosModuleName": "NitroSse"
+  },
+  "android": {
+    "androidNamespace": ["nitrosse"],
+    "androidCxxLibName": "nitrosse"
+  },
+  "autolinking": {
+    "NitroSse": {
+      "swift": "NitroSse",
+      "kotlin": "NitroSse"
+    }
+  },
+  "ignorePaths": ["node_modules"]
+}
