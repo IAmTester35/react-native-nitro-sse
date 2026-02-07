@@ -1,7 +1,7 @@
 {
   "name": "react-native-nitro-sse",
   "version": "0.1.0",
-  "description": "for sse streaming",
+  "description": "High-performance Server-Sent Events (SSE) for React Native, powered by Nitro Modules.",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
   "exports": {
@@ -46,7 +46,12 @@
   "keywords": [
     "react-native",
     "ios",
-    "android"
+    "android",
+    "sse",
+    "server-sent-events",
+    "streaming",
+    "nitro",
+    "jsi"
   ],
   "repository": {
     "type": "git",
