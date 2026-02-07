@@ -23,6 +23,8 @@ describe('NitroSseModule Unit Tests', () => {
       setLastProcessedId: jest.fn(),
       getStats: jest.fn(),
       isConnected: jest.fn(),
+      flush: jest.fn(),
+      restart: jest.fn(),
     };
 
     (NitroModules.createHybridObject as jest.Mock).mockReturnValue(mockNative);
@@ -30,7 +32,8 @@ describe('NitroSseModule Unit Tests', () => {
 
   it('should call native setup method', () => {
     jest.isolateModules(() => {
-      const { NitroSseModule } = require('../index');
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
       const config = { url: 'http://test.com' };
       const onEvent = jest.fn();
 
@@ -41,7 +44,8 @@ describe('NitroSseModule Unit Tests', () => {
 
   it('should call native start method', () => {
     jest.isolateModules(() => {
-      const { NitroSseModule } = require('../index');
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
       NitroSseModule.start();
       expect(mockNative.start).toHaveBeenCalled();
     });
@@ -49,7 +53,8 @@ describe('NitroSseModule Unit Tests', () => {
 
   it('should call native stop method', () => {
     jest.isolateModules(() => {
-      const { NitroSseModule } = require('../index');
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
       NitroSseModule.stop();
       expect(mockNative.stop).toHaveBeenCalled();
     });
@@ -57,7 +62,8 @@ describe('NitroSseModule Unit Tests', () => {
 
   it('should call native updateHeaders method', () => {
     jest.isolateModules(() => {
-      const { NitroSseModule } = require('../index');
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
       const newHeaders = { Authorization: 'Bearer new-token' };
       NitroSseModule.updateHeaders(newHeaders);
       expect(mockNative.updateHeaders).toHaveBeenCalledWith(newHeaders);
@@ -66,7 +72,8 @@ describe('NitroSseModule Unit Tests', () => {
 
   it('should call native isConnected method', () => {
     jest.isolateModules(() => {
-      const { NitroSseModule } = require('../index');
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
       NitroSseModule.isConnected();
       expect(mockNative.isConnected).toHaveBeenCalled();
     });
@@ -74,7 +81,8 @@ describe('NitroSseModule Unit Tests', () => {
 
   it('should bubble up errors thrown by native methods', () => {
     jest.isolateModules(() => {
-      const { NitroSseModule } = require('../index');
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
       const error = new Error('Native start failed');
       mockNative.start.mockImplementation(() => {
         throw error;
@@ -86,7 +94,8 @@ describe('NitroSseModule Unit Tests', () => {
 
   it('should correctly pass event callbacks to native', () => {
     jest.isolateModules(() => {
-      const { NitroSseModule } = require('../index');
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
       const onEvent = jest.fn();
       const config = { url: 'https://example.com/stream' };
 
@@ -106,7 +115,8 @@ describe('NitroSseModule Unit Tests', () => {
 
   it('should handle complex stats objects from native', () => {
     jest.isolateModules(() => {
-      const { NitroSseModule } = require('../index');
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
       const mockStats = {
         totalBytesReceived: 1024,
         reconnectCount: 5,
@@ -123,7 +133,8 @@ describe('NitroSseModule Unit Tests', () => {
 
   it('should allow updating headers with empty object', () => {
     jest.isolateModules(() => {
-      const { NitroSseModule } = require('../index');
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
       NitroSseModule.updateHeaders({});
       expect(mockNative.updateHeaders).toHaveBeenCalledWith({});
     });
@@ -140,7 +151,8 @@ describe('NitroSseModule Unit Tests', () => {
 
       // Re-require to trigger the top-level try-catch
       try {
-        require('../index');
+        const { createNitroSse } = require('../index');
+        createNitroSse();
       } catch {
         // Ignore the subsequent error about module not found
       }
@@ -156,14 +168,16 @@ describe('NitroSseModule Unit Tests', () => {
     jest.isolateModules(() => {
       (NitroModules.createHybridObject as jest.Mock).mockReturnValue(undefined);
       expect(() => {
-        require('../index');
+        const { createNitroSse } = require('../index');
+        createNitroSse();
       }).toThrow('NitroSse: Native module not found');
     });
   });
 
   it('should handle backpressure by buffering events when batching is enabled', () => {
     jest.isolateModules(() => {
-      const { NitroSseModule } = require('../index');
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
       const onEvent = jest.fn();
       const config = {
         url: 'https://example.com',
@@ -182,7 +196,8 @@ describe('NitroSseModule Unit Tests', () => {
 
   it('should respect maxBufferSize configuration', () => {
     jest.isolateModules(() => {
-      const { NitroSseModule } = require('../index');
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
       const onEvent = jest.fn();
       const config = {
         url: 'https://example.com',
@@ -190,8 +205,53 @@ describe('NitroSseModule Unit Tests', () => {
       };
 
       NitroSseModule.setup(config, onEvent);
+
       const passedConfig = mockNative.setup.mock.calls[0][0];
       expect(passedConfig.maxBufferSize).toBe(50);
+    });
+  });
+
+  it('should call native flush method', () => {
+    jest.isolateModules(() => {
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
+      NitroSseModule.flush();
+      expect(mockNative.flush).toHaveBeenCalled();
+    });
+  });
+
+  it('should call native restart method', () => {
+    jest.isolateModules(() => {
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
+      NitroSseModule.restart();
+      expect(mockNative.restart).toHaveBeenCalled();
+    });
+  });
+
+  it('should get isConnected status from native', () => {
+    jest.isolateModules(() => {
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
+      mockNative.isConnected = true;
+      // Note: In the mock setup above, isConnected is a jest.fn().
+      // For property access testing in hybrid objects, it depends on implementation.
+      // Assuming it's accessed as a property in the hybrid object wrapper.
+      // If generate-nitro-modules creates a getter, we test the getter.
+      // However, usually we test method calls.
+      // Let's assume the mock needs a getter behavior if it's a property.
+
+      // Re-mock for this specific test to handle property access if needed,
+      // or simply verify the property access calls the native binding.
+      // Since we mocked the whole object, let's just checking if accessing it works.
+
+      // If isConnected is a property on the HybridObject:
+      Object.defineProperty(mockNative, 'isConnected', {
+        get: jest.fn(() => true),
+      });
+
+      const connected = NitroSseModule.isConnected;
+      expect(connected).toBe(true);
     });
   });
 });

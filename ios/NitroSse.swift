@@ -183,13 +183,38 @@ class NitroSse: HybridNitroSseSpec, EventHandler {
 
     func stop() {
         sseQueue.async {
-            self.isRunning = false
-            self.eventSource?.stop()
-            self.eventSource = nil
-            self.backoffCounter = 0
-            self.eventBuffer.removeAll()
-            self.isFlushPending = false
-            self.cleanupBackgroundTask()
+            self.stopInternal()
+        }
+    }
+
+    private func stopInternal() {
+        self.isRunning = false
+        self.eventSource?.stop()
+        self.eventSource = nil
+        self.backoffCounter = 0
+        self.eventBuffer.removeAll()
+        self.isFlushPending = false
+        self.cleanupBackgroundTask()
+    }
+
+    func flush() {
+        sseQueue.async {
+            self.flushEventsToJs()
+        }
+    }
+
+    func restart() {
+        sseQueue.async {
+            self.stopInternal()
+            guard !self.isRunning else { return } // Should be false now
+            self.isRunning = true
+            self.establishConnection()
+        }
+    }
+
+    var isConnected: Bool {
+        return sseQueue.sync {
+            return isRunning
         }
     }
     

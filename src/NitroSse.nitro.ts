@@ -34,4 +34,20 @@ export interface NitroSse
    * Get connection statistics.
    */
   getStats(): SseStats;
+  /**
+   * Manually flush the event buffer.
+   * Useful when batching is enabled but you need to process pending events immediately.
+   */
+  flush(): void;
+
+  /**
+   * Force a reconnection.
+   * This resets the connection state and attempts to reconnect immediately.
+   */
+  restart(): void;
+
+  /**
+   * Check if the connection is currently active.
+   */
+  get isConnected(): boolean;
 }

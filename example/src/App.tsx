@@ -1,14 +1,17 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import {
   Text,
   View,
   StyleSheet,
   TouchableOpacity,
   ScrollView,
-  SafeAreaView,
   Platform,
 } from 'react-native';
-import { NitroSseModule, type SseEvent } from 'react-native-nitro-sse';
+import {
+  createNitroSse,
+  type NitroSse,
+  type SseEvent,
+} from 'react-native-nitro-sse';
 
 const SSE_URL = Platform.select({
   android: 'http://10.0.2.2:33333/events',
@@ -19,11 +22,18 @@ const SSE_URL = Platform.select({
 export default function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [isConnected, setIsConnected] = useState(false);
+  // Store the SSE instance in a Ref to persist across re-renders
+  const sseRef = useRef<NitroSse | null>(null);
 
   const addLog = (msg: string) => {
     setLogs((prev) =>
       [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, 50)
     );
+  };
+
+  const handleError = (error: any) => {
+    console.error(error);
+    addLog(`⚠️ Exception: ${error.message}`);
   };
 
   const handleEvents = useCallback((events: SseEvent[]) => {
@@ -38,7 +48,13 @@ export default function App() {
           break;
         case 'error':
           addLog(`🔴 Error: ${event.message}`);
-          setIsConnected(false);
+          // Note: We don't automatically set isConnected=false here because
+          // the library might be retrying (autoreconnect).
+          // We can check sseRef.current?.isConnected if needed.
+          if (sseRef.current) {
+            // Optional: Sync UI state with actual connection state
+            // setIsConnected(sseRef.current.isConnected);
+          }
           break;
         case 'close':
           addLog('⚪ SSE Connection Closed');
@@ -51,20 +67,70 @@ export default function App() {
     });
   }, []);
 
-  const toggleConnection = () => {
-    if (isConnected) {
-      NitroSseModule.stop();
+  const startConnection = () => {
+    if (sseRef.current) {
+      addLog('⚠️ Connection already exists');
+      return;
+    }
+
+    try {
+      addLog('⏳ Initializing connection...');
+      const sse = createNitroSse();
+      sse.setup(
+        {
+          url: SSE_URL || '',
+          batchingIntervalMs: 2000, // Demonstrate flushing by adding delay
+        },
+        handleEvents
+      );
+
+      sse.start();
+      sseRef.current = sse;
+      setIsConnected(true); // Optimistic update
+    } catch (e) {
+      handleError(e);
+    }
+  };
+
+  const stopConnection = () => {
+    if (sseRef.current) {
+      sseRef.current.stop();
+      sseRef.current = null;
       setIsConnected(false);
-      addLog('⚪ SSE Connection Stopped by User');
+      addLog('🛑 SSE Connection Stopped by User');
+    }
+  };
+
+  const manualFlush = () => {
+    if (sseRef.current) {
+      sseRef.current.flush();
+      addLog('🚿 Manually Flushed Buffer');
+    }
+  };
+
+  const manualRestart = () => {
+    if (sseRef.current) {
+      sseRef.current.restart();
+      addLog('🔄 Manually Restarted Connection');
+    }
+  };
+
+  const checkStatus = () => {
+    if (sseRef.current) {
+      const active = sseRef.current.isConnected;
+      const stats = sseRef.current.getStats();
+      addLog(
+        `📊 Status: ${active ? 'Active' : 'Inactive'}, Reconnects: ${
+          stats.reconnectCount
+        }, Bytes: ${stats.totalBytesReceived}`
+      );
     } else {
-      setLogs([]);
-      NitroSseModule.setup({ url: SSE_URL }, handleEvents);
-      NitroSseModule.start();
+      addLog('📊 Status: No Instance');
     }
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Nitro SSE Demo</Text>
         <Text style={styles.status}>
@@ -75,17 +141,35 @@ export default function App() {
         </Text>
       </View>
 
-      <TouchableOpacity
-        style={[
-          styles.button,
-          isConnected ? styles.buttonStop : styles.buttonStart,
-        ]}
-        onPress={toggleConnection}
-      >
-        <Text style={styles.buttonText}>
-          {isConnected ? 'Stop SSE' : 'Start SSE'}
-        </Text>
-      </TouchableOpacity>
+      <View style={styles.controls}>
+        {!isConnected ? (
+          <TouchableOpacity
+            style={[styles.button, styles.buttonStart]}
+            onPress={startConnection}
+          >
+            <Text style={styles.buttonText}>Start SSE</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={[styles.button, styles.buttonStop]}
+            onPress={stopConnection}
+          >
+            <Text style={styles.buttonText}>Stop SSE</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      <View style={styles.controlsRow}>
+        <TouchableOpacity style={styles.miniButton} onPress={manualFlush}>
+          <Text style={styles.miniButtonText}>Flush</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.miniButton} onPress={manualRestart}>
+          <Text style={styles.miniButtonText}>Restart</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.miniButton} onPress={checkStatus}>
+          <Text style={styles.miniButtonText}>Stats</Text>
+        </TouchableOpacity>
+      </View>
 
       <View style={styles.logContainer}>
         <Text style={styles.logTitle}>Logs:</Text>
@@ -102,7 +186,7 @@ export default function App() {
           )}
         </ScrollView>
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -143,6 +227,29 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
     shadowRadius: 4,
+  },
+  controls: {
+    width: '100%',
+    alignItems: 'center',
+  },
+  controlsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+    width: '100%',
+    gap: 10,
+  },
+  miniButton: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 6,
+    alignItems: 'center',
+    elevation: 2,
+  },
+  miniButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: 'bold',
   },
   buttonStart: {
     backgroundColor: '#2196F3',

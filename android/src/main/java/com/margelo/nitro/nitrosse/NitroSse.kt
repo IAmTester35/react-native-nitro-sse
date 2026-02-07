@@ -266,6 +266,18 @@ class NitroSse : HybridNitroSseSpec() {
         }
     }
 
+    override fun flush() {
+        flushBufferToJs()
+    }
+
+    override fun restart() {
+        stop()
+        start()
+    }
+
+    override val isConnected: Boolean
+        get() = isRunning.get()
+
     override fun stop() {
         isRunning.set(false)
         backoffCounter = 0 
@@ -275,5 +287,6 @@ class NitroSse : HybridNitroSseSpec() {
         synchronized(eventBuffer) {
             eventBuffer.clear()
         }
+        isFlushPending.set(false)
     }
 }
