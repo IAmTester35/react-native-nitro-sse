@@ -49,5 +49,5 @@ export interface NitroSse
   /**
    * Check if the connection is currently active.
    */
-  get isConnected(): boolean;
+  isConnected(): boolean;
 }

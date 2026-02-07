@@ -275,8 +275,9 @@ class NitroSse : HybridNitroSseSpec() {
         start()
     }
 
-    override val isConnected: Boolean
-        get() = isRunning.get()
+    override fun isConnected(): Boolean {
+        return isRunning.get()
+    }
 
     override fun stop() {
         isRunning.set(false)

@@ -231,27 +231,14 @@ describe('NitroSseModule Unit Tests', () => {
 
   it('should get isConnected status from native', () => {
     jest.isolateModules(() => {
+      // If isConnected is a property on the HybridObject:
       const { createNitroSse } = require('../index');
       const NitroSseModule = createNitroSse();
-      mockNative.isConnected = true;
-      // Note: In the mock setup above, isConnected is a jest.fn().
-      // For property access testing in hybrid objects, it depends on implementation.
-      // Assuming it's accessed as a property in the hybrid object wrapper.
-      // If generate-nitro-modules creates a getter, we test the getter.
-      // However, usually we test method calls.
-      // Let's assume the mock needs a getter behavior if it's a property.
+      mockNative.isConnected.mockReturnValue(true);
 
-      // Re-mock for this specific test to handle property access if needed,
-      // or simply verify the property access calls the native binding.
-      // Since we mocked the whole object, let's just checking if accessing it works.
-
-      // If isConnected is a property on the HybridObject:
-      Object.defineProperty(mockNative, 'isConnected', {
-        get: jest.fn(() => true),
-      });
-
-      const connected = NitroSseModule.isConnected;
+      const connected = NitroSseModule.isConnected();
       expect(connected).toBe(true);
+      expect(mockNative.isConnected).toHaveBeenCalled();
     });
   });
 });

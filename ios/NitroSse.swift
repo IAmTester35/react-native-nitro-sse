@@ -212,7 +212,7 @@ class NitroSse: HybridNitroSseSpec, EventHandler {
         }
     }
 
-    var isConnected: Bool {
+    func isConnected() -> Bool {
         return sseQueue.sync {
             return isRunning
         }

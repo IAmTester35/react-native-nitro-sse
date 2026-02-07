@@ -117,7 +117,7 @@ export default function App() {
 
   const checkStatus = () => {
     if (sseRef.current) {
-      const active = sseRef.current.isConnected;
+      const active = sseRef.current.isConnected();
       const stats = sseRef.current.getStats();
       addLog(
         `📊 Status: ${active ? 'Active' : 'Inactive'}, Reconnects: ${
@@ -160,13 +160,22 @@ export default function App() {
       </View>
 
       <View style={styles.controlsRow}>
-        <TouchableOpacity style={styles.miniButton} onPress={manualFlush}>
+        <TouchableOpacity
+          style={[styles.miniButton, styles.buttonFlush]}
+          onPress={manualFlush}
+        >
           <Text style={styles.miniButtonText}>Flush</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.miniButton} onPress={manualRestart}>
+        <TouchableOpacity
+          style={[styles.miniButton, styles.buttonRestart]}
+          onPress={manualRestart}
+        >
           <Text style={styles.miniButtonText}>Restart</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.miniButton} onPress={checkStatus}>
+        <TouchableOpacity
+          style={[styles.miniButton, styles.buttonStats]}
+          onPress={checkStatus}
+        >
           <Text style={styles.miniButtonText}>Stats</Text>
         </TouchableOpacity>
       </View>
@@ -250,6 +259,15 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 14,
     fontWeight: 'bold',
+  },
+  buttonFlush: {
+    backgroundColor: '#FF9800',
+  },
+  buttonRestart: {
+    backgroundColor: '#9C27B0',
+  },
+  buttonStats: {
+    backgroundColor: '#607D8B',
   },
   buttonStart: {
     backgroundColor: '#2196F3',
