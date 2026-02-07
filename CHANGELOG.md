@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-beta.3 (2026-02-07)
+
+### Fixes
+
+*   **Podspec**: Updated repository URL in `NitroSse.podspec` to match the new organization.
+
 ## 0.1.0-beta.2 (2026-02-07)
 
 ### ⚠️ Breaking Changes
