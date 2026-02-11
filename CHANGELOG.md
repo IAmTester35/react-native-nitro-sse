@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.0 (2026-02-11)
+
+### Features
+
+*   **Stable Release**: Initial stable release of `react-native-nitro-sse`.
+*   **Dependency Update**: Updated `react-native-nitro-modules` to `0.33.8` for improved stability and performance.
+
 ## 0.1.0-beta.4 (2026-02-07)
 
 ### CI/CD
