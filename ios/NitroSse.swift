@@ -43,6 +43,7 @@ class NitroSse: HybridNitroSseSpec, EventHandler {
         self.config = config
         self.onEventsCallback = onEvent
         
+        NotificationCenter.default.removeObserver(self)
         NotificationCenter.default.addObserver(self, selector: #selector(handleAppDidEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleAppWillEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
     }

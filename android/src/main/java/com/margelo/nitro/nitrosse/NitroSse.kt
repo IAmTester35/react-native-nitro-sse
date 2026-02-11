@@ -66,41 +66,43 @@ class NitroSse : HybridNitroSseSpec() {
         this.config = config
         this.onEventsCallback = onEvent
         
-        this.client = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(35, TimeUnit.SECONDS)
-            .addNetworkInterceptor { chain ->
-                val response = chain.proceed(chain.request())
-                val responseBody = response.body
-                if (responseBody != null) {
-                    val countingBody = object : ResponseBody() {
-                        override fun contentType() = responseBody.contentType()
-                        override fun contentLength() = responseBody.contentLength()
-                        override fun source() = (object : okio.ForwardingSource(responseBody.source()) {
-                            override fun read(sink: okio.Buffer, byteCount: Long): Long {
-                                val bytesRead = super.read(sink, byteCount)
-                                if (bytesRead != -1L) {
-                                    totalBytesReceived.addAndGet(bytesRead)
-                                    
-                                    try {
-                                        val snapshot = sink.snapshot()
-                                        if (snapshot.size > 0 && snapshot.get(0) == ':'.toByte()) {
-                                            pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, "keep-alive"))
+        if (this.client == null) {
+            this.client = OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(35, TimeUnit.SECONDS)
+                .addNetworkInterceptor { chain ->
+                    val response = chain.proceed(chain.request())
+                    val responseBody = response.body
+                    if (responseBody != null) {
+                        val countingBody = object : ResponseBody() {
+                            override fun contentType() = responseBody.contentType()
+                            override fun contentLength() = responseBody.contentLength()
+                            override fun source() = (object : okio.ForwardingSource(responseBody.source()) {
+                                override fun read(sink: okio.Buffer, byteCount: Long): Long {
+                                    val bytesRead = super.read(sink, byteCount)
+                                    if (bytesRead != -1L) {
+                                        totalBytesReceived.addAndGet(bytesRead)
+                                        
+                                        try {
+                                            val snapshot = sink.snapshot()
+                                            if (snapshot.size > 0 && snapshot.get(0) == ':'.toByte()) {
+                                                pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, "keep-alive"))
+                                            }
+                                        } catch (e: Exception) {
+                                            // Silent catch for interceptor parsing
                                         }
-                                    } catch (e: Exception) {
-                                        // Silent catch for interceptor parsing
                                     }
+                                    return bytesRead
                                 }
-                                return bytesRead
-                            }
-                        }).buffer()
+                            }).buffer()
+                        }
+                        response.newBuilder().body(countingBody).build()
+                    } else {
+                        response
                     }
-                    response.newBuilder().body(countingBody).build()
-                } else {
-                    response
                 }
-            }
-            .build()
+                .build()
+        }
             
         if (sseHandlerThread == null) {
             sseHandlerThread = android.os.HandlerThread("NitroSseThread").apply { start() }
@@ -163,7 +165,7 @@ class NitroSse : HybridNitroSseSpec() {
     }
 
     override fun start() {
-        if (config == null) return
+        if (config == null || isRunning.get()) return
         isRunning.set(true)
         backoffCounter = 0
         sseHandler?.post { performConnection() }
@@ -171,6 +173,10 @@ class NitroSse : HybridNitroSseSpec() {
 
     private fun performConnection() {
         if (!isRunning.get()) return
+        
+        // Cancel existing event source if any before starting new one
+        eventSource?.cancel()
+        eventSource = null
         
         val requestBuilder = Request.Builder()
             .url(config!!.url)

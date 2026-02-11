@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.1 (2026-02-11)
+
+### Fixes
+
+*   **iOS**: Prevented duplicate `NotificationCenter` observers in `setup()`.
+*   **Android**: Added check to prevent multiple concurrent connections in `start()`.
+*   **Android**: Improved resource management by reusing `OkHttpClient` and canceling old `EventSource` before reconnection.
+
 ## 1.0.0 (2026-02-11)
 
 ### Features
