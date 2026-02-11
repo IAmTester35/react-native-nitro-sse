@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.2 (2026-02-11)
+
+### Features
+
+*   **Android**: Added App Foreground/Background transition handling (Hibernation pattern). The connection now automatically pauses when the app is in the background and resumes when returning to the foreground, parity with iOS.
+
+### Fixes
+
+*   **Android**: Added missing `androidx.lifecycle` dependency for lifecycle detection.
+
 ## 1.0.1 (2026-02-11)
 
 ### Fixes

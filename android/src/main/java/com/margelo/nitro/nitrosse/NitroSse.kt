@@ -13,6 +13,9 @@ import okhttp3.sse.EventSourceListener
 import okio.Buffer
 import okio.ForwardingSource
 import okio.buffer
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -30,9 +33,11 @@ import kotlin.random.Random
  *    prevent DoS-ing the server while ensuring resilient reconnections.
  * 4. Heartbeat: Since OkHttp-SSE obscures comments, we use a Network Interceptor to manually 
  *    detect ':' bytes, enabling JS-side watchdog timers.
+ * 5. Lifecycle Management: Implements the Hibernation pattern. When the app enters the background,
+ *    we stop the stream to save battery. It automatically resumes when returning to foreground.
  */
 @DoNotStrip
-class NitroSse : HybridNitroSseSpec() {
+class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     private var client: OkHttpClient? = null
     private var eventSource: EventSource? = null
     private var config: SseConfig? = null
@@ -53,6 +58,8 @@ class NitroSse : HybridNitroSseSpec() {
     private var reconnectCount = 0
     private var lastErrorTime: Double? = null
     private var lastErrorCode: String? = null
+    
+    private var hasSubscribedToLifecycle = false
 
     private val defaultRetryDelayMs = 3000L
     private val baseBackoffDelayMs = 2000L
@@ -107,6 +114,29 @@ class NitroSse : HybridNitroSseSpec() {
         if (sseHandlerThread == null) {
             sseHandlerThread = android.os.HandlerThread("NitroSseThread").apply { start() }
             sseHandler = Handler(sseHandlerThread!!.looper)
+        }
+
+        if (!hasSubscribedToLifecycle) {
+            Handler(Looper.getMainLooper()).post {
+                ProcessLifecycleOwner.get().lifecycle.addObserver(this)
+                hasSubscribedToLifecycle = true
+            }
+        }
+    }
+
+    override fun onStart(owner: LifecycleOwner) {
+        if (wasRunningBeforePaused) {
+            Log.d(TAG, "App foregrounded. Resuming NitroSse stream.")
+            wasRunningBeforePaused = false
+            start()
+        }
+    }
+
+    override fun onStop(owner: LifecycleOwner) {
+        if (isRunning.get()) {
+            Log.d(TAG, "App backgrounded. Hibernating NitroSse connection.")
+            wasRunningBeforePaused = true
+            stop()
         }
     }
 
