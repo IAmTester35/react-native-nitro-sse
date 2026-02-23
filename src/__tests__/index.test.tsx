@@ -241,4 +241,38 @@ describe('NitroSseModule Unit Tests', () => {
       expect(mockNative.isConnected).toHaveBeenCalled();
     });
   });
+
+  it('should create separate native instances for each factory call', () => {
+    jest.isolateModules(() => {
+      (NitroModules.createHybridObject as jest.Mock).mockImplementation(() => ({
+        ...mockNative,
+      }));
+      const { createNitroSse } = require('../index');
+      const instance1 = createNitroSse();
+      const instance2 = createNitroSse();
+
+      expect(NitroModules.createHybridObject).toHaveBeenCalledTimes(2);
+      expect(instance1).not.toBe(instance2);
+    });
+  });
+
+  it('should pass all config parameters correctly', () => {
+    jest.isolateModules(() => {
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
+      const onEvent = jest.fn();
+      const fullConfig = {
+        url: 'https://api.example.com/v1/sse',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Custom': 'Value' },
+        body: JSON.stringify({ room: '123' }),
+        backgroundExecution: true,
+        batchingIntervalMs: 100,
+        maxBufferSize: 5000,
+      };
+
+      NitroSseModule.setup(fullConfig as any, onEvent);
+      expect(mockNative.setup).toHaveBeenCalledWith(fullConfig, onEvent);
+    });
+  });
 });

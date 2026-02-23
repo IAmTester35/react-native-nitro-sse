@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0 (2026-02-23)
+
+### Features
+
+*   **Dependency Update**: Updated `react-native-nitro-modules` and `nitrogen` to `0.33.9`.
+
 ## 1.0.2 (2026-02-11)
 
 ### Features
