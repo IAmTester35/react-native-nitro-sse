@@ -165,6 +165,8 @@ class NitroSse: HybridNitroSseSpec {
 
     private func establishConnection() {
         dispatchPrecondition(condition: .onQueue(sseQueue))
+        guard isRunning, let config = config, let url = URL(string: config.url) else { return }
+        
         let handler = SseHandler(parent: self)
         var esConfig = EventSource.Config(handler: handler, url: url)
         esConfig.headers = config.headers ?? [:]
