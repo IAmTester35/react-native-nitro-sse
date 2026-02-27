@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.1 (2026-02-27)
+
+### Fixes
+
+*   **iOS**: Fixed a compilation error in `establishConnection` caused by missing optional unwrapping.
+*   **iOS**: Improved session isolation in `SseHandler` to prevent cross-session event leakage.
+
 ## 1.2.0 (2026-02-27)
 
 ### Features
@@ -13,7 +20,6 @@
 
 *   **Core**: Fixed a critical race condition in `restart()` that caused connections to immediately close and reconnect after the first message.
 *   **Android**: Added instance validation in `EventSource` callbacks to ignore events from stale or closed connections.
-*   **iOS**: Refactored event handling using an isolated `SseHandler` to prevent cross-session event leakage during restarts.
 
 ## 1.1.0 (2026-02-23)
 
