@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.0 (2026-02-27)
+
+### Features
+
+*   **Dependency Update**: Updated `react-native-nitro-modules` and `nitrogen` to `0.34.0`.
+*   **Testing**: Added more comprehensive Unit Tests for `restart()` and `setLastProcessedId()`. 
+*   **Integration Test**: Added a local SSE Test Server (`example/sse-server.js`) and `yarn server` script for manual testing.
+*   **Example App**: Completely refactored the example app with a modern Dark Mode UI, real-time stats dashboard, and configurable connection settings.
+
+### Fixes
+
+*   **Core**: Fixed a critical race condition in `restart()` that caused connections to immediately close and reconnect after the first message.
+*   **Android**: Added instance validation in `EventSource` callbacks to ignore events from stale or closed connections.
+*   **iOS**: Refactored event handling using an isolated `SseHandler` to prevent cross-session event leakage during restarts.
+
 ## 1.1.0 (2026-02-23)
 
 ### Features

@@ -34,7 +34,7 @@ describe('NitroSseModule Unit Tests', () => {
     jest.isolateModules(() => {
       const { createNitroSse } = require('../index');
       const NitroSseModule = createNitroSse();
-      const config = { url: 'http://test.com' };
+      const config = { url: 'http://localhost:33333/events' };
       const onEvent = jest.fn();
 
       NitroSseModule.setup(config, onEvent);
@@ -97,7 +97,7 @@ describe('NitroSseModule Unit Tests', () => {
       const { createNitroSse } = require('../index');
       const NitroSseModule = createNitroSse();
       const onEvent = jest.fn();
-      const config = { url: 'https://example.com/stream' };
+      const config = { url: 'http://localhost:33333/events' };
 
       NitroSseModule.setup(config, onEvent);
 
@@ -180,7 +180,7 @@ describe('NitroSseModule Unit Tests', () => {
       const NitroSseModule = createNitroSse();
       const onEvent = jest.fn();
       const config = {
-        url: 'https://example.com',
+        url: 'http://localhost:33333/events',
         batchingIntervalMs: 500,
       };
 
@@ -200,7 +200,7 @@ describe('NitroSseModule Unit Tests', () => {
       const NitroSseModule = createNitroSse();
       const onEvent = jest.fn();
       const config = {
-        url: 'https://example.com',
+        url: 'http://localhost:33333/events',
         maxBufferSize: 50,
       };
 
@@ -226,6 +226,17 @@ describe('NitroSseModule Unit Tests', () => {
       const NitroSseModule = createNitroSse();
       NitroSseModule.restart();
       expect(mockNative.restart).toHaveBeenCalled();
+    });
+  });
+
+  it('should call native setLastProcessedId method', () => {
+    jest.isolateModules(() => {
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
+      const testId = 'event-123';
+
+      NitroSseModule.setLastProcessedId(testId);
+      expect(mockNative.setLastProcessedId).toHaveBeenCalledWith(testId);
     });
   });
 
@@ -262,7 +273,7 @@ describe('NitroSseModule Unit Tests', () => {
       const NitroSseModule = createNitroSse();
       const onEvent = jest.fn();
       const fullConfig = {
-        url: 'https://api.example.com/v1/sse',
+        url: 'http://localhost:33333/events',
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Custom': 'Value' },
         body: JSON.stringify({ room: '123' }),

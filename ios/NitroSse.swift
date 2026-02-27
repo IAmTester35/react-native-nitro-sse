@@ -14,7 +14,7 @@ import LDSwiftEventSource
  * 3. Batching: Reduces JSI bridge overhead by accumulating events and dispatching them 
  *    as a single array after a configurable interval.
  */
-class NitroSse: HybridNitroSseSpec, EventHandler {
+class NitroSse: HybridNitroSseSpec {
     private var eventSource: EventSource?
     private var config: SseConfig?
     private var onEventsCallback: ((_ events: [SseEvent]) -> Void)?
@@ -165,9 +165,8 @@ class NitroSse: HybridNitroSseSpec, EventHandler {
 
     private func establishConnection() {
         dispatchPrecondition(condition: .onQueue(sseQueue))
-        guard isRunning, let config = config, let url = URL(string: config.url) else { return }
-        
-        var esConfig = EventSource.Config(handler: self, url: url)
+        let handler = SseHandler(parent: self)
+        var esConfig = EventSource.Config(handler: handler, url: url)
         esConfig.headers = config.headers ?? [:]
         
         if let lastId = self.lastProcessedId, !lastId.isEmpty {
@@ -178,8 +177,10 @@ class NitroSse: HybridNitroSseSpec, EventHandler {
         esConfig.method = config.method?.stringValue.uppercased() ?? "GET"
         esConfig.body = config.body?.data(using: .utf8)
         
-        eventSource = EventSource(config: esConfig)
-        eventSource?.start()
+        let es = EventSource(config: esConfig)
+        self.eventSource = es
+        handler.source = es
+        es.start()
     }
 
     func stop() {
@@ -329,9 +330,93 @@ class NitroSse: HybridNitroSseSpec, EventHandler {
             delay = defaultRetryDelay * (0.8 + Double.random(in: 0...0.4))
         }
         let safeDelay = max(delay, 2.0)
+        let currentSource = self.eventSource
         sseQueue.asyncAfter(deadline: .now() + safeDelay) { [weak self] in
-            guard let self = self, self.isRunning else { return }
+            guard let self = self, self.isRunning, self.eventSource === currentSource else { return }
             self.establishConnection()
+        }
+    }
+    
+    private class SseHandler: EventHandler {
+        weak var parent: NitroSse?
+        weak var source: EventSource?
+        
+        init(parent: NitroSse) {
+            self.parent = parent
+        }
+        
+        func onOpened() {
+            guard let parent = parent, source === parent.eventSource else { return }
+            parent.sseQueue.async {
+                parent.backoffCounter = 0
+                parent.pushEventToBuffer(SseEvent(type: .open, data: nil, id: nil, event: nil, message: nil))
+            }
+        }
+        
+        func onClosed() {
+            guard let parent = parent, source === parent.eventSource else { return }
+            parent.sseQueue.async {
+                if parent.isRunning {
+                    parent.scheduleAutomaticReconnect(isError: false)
+                }
+            }
+        }
+        
+        func onMessage(eventType: String, messageEvent: MessageEvent) {
+            guard let parent = parent, source === parent.eventSource else { return }
+            parent.sseQueue.async {
+                let encodedDataSize = Double(messageEvent.data.utf8.count)
+                let metadataSize = Double(eventType.utf8.count) + Double((messageEvent.lastEventId).utf8.count)
+                parent.totalBytesReceived += encodedDataSize + metadataSize
+                
+                parent.pushEventToBuffer(SseEvent(type: .message, data: messageEvent.data, id: messageEvent.lastEventId, event: eventType, message: nil))
+            }
+        }
+        
+        func onComment(comment: String) {
+            guard let parent = parent, source === parent.eventSource else { return }
+            parent.sseQueue.async {
+                parent.totalBytesReceived += Double(comment.utf8.count)
+                parent.pushEventToBuffer(SseEvent(type: .heartbeat, data: nil, id: nil, event: nil, message: comment))
+            }
+        }
+        
+        func onError(error: Error) {
+            guard let parent = parent, source === parent.eventSource else { return }
+            parent.sseQueue.async {
+                guard parent.isRunning else { return }
+                let nsError = error as NSError
+                let statusCode = nsError.code
+                
+                parent.reconnectCount += 1
+                parent.lastErrorTime = Date().timeIntervalSince1970 * 1000
+                parent.lastErrorCode = "\(nsError.domain)(\(statusCode))"
+
+                let isFatalError = (statusCode == 401 || statusCode == 403 || statusCode == 400)
+                if isFatalError {
+                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Fatal Error (\(statusCode)). Stopping."))
+                    parent.stopInternal()
+                    return
+                }
+
+                let retryAfterSeconds = parent.extractRetryAfterSeconds(error: error)
+                if (statusCode == 429 || statusCode == 503), let delay = retryAfterSeconds {
+                    let jitter = Double.random(in: 0.5...2.0)
+                    let totalDelay = delay + jitter
+                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Retry-After received (\(statusCode))"))
+                    parent.scheduleAutomaticReconnectWithFixedDelay(totalDelay)
+                    return
+                }
+
+                if statusCode == 429 {
+                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Rate Limited (429) without Retry-After. Stopping."))
+                    parent.stopInternal()
+                    return
+                }
+                
+                parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: error.localizedDescription))
+                parent.scheduleAutomaticReconnect(isError: true)
+            }
         }
     }
 }

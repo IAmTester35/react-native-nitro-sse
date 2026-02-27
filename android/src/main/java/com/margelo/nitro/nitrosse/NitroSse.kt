@@ -241,15 +241,18 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
 
     private val sseListener = object : EventSourceListener() {
         override fun onOpen(eventSource: EventSource, response: Response) {
+            if (eventSource != this@NitroSse.eventSource) return
             backoffCounter = 0
             pushEventToBuffer(SseEvent(SseEventType.OPEN, null, null, null, null))
         }
 
         override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
+            if (eventSource != this@NitroSse.eventSource) return
             pushEventToBuffer(SseEvent(SseEventType.MESSAGE, data, id, type, null))
         }
 
         override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
+            if (eventSource != this@NitroSse.eventSource) return
             Log.e(TAG, "SSE Failure: ${t?.message}, Code: ${response?.code}")
             if (!isRunning.get()) return
             
@@ -270,7 +273,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                 val jitter = (500 + Random.nextInt(1500)).toLong()
                 val totalDelay = retryAfterMillis + jitter
                 pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Retry-After received: ${totalDelay/1000}s"))
-                sseHandler?.postDelayed({ if (isRunning.get()) performConnection() }, totalDelay)
+                sseHandler?.postDelayed({ if (isRunning.get() && eventSource == this@NitroSse.eventSource) performConnection() }, totalDelay)
                 return
             }
 
@@ -291,13 +294,14 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
 
             val safeReconnectDelay = Math.max(reconnectDelay, 2000L)
             pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, t?.message ?: "Link lost ($statusCode)"))
-            sseHandler?.postDelayed({ if (isRunning.get()) performConnection() }, safeReconnectDelay)
+            sseHandler?.postDelayed({ if (isRunning.get() && eventSource == this@NitroSse.eventSource) performConnection() }, safeReconnectDelay)
         }
 
         override fun onClosed(eventSource: EventSource) {
+            if (eventSource != this@NitroSse.eventSource) return
             if (isRunning.get()) {
                 val delay = (defaultRetryDelayMs * (0.8 + Random.nextDouble() * 0.4)).toLong()
-                sseHandler?.postDelayed({ if (isRunning.get()) performConnection() }, delay)
+                sseHandler?.postDelayed({ if (isRunning.get() && eventSource == this@NitroSse.eventSource) performConnection() }, delay)
             }
         }
     }

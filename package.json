@@ -1,6 +1,6 @@
 {
   "name": "react-native-nitro-sse",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "High-performance Server-Sent Events (SSE) for React Native, powered by Nitro Modules.",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
@@ -41,6 +41,7 @@
     "typecheck": "tsc",
     "test": "jest",
     "release": "release-it --only-version",
+    "server": "node example/sse-server.js",
     "lint": "eslint \"**/*.{js,ts,tsx}\""
   },
   "keywords": [
@@ -83,12 +84,12 @@
     "eslint-plugin-prettier": "^5.5.4",
     "jest": "^29.7.0",
     "lefthook": "^2.0.3",
-    "nitrogen": "0.33.9",
+    "nitrogen": "0.34.0",
     "prettier": "^2.8.8",
     "react": "19.2.0",
     "react-native": "0.83.0",
     "react-native-builder-bob": "^0.40.17",
-    "react-native-nitro-modules": "0.33.9",
+    "react-native-nitro-modules": "0.34.0",
     "release-it": "^19.0.4",
     "turbo": "^2.5.6",
     "typescript": "^5.9.2"
@@ -96,7 +97,7 @@
   "peerDependencies": {
     "react": "*",
     "react-native": "*",
-    "react-native-nitro-modules": "0.33.9"
+    "react-native-nitro-modules": "0.34.0"
   },
   "workspaces": [
     "example"
