@@ -43,13 +43,19 @@ jobs:
         if: steps.check.outputs.changed == 'true'
         run: yarn prepare
 
+      - name: Extract Release Notes
+        if: steps.check.outputs.changed == 'true'
+        id: extract_changelog
+        run: awk '/^## / {if (p) exit; p=1; next} p' CHANGELOG.md > RELEASE_NOTES.md
+        shell: bash
+
       - name: Create GitHub Release
         if: steps.check.outputs.changed == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.check.outputs.version }}
           name: Release v${{ steps.check.outputs.version }}
-          body_path: CHANGELOG.md
+          body_path: RELEASE_NOTES.md
           draft: false
           prerelease: ${{ contains(steps.check.outputs.version, 'beta') || contains(steps.check.outputs.version, 'alpha') }}
         env:
