@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.1 (2026-03-04)
+
+### Fixes
+
+*   **CI/CD**: Improved release reliability by verifying versions directly against the npm registry instead of relying solely on Git tags.
+
 ## 1.3.0 (2026-03-04)
 
 ### Features
