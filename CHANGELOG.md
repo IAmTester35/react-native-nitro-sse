@@ -5,6 +5,7 @@
 ### Features
 
 *   **CI/CD**: Improved release security by making the `Continuous Release` workflow dependent on `CI` workflow success.
+*   **Testing**: Added comprehensive Native Unit Tests for both Android (Kotlin) and iOS (Swift) covering core algorithms: buffer management, exponential backoff, and heartbeat scanning.
 
 ### Fixes
 

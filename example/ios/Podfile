@@ -18,6 +18,7 @@ end
 
 target 'NitroSseExample' do
   config = use_native_modules!
+  pod 'NitroSse', :path => '../..', :testspecs => ['Tests']
 
   use_react_native!(
     :path => config[:reactNativePath],
