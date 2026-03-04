@@ -129,17 +129,17 @@ class NitroSse: HybridNitroSseSpec {
 
     func updateHeaders(headers: [String: String]) throws {
         sseQueue.async {
-            if let currentConfig = self.config {
-                self.config = SseConfig(
-                    url: currentConfig.url,
-                    method: currentConfig.method,
-                    headers: headers,
-                    body: currentConfig.body,
-                    backgroundExecution: currentConfig.backgroundExecution,
-                    batchingIntervalMs: currentConfig.batchingIntervalMs,
-                    maxBufferSize: currentConfig.maxBufferSize
-                )
-            }
+            guard var currentConfig = self.config else { return }
+            self.config = SseConfig(
+                url: currentConfig.url,
+                method: currentConfig.method,
+                headers: headers,
+                body: currentConfig.body,
+                backgroundExecution: currentConfig.backgroundExecution,
+                batchingIntervalMs: currentConfig.batchingIntervalMs,
+                maxBufferSize: currentConfig.maxBufferSize
+            )
+            print("[NitroSse] Headers updated for subsequent connections.")
         }
     }
 
@@ -222,38 +222,6 @@ class NitroSse: HybridNitroSseSpec {
         }
     }
     
-    func onOpened() {
-        sseQueue.async {
-            self.backoffCounter = 0
-            self.pushEventToBuffer(SseEvent(type: .open, data: nil, id: nil, event: nil, message: nil))
-        }
-    }
-    
-    func onClosed() {
-        sseQueue.async {
-            if self.isRunning {
-                self.scheduleAutomaticReconnect(isError: false)
-            }
-        }
-    }
-    
-    func onMessage(eventType: String, messageEvent: MessageEvent) {
-        sseQueue.async {
-            let encodedDataSize = Double(messageEvent.data.utf8.count)
-            let metadataSize = Double(eventType.utf8.count) + Double((messageEvent.lastEventId).utf8.count)
-            self.totalBytesReceived += encodedDataSize + metadataSize
-            
-            self.pushEventToBuffer(SseEvent(type: .message, data: messageEvent.data, id: messageEvent.lastEventId, event: eventType, message: nil))
-        }
-    }
-    
-    func onComment(comment: String) {
-        sseQueue.async {
-            self.totalBytesReceived += Double(comment.utf8.count)
-            self.pushEventToBuffer(SseEvent(type: .heartbeat, data: nil, id: nil, event: nil, message: comment))
-        }
-    }
-    
     private func extractRetryAfterSeconds(error: Error) -> TimeInterval? {
         let nsError = error as NSError
         guard let response = nsError.userInfo["response"] as? HTTPURLResponse else { return nil }
@@ -273,42 +241,8 @@ class NitroSse: HybridNitroSseSpec {
         return nil
     }
 
-    func onError(error: Error) {
-        sseQueue.async {
-            guard self.isRunning else { return }
-            let nsError = error as NSError
-            let statusCode = nsError.code
-            
-            self.reconnectCount += 1
-            self.lastErrorTime = Date().timeIntervalSince1970 * 1000
-            self.lastErrorCode = "\(nsError.domain)(\(statusCode))"
+    // EventSource callback handling is done via SseHandler class below.
 
-            let isFatalError = (statusCode == 401 || statusCode == 403 || statusCode == 400)
-            if isFatalError {
-                self.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Fatal Error (\(statusCode)). Stopping."))
-                self.stop()
-                return
-            }
-
-            let retryAfterSeconds = self.extractRetryAfterSeconds(error: error)
-            if (statusCode == 429 || statusCode == 503), let delay = retryAfterSeconds {
-                let jitter = Double.random(in: 0.5...2.0)
-                let totalDelay = delay + jitter
-                self.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Retry-After received (\(statusCode))"))
-                self.scheduleAutomaticReconnectWithFixedDelay(totalDelay)
-                return
-            }
-
-            if statusCode == 429 {
-                self.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Rate Limited (429) without Retry-After. Stopping."))
-                self.stop()
-                return
-            }
-            
-            self.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: error.localizedDescription))
-            self.scheduleAutomaticReconnect(isError: true)
-        }
-    }
     
     private func scheduleAutomaticReconnectWithFixedDelay(_ delay: TimeInterval) {
         dispatchPrecondition(condition: .onQueue(sseQueue))
@@ -349,7 +283,8 @@ class NitroSse: HybridNitroSseSpec {
         
         func onOpened() {
             guard let parent = parent, source === parent.eventSource else { return }
-            parent.sseQueue.async {
+            parent.sseQueue.async { [weak parent] in
+                guard let parent = parent else { return }
                 parent.backoffCounter = 0
                 parent.pushEventToBuffer(SseEvent(type: .open, data: nil, id: nil, event: nil, message: nil))
             }
@@ -357,7 +292,8 @@ class NitroSse: HybridNitroSseSpec {
         
         func onClosed() {
             guard let parent = parent, source === parent.eventSource else { return }
-            parent.sseQueue.async {
+            parent.sseQueue.async { [weak parent] in
+                guard let parent = parent else { return }
                 if parent.isRunning {
                     parent.scheduleAutomaticReconnect(isError: false)
                 }
@@ -366,10 +302,15 @@ class NitroSse: HybridNitroSseSpec {
         
         func onMessage(eventType: String, messageEvent: MessageEvent) {
             guard let parent = parent, source === parent.eventSource else { return }
-            parent.sseQueue.async {
+            parent.sseQueue.async { [weak parent] in
+                guard let parent = parent else { return }
                 let encodedDataSize = Double(messageEvent.data.utf8.count)
                 let metadataSize = Double(eventType.utf8.count) + Double((messageEvent.lastEventId).utf8.count)
                 parent.totalBytesReceived += encodedDataSize + metadataSize
+                
+                if !messageEvent.lastEventId.isEmpty {
+                    parent.lastProcessedId = messageEvent.lastEventId
+                }
                 
                 parent.pushEventToBuffer(SseEvent(type: .message, data: messageEvent.data, id: messageEvent.lastEventId, event: eventType, message: nil))
             }
@@ -377,7 +318,8 @@ class NitroSse: HybridNitroSseSpec {
         
         func onComment(comment: String) {
             guard let parent = parent, source === parent.eventSource else { return }
-            parent.sseQueue.async {
+            parent.sseQueue.async { [weak parent] in
+                guard let parent = parent else { return }
                 parent.totalBytesReceived += Double(comment.utf8.count)
                 parent.pushEventToBuffer(SseEvent(type: .heartbeat, data: nil, id: nil, event: nil, message: comment))
             }
@@ -385,8 +327,8 @@ class NitroSse: HybridNitroSseSpec {
         
         func onError(error: Error) {
             guard let parent = parent, source === parent.eventSource else { return }
-            parent.sseQueue.async {
-                guard parent.isRunning else { return }
+            parent.sseQueue.async { [weak parent] in
+                guard let parent = parent, parent.isRunning else { return }
                 let nsError = error as NSError
                 let statusCode = nsError.code
                 

@@ -38,9 +38,9 @@ import kotlin.random.Random
  */
 @DoNotStrip
 class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
-    private var client: OkHttpClient? = null
-    private var eventSource: EventSource? = null
-    private var config: SseConfig? = null
+    @Volatile private var client: OkHttpClient? = null
+    @Volatile private var eventSource: EventSource? = null
+    @Volatile private var config: SseConfig? = null
     private var onEventsCallback: ((events: Array<SseEvent>) -> Unit)? = null
     
     private val isRunning = AtomicBoolean(false)
@@ -85,18 +85,24 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                             override fun contentType() = responseBody.contentType()
                             override fun contentLength() = responseBody.contentLength()
                             override fun source() = (object : okio.ForwardingSource(responseBody.source()) {
+                                private var isAtStartOfLine = true
+
                                 override fun read(sink: okio.Buffer, byteCount: Long): Long {
+                                    val bufferOffset = sink.size
                                     val bytesRead = super.read(sink, byteCount)
                                     if (bytesRead != -1L) {
                                         totalBytesReceived.addAndGet(bytesRead)
                                         
                                         try {
-                                            val snapshot = sink.snapshot()
-                                            if (snapshot.size > 0 && snapshot.get(0) == ':'.toByte()) {
-                                                pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, "keep-alive"))
+                                            for (i in 0 until bytesRead) {
+                                                val b = sink.get(bufferOffset + i)
+                                                if (isAtStartOfLine && b == ':'.toByte()) {
+                                                    pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, "keep-alive"))
+                                                }
+                                                isAtStartOfLine = (b == '\n'.toByte() || b == '\r'.toByte())
                                             }
                                         } catch (e: Exception) {
-                                            // Silent catch for interceptor parsing
+                                            // Silent catch to prevent interceptor failure
                                         }
                                     }
                                     return bytesRead
@@ -179,9 +185,11 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     }
 
     override fun updateHeaders(headers: Map<String, String>) {
-        this.config?.let {
-            this.config = it.copy(headers = headers)
-            Log.d(TAG, "Headers updated for subsequent connections")
+        synchronized(this) {
+            this.config?.let {
+                this.config = it.copy(headers = headers)
+                Log.d(TAG, "Headers updated for subsequent connections")
+            }
         }
     }
 
@@ -202,25 +210,31 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     }
 
     private fun performConnection() {
-        if (!isRunning.get()) return
+        val currentConfig: SseConfig
+        val currentLastId: String?
+        synchronized(this) {
+            if (!isRunning.get() || config == null) return
+            currentConfig = config!!
+            currentLastId = lastProcessedId
+        }
         
         // Cancel existing event source if any before starting new one
         eventSource?.cancel()
         eventSource = null
         
         val requestBuilder = Request.Builder()
-            .url(config!!.url)
+            .url(currentConfig.url)
             .header("Accept", "text/event-stream")
             .header("Cache-Control", "no-cache")
         
-        lastProcessedId?.let { 
+        currentLastId?.let { 
             if (it.isNotEmpty()) requestBuilder.header("Last-Event-ID", it) 
         }
 
-        config!!.headers?.forEach { (k, v) -> requestBuilder.header(k, v) }
+        currentConfig.headers?.forEach { (k, v) -> requestBuilder.header(k, v) }
 
-        if (config!!.method == HttpMethod.POST) {
-            val body = config!!.body?.toRequestBody("application/json".toMediaType()) ?: "".toRequestBody()
+        if (currentConfig.method == HttpMethod.POST) {
+            val body = currentConfig.body?.toRequestBody("application/json".toMediaType()) ?: "".toRequestBody()
             requestBuilder.post(body)
         }
 
@@ -248,6 +262,9 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
 
         override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
             if (eventSource != this@NitroSse.eventSource) return
+            if (!id.isNullOrEmpty()) {
+                this@NitroSse.lastProcessedId = id
+            }
             pushEventToBuffer(SseEvent(SseEventType.MESSAGE, data, id, type, null))
         }
 

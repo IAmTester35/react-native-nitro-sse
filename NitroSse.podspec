@@ -14,10 +14,14 @@ Pod::Spec.new do |s|
   s.source       = { :git => "https://github.com/IAmTester35/react-native-nitro-sse.git", :tag => "#{s.version}" }
 
   s.source_files = [
-    "ios/**/*.{swift}",
-    "ios/**/*.{m,mm}",
+    "ios/*.{swift}",
+    "ios/*.{m,mm}",
     "cpp/**/*.{hpp,cpp}",
   ]
+
+  s.test_spec 'Tests' do |test_spec|
+    test_spec.source_files = 'ios/Tests/**/*.{swift}'
+  end
 
   s.dependency 'React-jsi'
   s.dependency 'React-callinvoker'

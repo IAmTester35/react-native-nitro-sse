@@ -38,7 +38,38 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - NitroSse (1.2.0):
+  - NitroSse (1.3.0):
+    - boost
+    - DoubleConversion
+    - fast_float
+    - fmt
+    - glog
+    - hermes-engine
+    - LDSwiftEventSource
+    - NitroModules
+    - RCT-Folly
+    - RCT-Folly/Fabric
+    - RCTRequired
+    - RCTTypeSafety
+    - React-callinvoker
+    - React-Core
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-ImageManager
+    - React-jsi
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - SocketRocket
+    - Yoga
+  - NitroSse/Tests (1.3.0):
     - boost
     - DoubleConversion
     - fast_float
@@ -2523,6 +2554,7 @@ DEPENDENCIES:
   - hermes-engine (from `../node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec`)
   - NitroModules (from `../node_modules/react-native-nitro-modules`)
   - NitroSse (from `../..`)
+  - NitroSse/Tests (from `../..`)
   - RCT-Folly (from `../node_modules/react-native/third-party-podspecs/RCT-Folly.podspec`)
   - RCTDeprecation (from `../node_modules/react-native/ReactApple/Libraries/RCTFoundation/RCTDeprecation`)
   - RCTRequired (from `../node_modules/react-native/Libraries/Required`)
@@ -2772,7 +2804,7 @@ SPEC CHECKSUMS:
   hermes-engine: 3deeb8b0e433cfec71fc6c1d99b1768b4efd453a
   LDSwiftEventSource: b0826ca826ca890609a9833a05cae1f357fd3b99
   NitroModules: b690154b426da9fc71e41cc9eb77de6da042c352
-  NitroSse: 61412ac9438601d8a881ae5bb0f68122d9c6eeb8
+  NitroSse: 9c63272b3dd6f8f7e5bafcca92e1ac759ef9f785
   RCT-Folly: 846fda9475e61ec7bcbf8a3fe81edfcaeb090669
   RCTDeprecation: 2b70c6e3abe00396cefd8913efbf6a2db01a2b36
   RCTRequired: f3540eee8094231581d40c5c6d41b0f170237a81
@@ -2845,6 +2877,6 @@ SPEC CHECKSUMS:
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   Yoga: 6ca93c8c13f56baeec55eb608577619b17a4d64e
 
-PODFILE CHECKSUM: 6237be72294dbe5890fc43bcecdcc5da862a977f
+PODFILE CHECKSUM: 6e7751a369db09dfac0c26550dfbcab56cfeec4f
 
-COCOAPODS: 1.15.2
+COCOAPODS: 1.16.2

@@ -67,6 +67,8 @@ export default function App() {
   // --- Configuration ---
   const [url, setUrl] = useState(DEFAULT_URL);
   const [batching, setBatching] = useState('1000');
+  const [headersJson, setHeadersJson] = useState('{"X-Custom": "Nitro"}');
+  const [manualId, setManualId] = useState('');
   const [showConfig, setShowConfig] = useState(false);
 
   // --- Refs ---
@@ -181,6 +183,25 @@ export default function App() {
     setShowConfig(!showConfig);
   };
 
+  const applyCustomHeaders = () => {
+    if (sseRef.current) {
+      try {
+        const headers = JSON.parse(headersJson);
+        sseRef.current.updateHeaders(headers);
+        addLog('system', undefined, 'Headers updated for next reconnect');
+      } catch {
+        addLog('error', undefined, 'Invalid JSON for headers');
+      }
+    }
+  };
+
+  const applyManualId = () => {
+    if (sseRef.current) {
+      sseRef.current.setLastProcessedId(manualId);
+      addLog('system', undefined, `Last ID set to: ${manualId}`);
+    }
+  };
+
   useEffect(() => {
     return () => {
       if (statsInterval.current) clearInterval(statsInterval.current as any);
@@ -282,7 +303,7 @@ export default function App() {
           />
 
           <View style={styles.inputRow}>
-            <View style={{ flex: 1 }}>
+            <View style={styles.flex1}>
               <Text style={styles.inputLabel}>BATCHING (MS)</Text>
               <TextInput
                 style={styles.input}
@@ -293,6 +314,44 @@ export default function App() {
                 placeholderTextColor={COLORS.textDim}
               />
             </View>
+          </View>
+
+          <View style={styles.divider} />
+
+          <Text style={styles.inputLabel}>CUSTOM HEADERS (JSON)</Text>
+          <View style={styles.inputWithAction}>
+            <TextInput
+              style={styles.inputFlex}
+              value={headersJson}
+              onChangeText={setHeadersJson}
+              placeholder='{"Key": "Value"}'
+              placeholderTextColor={COLORS.textDim}
+            />
+            <TouchableOpacity
+              style={styles.inlineActionButton}
+              onPress={applyCustomHeaders}
+              disabled={!isConnected}
+            >
+              <Text style={styles.inlineActionText}>SET</Text>
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.inputLabelMargin}>MANUAL LAST-EVENT-ID</Text>
+          <View style={styles.inputWithAction}>
+            <TextInput
+              style={styles.inputFlex}
+              value={manualId}
+              onChangeText={setManualId}
+              placeholder="id..."
+              placeholderTextColor={COLORS.textDim}
+            />
+            <TouchableOpacity
+              style={styles.inlineActionButton}
+              onPress={applyManualId}
+              disabled={!isConnected}
+            >
+              <Text style={styles.inlineActionText}>SET</Text>
+            </TouchableOpacity>
           </View>
         </View>
       )}
@@ -602,5 +661,51 @@ const styles = StyleSheet.create({
   emptyText: {
     color: COLORS.textDim,
     fontSize: 12,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: COLORS.border,
+    marginVertical: 15,
+  },
+  inputWithAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  inlineActionButton: {
+    backgroundColor: COLORS.primary + '20',
+    paddingHorizontal: 12,
+    height: 40,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.primary + '40',
+  },
+  inlineActionText: {
+    color: COLORS.primary,
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
+  inputFlex: {
+    backgroundColor: COLORS.background,
+    borderRadius: 8,
+    padding: 10,
+    color: COLORS.text,
+    fontSize: 13,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    flex: 1,
+    marginBottom: 0,
+  },
+  inputLabelMargin: {
+    color: COLORS.primary,
+    fontSize: 9,
+    fontWeight: 'bold',
+    marginBottom: 6,
+    marginTop: 12,
+  },
+  flex1: {
+    flex: 1,
   },
 });
