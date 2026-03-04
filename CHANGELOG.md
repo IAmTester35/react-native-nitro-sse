@@ -6,6 +6,10 @@
 
 *   **Dependency Update**: Updated `react-native-nitro-modules` and `nitrogen` to `0.34.1`.
 
+### Fixes
+
+*   **Android**: Fixed a critical memory leak by properly removing the lifecycle observer and shutting down the background handler thread when the module is disposed.
+
 ## 1.2.1 (2026-02-27)
 
 ### Fixes

@@ -330,4 +330,19 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         }
         isFlushPending.set(false)
     }
+
+    override fun dispose() {
+        Log.d(TAG, "Disposing NitroSse instance and cleaning up resources...")
+        stop()
+        if (hasSubscribedToLifecycle) {
+            Handler(Looper.getMainLooper()).post {
+                ProcessLifecycleOwner.get().lifecycle.removeObserver(this@NitroSse)
+            }
+            hasSubscribedToLifecycle = false
+        }
+        sseHandlerThread?.quitSafely()
+        sseHandlerThread = null
+        sseHandler = null
+        super.dispose()
+    }
 }
