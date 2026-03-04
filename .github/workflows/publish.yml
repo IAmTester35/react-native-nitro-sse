@@ -21,6 +21,8 @@ jobs:
 
       - name: Setup
         uses: ./.github/actions/setup
+        with:
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Check if version changed
         id: check
