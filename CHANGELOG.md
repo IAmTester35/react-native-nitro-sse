@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.4 (2026-03-04)
+
+### Features
+
+*   **CI/CD**: Improved release security by making the `Continuous Release` workflow dependent on `CI` workflow success.
+
+### Fixes
+
+*   **Android**: Fixed a fragile heartbeat detection logic in the network interceptor by implementing a stateful scanner for SSE comments.
+*   **Android**: Resolved race conditions in `updateHeaders` and `performConnection` using synchronization and volatile fields.
+*   **iOS**: Major refactoring of `NitroSse.swift` to remove dead code and improve thread-safety in event handlers using weak references.
+*   **Performance**: Ensured `Last-Event-ID` is correctly persisted on both Android and iOS to prevent data loss during automatic reconnections.
+
 ## 1.2.3 (2026-03-04)
 
 ### Fixes
