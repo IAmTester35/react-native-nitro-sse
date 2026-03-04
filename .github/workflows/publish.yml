@@ -27,12 +27,17 @@ jobs:
       - name: Check if version changed
         id: check
         run: |
+          NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
-          if [ $(git tag -l "v$VERSION") ]; then
-            echo "Version $VERSION already exists as a tag. Skipping release."
+          
+          # Check if this specific version is already published
+          PUBLISHED_VERSION=$(npm view "$NAME@$VERSION" version 2>/dev/null || echo "")
+          
+          if [ "$PUBLISHED_VERSION" = "$VERSION" ]; then
+            echo "Version $VERSION is already published on npm. Skipping."
             echo "changed=false" >> $GITHUB_OUTPUT
           else
-            echo "New version detected: $VERSION"
+            echo "Version $VERSION not found on npm. Proceeding to publish."
             echo "changed=true" >> $GITHUB_OUTPUT
             echo "version=$VERSION" >> $GITHUB_OUTPUT
           fi
