@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.1 (2026-03-05)
+
+### Fixes
+
+*   **iOS**: Fixed a critical build error where `NitroSseNetworkInspector.h` was not found in the Umbrella Header when using modular headers (CocoaPods). Added the header to `s.source_files` in the podspec to ensure correct visibility.
+
 ## 1.4.0 (2026-03-05)
 
 ### Features

@@ -14,9 +14,8 @@ Pod::Spec.new do |s|
   s.source       = { :git => "https://github.com/IAmTester35/react-native-nitro-sse.git", :tag => "#{s.version}" }
 
   s.source_files = [
-    "ios/*.{swift}",
-    "ios/*.{m,mm}",
-    "cpp/**/*.{hpp,cpp}",
+    "ios/*.{h,m,mm,swift}",
+    "cpp/**/*.{h,hpp,cpp}",
   ]
   
   s.public_header_files = [
