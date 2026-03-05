@@ -25,7 +25,15 @@
                     headers:(NSDictionary<NSString *, NSString *> *)headers {
 #ifdef HAS_NETWORK_REPORTER
     if (requestId) {
-        [RCTInspectorNetworkReporter reportResponseStart:requestId response:response statusCode:(int)statusCode headers:headers];
+        NSURLResponse *finalResponse = response;
+        if (finalResponse == nil) {
+            // Provide a dummy response to avoid crash in internal RN C++ layer
+            finalResponse = [[NSURLResponse alloc] initWithURL:[NSURL URLWithString:@""]
+                                                      MIMEType:@"text/event-stream"
+                                         expectedContentLength:-1
+                                              textEncodingName:nil];
+        }
+        [RCTInspectorNetworkReporter reportResponseStart:requestId response:finalResponse statusCode:(int)statusCode headers:headers];
     }
 #endif
 }

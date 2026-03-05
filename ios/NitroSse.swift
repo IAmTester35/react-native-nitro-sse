@@ -134,7 +134,7 @@ class NitroSse: HybridNitroSseSpec {
 
     func updateHeaders(headers: [String: String]) throws {
         sseQueue.async {
-            guard var currentConfig = self.config else { return }
+            guard let currentConfig = self.config else { return }
             self.config = SseConfig(
                 url: currentConfig.url,
                 method: currentConfig.method,
