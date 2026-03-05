@@ -20,6 +20,7 @@
 }
 
 + (void)reportResponseStart:(nullable NSString *)requestId
+                        url:(nullable NSString *)url
                    response:(nullable NSURLResponse *)response
                  statusCode:(NSInteger)statusCode
                     headers:(NSDictionary<NSString *, NSString *> *)headers {
@@ -27,25 +28,20 @@
     if (requestId) {
         NSURLResponse *finalResponse = response;
         if (finalResponse == nil) {
-            // Provide a dummy response to avoid crash in internal RN C++ layer
-            finalResponse = [[NSURLResponse alloc] initWithURL:[NSURL URLWithString:@""]
-                                                      MIMEType:@"text/event-stream"
-                                         expectedContentLength:-1
-                                              textEncodingName:nil];
-        }
-        [RCTInspectorNetworkReporter reportResponseStart:requestId response:finalResponse statusCode:(int)statusCode headers:headers];
-    }
-#endif
-}
-
-+ (void)reportDataReceived:(nullable NSString *)requestId
-                      data:(NSData *)data {
-#ifdef HAS_NETWORK_REPORTER
-    if (requestId && data) {
-        [RCTInspectorNetworkReporter reportDataReceived:requestId data:data];
-        NSString *dataString = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-        if (dataString) {
-            [RCTInspectorNetworkReporter maybeStoreResponseBodyIncremental:requestId data:dataString];
+            // Reconstruct a dummy response using standard SSE headers if none provided
+            NSMutableDictionary *mergedHeaders = [headers mutableCopy] ?: [NSMutableDictionary new];
+            if (!mergedHeaders[@"Content-Type"]) mergedHeaders[@"Content-Type"] = @"text/event-stream";
+            if (!mergedHeaders[@"Cache-Control"]) mergedHeaders[@"Cache-Control"] = @"no-cache";
+            if (!mergedHeaders[@"Connection"]) mergedHeaders[@"Connection"] = @"keep-alive";
+            
+            finalResponse = [[NSHTTPURLResponse alloc] initWithURL:[NSURL URLWithString:url ?: @"http://sse-stream/"]
+                                                        statusCode:statusCode
+                                                       HTTPVersion:@"HTTP/1.1"
+                                                      headerFields:mergedHeaders];
+            // Pass the merged headers to the reporter as well
+            [RCTInspectorNetworkReporter reportResponseStart:requestId response:finalResponse statusCode:(int)statusCode headers:mergedHeaders];
+        } else {
+            [RCTInspectorNetworkReporter reportResponseStart:requestId response:finalResponse statusCode:(int)statusCode headers:headers ?: @{}];
         }
     }
 #endif

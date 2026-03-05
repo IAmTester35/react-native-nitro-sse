@@ -72,21 +72,6 @@ object NetworkInspector {
         }
     }
 
-    fun reportDataReceived(requestId: String, data: String) {
-        if (reporterClass == null || !isEnabled()) return
-        try {
-            // Report size to CDP
-            val reportDataMethod = reporterClass?.getDeclaredMethod("reportDataReceived", String::class.java, String::class.java)
-            reportDataMethod?.invoke(null, requestId, data)
-            
-            // Store data for preview
-            val storeDataMethod = reporterClass?.getDeclaredMethod("maybeStoreResponseBodyIncremental", String::class.java, String::class.java)
-            storeDataMethod?.invoke(null, requestId, data)
-        } catch (e: Exception) {
-            // Silent catch to prevent overhead
-        }
-    }
-
     fun reportResponseEnd(requestId: String, totalBytes: Long) {
         if (reporterClass == null || !isEnabled()) return
         try {

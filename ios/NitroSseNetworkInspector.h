@@ -8,12 +8,10 @@ NS_ASSUME_NONNULL_BEGIN
                         encodedDataLength:(NSInteger)encodedDataLength;
 
 + (void)reportResponseStart:(nullable NSString *)requestId
+                        url:(nullable NSString *)url
                    response:(nullable NSURLResponse *)response
                  statusCode:(NSInteger)statusCode
                     headers:(NSDictionary<NSString *, NSString *> *)headers;
-
-+ (void)reportDataReceived:(nullable NSString *)requestId
-                      data:(NSData *)data;
 
 + (void)reportResponseEnd:(nullable NSString *)requestId
         encodedDataLength:(NSInteger)encodedDataLength;

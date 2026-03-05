@@ -10,9 +10,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSources
 import okhttp3.sse.EventSourceListener
-import okio.Buffer
-import okio.ForwardingSource
-import okio.buffer
+import okio.*
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
@@ -86,10 +84,9 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                     val response = chain.proceed(request)
                     
                     rid?.let { 
-                        // Report response start from interceptor for better accuracy
                         NetworkInspector.reportResponseStart(it, request, response)
                     }
-
+                    
                     val responseBody = response.body
                     if (responseBody != null) {
                         val countingBody = object : ResponseBody() {
@@ -104,23 +101,14 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                                     if (bytesRead != -1L) {
                                         totalBytesReceived.addAndGet(bytesRead)
                                         
-                                        rid?.let { reqId ->
-                                            try {
-                                                // Report raw bytes to DevTools so it can parse EventStream tab correctly
-                                                val data = sink.clone().skip(bufferOffset).readUtf8()
-                                                NetworkInspector.reportDataReceived(reqId, data)
-                                            } catch (e: Exception) {
-                                                // Silent
-                                            }
-                                        }
 
                                         try {
                                             for (i in 0 until bytesRead) {
                                                 val b = sink.get(bufferOffset + i)
-                                                if (isAtStartOfLine && b == ':'.toByte()) {
+                                                if (isAtStartOfLine && b == ':'.code.toByte()) {
                                                     pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, "keep-alive"))
                                                 }
-                                                isAtStartOfLine = (b == '\n'.toByte() || b == '\r'.toByte())
+                                                isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
                                             }
                                         } catch (e: Exception) {
                                             // Silent
@@ -240,14 +228,15 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             currentLastId = lastProcessedId
         }
         
-        // Cancel existing event source if any before starting new one
-        eventSource?.cancel()
-        eventSource = null
-        
         // Report end for previous request if it was running
         requestId?.let { 
             NetworkInspector.reportResponseEnd(it, totalBytesReceived.getAndSet(0))
+            this.requestId = null
         }
+        
+        // Cancel existing event source if any before starting new one
+        eventSource?.cancel()
+        eventSource = null
         
         val newRequestId = UUID.randomUUID().toString()
         this.requestId = newRequestId

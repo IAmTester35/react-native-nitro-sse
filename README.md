@@ -12,7 +12,7 @@ Unlike traditional EventSource libraries that run on the JS thread or use the le
 -   **🌊 Backpressure Handling**: Advanced **Batching** mechanism aggregates messages and employs **Tail Drop** strategies to protect the UI thread from freezing during data surges.
 -   **🔋 Mobile-First Architecture**: Automatically hibernates when the app enters the background and seamlessly reconnects upon foregrounding to conserve battery.
 -   **💓 Heartbeat Detection**: Native-side detection of keep-alive signals (comments) to maintain a reliable connection watchdog.
--   **🔍 DevTools Integration**: Plug-and-play support for **React Native 0.83+ DevTools Network Tab**. Monitor real-time streaming data, headers, and status codes directly in the official desktop debugger.
+-   **🔍 DevTools Integration**: Plug-and-play support for **React Native 0.83+ DevTools Network Tab**. Monitor connection status, request/response headers, and timing directly in the official desktop debugger.
 -   **🛠️ Full Protocol Support**: Comprehensive support for GET/POST methods and dynamic header updates.
 
 ---

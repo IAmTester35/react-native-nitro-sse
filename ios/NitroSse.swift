@@ -32,8 +32,8 @@ class NitroSse: HybridNitroSseSpec {
     private var lastErrorTime: Double? = nil
     private var lastErrorCode: String? = nil
     
-    private let defaultRetryDelay: TimeInterval = 2.0
-    private let baseBackoffDelay: TimeInterval = 1.0
+    private let defaultRetryDelay: TimeInterval = 3.0
+    private let baseBackoffDelay: TimeInterval = 2.0
     private let maxBackoffDelay: TimeInterval = 30.0
     
     private let sseQueue = DispatchQueue(label: "com.margelo.nitro.sse", qos: .utility)
@@ -172,7 +172,6 @@ class NitroSse: HybridNitroSseSpec {
         dispatchPrecondition(condition: .onQueue(sseQueue))
         guard isRunning, let config = config, let url = URL(string: config.url) else { return }
         
-        // Ensure any previous request is reported as finished before starting new one
         if let rid = self.requestId {
             NitroSseNetworkInspector.reportResponseEnd(rid, encodedDataLength: Int(self.totalBytesReceived))
             self.requestId = nil
@@ -286,7 +285,7 @@ class NitroSse: HybridNitroSseSpec {
         } else {
             delay = defaultRetryDelay * (0.8 + Double.random(in: 0...0.4))
         }
-        let safeDelay = max(delay, 1.0)
+        let safeDelay = max(delay, 2.0)
         let currentSource = self.eventSource
         eventSource?.stop()
         eventSource = nil
@@ -309,9 +308,7 @@ class NitroSse: HybridNitroSseSpec {
             parent.sseQueue.async { [weak parent] in
                 guard let parent = parent else { return }
                 parent.backoffCounter = 0
-                // Explicitly report Content-Type to fix iOS "octet-stream" issue in DevTools
-                let headers = ["Content-Type": "text/event-stream"]
-                NitroSseNetworkInspector.reportResponseStart(parent.requestId, response: nil, statusCode: 200, headers: headers)
+                NitroSseNetworkInspector.reportResponseStart(parent.requestId, url: parent.config?.url, response: nil, statusCode: 200, headers: [:])
                 parent.pushEventToBuffer(SseEvent(type: .open, data: nil, id: nil, event: nil, message: nil))
             }
         }
@@ -342,16 +339,6 @@ class NitroSse: HybridNitroSseSpec {
                     parent.lastProcessedId = messageEvent.lastEventId
                 }
                 
-                // Reconstruct SSE lines so DevTools "EventStream" tab can parse data
-                var rawLine = ""
-                if !messageEvent.lastEventId.isEmpty { rawLine += "id: \(messageEvent.lastEventId)\n" }
-                if eventType != "message" { rawLine += "event: \(eventType)\n" }
-                rawLine += "data: \(messageEvent.data)\n\n"
-                
-                if let data = rawLine.data(using: .utf8) {
-                    NitroSseNetworkInspector.reportDataReceived(parent.requestId, data: data)
-                }
-                
                 parent.pushEventToBuffer(SseEvent(type: .message, data: messageEvent.data, id: messageEvent.lastEventId, event: eventType, message: nil))
             }
         }
@@ -361,11 +348,6 @@ class NitroSse: HybridNitroSseSpec {
             parent.sseQueue.async { [weak parent] in
                 guard let parent = parent else { return }
                 parent.totalBytesReceived += Double(comment.utf8.count)
-                
-                let rawComment = ": \(comment)\n\n"
-                if let data = rawComment.data(using: .utf8) {
-                    NitroSseNetworkInspector.reportDataReceived(parent.requestId, data: data)
-                }
                 parent.pushEventToBuffer(SseEvent(type: .heartbeat, data: nil, id: nil, event: nil, message: comment))
             }
         }
