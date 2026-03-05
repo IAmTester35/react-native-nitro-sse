@@ -63,8 +63,8 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     
     private var hasSubscribedToLifecycle = false
 
-    private val defaultRetryDelayMs = 3000L
-    private val baseBackoffDelayMs = 2000L
+    private val defaultRetryDelayMs = 2000L
+    private val baseBackoffDelayMs = 1000L
     private val maxBackoffDelayMs = 30000L
 
     companion object {
@@ -80,7 +80,16 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(35, TimeUnit.SECONDS)
                 .addNetworkInterceptor { chain ->
-                    val response = chain.proceed(chain.request())
+                    val request = chain.request()
+                    val rid = request.tag(String::class.java)
+                    
+                    val response = chain.proceed(request)
+                    
+                    rid?.let { 
+                        // Report response start from interceptor for better accuracy
+                        NetworkInspector.reportResponseStart(it, request, response)
+                    }
+
                     val responseBody = response.body
                     if (responseBody != null) {
                         val countingBody = object : ResponseBody() {
@@ -95,6 +104,16 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                                     if (bytesRead != -1L) {
                                         totalBytesReceived.addAndGet(bytesRead)
                                         
+                                        rid?.let { reqId ->
+                                            try {
+                                                // Report raw bytes to DevTools so it can parse EventStream tab correctly
+                                                val data = sink.clone().skip(bufferOffset).readUtf8()
+                                                NetworkInspector.reportDataReceived(reqId, data)
+                                            } catch (e: Exception) {
+                                                // Silent
+                                            }
+                                        }
+
                                         try {
                                             for (i in 0 until bytesRead) {
                                                 val b = sink.get(bufferOffset + i)
@@ -104,7 +123,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                                                 isAtStartOfLine = (b == '\n'.toByte() || b == '\r'.toByte())
                                             }
                                         } catch (e: Exception) {
-                                            // Silent catch to prevent interceptor failure
+                                            // Silent
                                         }
                                     }
                                     return bytesRead
@@ -249,6 +268,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             requestBuilder.post(body)
         }
 
+        requestBuilder.tag(String::class.java, newRequestId)
         val request = requestBuilder.build()
         NetworkInspector.reportRequestStart(newRequestId, request)
         
@@ -271,7 +291,6 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         override fun onOpen(eventSource: EventSource, response: Response) {
             if (eventSource != this@NitroSse.eventSource) return
             backoffCounter = 0
-            requestId?.let { NetworkInspector.reportResponseStart(it, response.request, response) }
             pushEventToBuffer(SseEvent(SseEventType.OPEN, null, null, null, null))
         }
 
@@ -280,7 +299,6 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             if (!id.isNullOrEmpty()) {
                 this@NitroSse.lastProcessedId = id
             }
-            requestId?.let { NetworkInspector.reportDataReceived(it, data) }
             pushEventToBuffer(SseEvent(SseEventType.MESSAGE, data, id, type, null))
         }
 
