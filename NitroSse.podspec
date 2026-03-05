@@ -18,6 +18,10 @@ Pod::Spec.new do |s|
     "ios/*.{m,mm}",
     "cpp/**/*.{hpp,cpp}",
   ]
+  
+  s.public_header_files = [
+    "ios/NitroSseNetworkInspector.h",
+  ]
 
   s.test_spec 'Tests' do |test_spec|
     test_spec.source_files = 'ios/Tests/**/*.{swift}'

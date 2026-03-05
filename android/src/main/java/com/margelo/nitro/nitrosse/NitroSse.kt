@@ -10,15 +10,14 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSources
 import okhttp3.sse.EventSourceListener
-import okio.Buffer
-import okio.ForwardingSource
-import okio.buffer
+import okio.*
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.UUID
 import kotlin.random.Random
 
 /**
@@ -41,6 +40,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     @Volatile private var client: OkHttpClient? = null
     @Volatile private var eventSource: EventSource? = null
     @Volatile private var config: SseConfig? = null
+    @Volatile private var requestId: String? = null
     private var onEventsCallback: ((events: Array<SseEvent>) -> Unit)? = null
     
     private val isRunning = AtomicBoolean(false)
@@ -61,8 +61,8 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     
     private var hasSubscribedToLifecycle = false
 
-    private val defaultRetryDelayMs = 3000L
-    private val baseBackoffDelayMs = 2000L
+    private val defaultRetryDelayMs = 2000L
+    private val baseBackoffDelayMs = 1000L
     private val maxBackoffDelayMs = 30000L
 
     companion object {
@@ -78,7 +78,15 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(35, TimeUnit.SECONDS)
                 .addNetworkInterceptor { chain ->
-                    val response = chain.proceed(chain.request())
+                    val request = chain.request()
+                    val rid = request.tag(String::class.java)
+                    
+                    val response = chain.proceed(request)
+                    
+                    rid?.let { 
+                        NetworkInspector.reportResponseStart(it, request, response)
+                    }
+                    
                     val responseBody = response.body
                     if (responseBody != null) {
                         val countingBody = object : ResponseBody() {
@@ -93,16 +101,17 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                                     if (bytesRead != -1L) {
                                         totalBytesReceived.addAndGet(bytesRead)
                                         
+
                                         try {
                                             for (i in 0 until bytesRead) {
                                                 val b = sink.get(bufferOffset + i)
-                                                if (isAtStartOfLine && b == ':'.toByte()) {
+                                                if (isAtStartOfLine && b == ':'.code.toByte()) {
                                                     pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, "keep-alive"))
                                                 }
-                                                isAtStartOfLine = (b == '\n'.toByte() || b == '\r'.toByte())
+                                                isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
                                             }
                                         } catch (e: Exception) {
-                                            // Silent catch to prevent interceptor failure
+                                            // Silent
                                         }
                                     }
                                     return bytesRead
@@ -206,6 +215,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         if (config == null || isRunning.get()) return
         isRunning.set(true)
         backoffCounter = 0
+        requestId = null
         sseHandler?.post { performConnection() }
     }
 
@@ -218,9 +228,18 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             currentLastId = lastProcessedId
         }
         
+        // Report end for previous request if it was running
+        requestId?.let { 
+            NetworkInspector.reportResponseEnd(it, totalBytesReceived.getAndSet(0))
+            this.requestId = null
+        }
+        
         // Cancel existing event source if any before starting new one
         eventSource?.cancel()
         eventSource = null
+        
+        val newRequestId = UUID.randomUUID().toString()
+        this.requestId = newRequestId
         
         val requestBuilder = Request.Builder()
             .url(currentConfig.url)
@@ -238,7 +257,11 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             requestBuilder.post(body)
         }
 
-        eventSource = EventSources.createFactory(client!!).newEventSource(requestBuilder.build(), sseListener)
+        requestBuilder.tag(String::class.java, newRequestId)
+        val request = requestBuilder.build()
+        NetworkInspector.reportRequestStart(newRequestId, request)
+        
+        eventSource = EventSources.createFactory(client!!).newEventSource(request, sseListener)
     }
 
     private fun extractRetryAfterMillis(response: Response?): Long? {
@@ -277,6 +300,8 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             reconnectCount++
             lastErrorTime = System.currentTimeMillis().toDouble()
             lastErrorCode = t?.javaClass?.simpleName ?: statusCode.toString()
+            
+            requestId?.let { NetworkInspector.reportRequestFailed(it, false) }
 
             val isFatal = (statusCode == 401 || statusCode == 403 || statusCode == 400)
             if (isFatal) {
@@ -317,6 +342,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         override fun onClosed(eventSource: EventSource) {
             if (eventSource != this@NitroSse.eventSource) return
             if (isRunning.get()) {
+                requestId?.let { NetworkInspector.reportResponseEnd(it, totalBytesReceived.get()) }
                 val delay = (defaultRetryDelayMs * (0.8 + Random.nextDouble() * 0.4)).toLong()
                 sseHandler?.postDelayed({ if (isRunning.get() && eventSource == this@NitroSse.eventSource) performConnection() }, delay)
             }
@@ -342,6 +368,10 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         sseHandler?.removeCallbacksAndMessages(null)
         eventSource?.cancel()
         eventSource = null
+        requestId?.let { 
+            NetworkInspector.reportResponseEnd(it, totalBytesReceived.get())
+            requestId = null
+        }
         synchronized(eventBuffer) {
             eventBuffer.clear()
         }
