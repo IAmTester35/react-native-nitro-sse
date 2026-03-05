@@ -28,6 +28,19 @@ npm install react-native-nitro-sse react-native-nitro-modules
 
 ---
 
+## 📊 Compatibility
+
+| react-native-nitro-sse | react-native-nitro-modules |
+| :--------------------- | :------------------------- |
+| **1.4.0**              | **0.35.0**                 |
+| **1.2.2 - 1.3.1**      | **0.34.1**                 |
+| **1.2.0 - 1.2.1**      | **0.34.0**                 |
+| **1.1.0**              | **0.33.9**                 |
+| **1.0.0**              | **0.33.8**                 |
+
+
+---
+
 ## 🚀 Usage
 
 ### 1. Basic Initialization
@@ -35,9 +48,11 @@ npm install react-native-nitro-sse react-native-nitro-modules
 Initialize the module with your endpoint configuration and an event listener.
 
 ```tsx
-import { NitroSseModule } from 'react-native-nitro-sse';
+import { createNitroSse } from 'react-native-nitro-sse';
 
-NitroSseModule.setup(
+const nitroSse = createNitroSse();
+
+nitroSse.setup(
   {
     url: 'https://api.yourserver.com/stream',
     method: 'get',
@@ -61,30 +76,33 @@ NitroSseModule.setup(
 );
 
 // Start the connection
-NitroSseModule.start();
+nitroSse.start();
 
 // Stop the connection when unmounting or no longer needed
-// NitroSseModule.stop();
+// nitroSse.stop();
 ```
+
 
 ### 2. Check Connection Status
 
 You can synchronously check the connection status at any time:
 
 ```tsx
-const connected = NitroSseModule.isConnected();
+const connected = nitroSse.isConnected();
 console.log('Is Connected:', connected);
 ```
+
 
 ### 3. Dynamic Token Updates
 
 When your authentication token expires, update the headers instantly. The native layer will apply these headers to the next automatic reconnection attempt without interrupting the current flow if not necessary.
 
 ```tsx
-NitroSseModule.updateHeaders({
+nitroSse.updateHeaders({
   'Authorization': 'Bearer new-fresh-token',
 });
 ```
+
 
 ---
 
