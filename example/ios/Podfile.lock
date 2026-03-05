@@ -2804,7 +2804,7 @@ SPEC CHECKSUMS:
   hermes-engine: 3deeb8b0e433cfec71fc6c1d99b1768b4efd453a
   LDSwiftEventSource: b0826ca826ca890609a9833a05cae1f357fd3b99
   NitroModules: 1dc73273d6e3aee937eec41ef3ed9470804b9884
-  NitroSse: 94bdda2c80e3cc47a16f6d2bb86340d2075d8079
+  NitroSse: da75d76cb013f7bbac0ab5f3dcc3f30099fec634
   RCT-Folly: 846fda9475e61ec7bcbf8a3fe81edfcaeb090669
   RCTDeprecation: 2b70c6e3abe00396cefd8913efbf6a2db01a2b36
   RCTRequired: f3540eee8094231581d40c5c6d41b0f170237a81

@@ -4,7 +4,12 @@
 
 ### Features
 
+*   **DevTools Integration**: Added support for the **React Native 0.83+ DevTools Network Tab**. SSE connections and events are now visible in the Network tab via native emitting on both Android and iOS. This includes request/response headers, status codes, and real-time data previews.
 *   **Dependency Update**: Updated `react-native-nitro-modules` and `nitrogen` to `0.35.0`.
+
+### Fixes
+
+*   **Android**: Updated native JNI initialization to comply with **Nitro 0.35.0** breaking changes for Kotlin HybridObjects, resolving potential memory leaks and initialization errors.
 
 
 ## 1.3.1 (2026-03-04)

@@ -19,6 +19,7 @@ class NitroSse: HybridNitroSseSpec {
     private var config: SseConfig?
     private var onEventsCallback: ((_ events: [SseEvent]) -> Void)?
     private var isRunning: Bool = false
+    private var requestId: String?
     
     private var eventBuffer: [SseEvent] = []
     private var isFlushPending: Bool = false
@@ -63,6 +64,10 @@ class NitroSse: HybridNitroSseSpec {
             
             self.eventSource?.stop()
             self.eventSource = nil
+            if let rid = self.requestId {
+                NitroSseNetworkInspector.reportResponseEnd(rid, encodedDataLength: Int(self.totalBytesReceived))
+                self.requestId = nil
+            }
             self.isRunning = false
             
             self.cleanupBackgroundTask()
@@ -182,6 +187,10 @@ class NitroSse: HybridNitroSseSpec {
         let es = EventSource(config: esConfig)
         self.eventSource = es
         handler.source = es
+        
+        let request = URLRequest(url: url)
+        self.requestId = NitroSseNetworkInspector.reportRequestStart(request, encodedDataLength: 0)
+        
         es.start()
     }
 
@@ -195,6 +204,10 @@ class NitroSse: HybridNitroSseSpec {
         self.isRunning = false
         self.eventSource?.stop()
         self.eventSource = nil
+        if let rid = self.requestId {
+            NitroSseNetworkInspector.reportResponseEnd(rid, encodedDataLength: Int(self.totalBytesReceived))
+            self.requestId = nil
+        }
         self.backoffCounter = 0
         self.eventBuffer.removeAll()
         self.isFlushPending = false
@@ -212,6 +225,7 @@ class NitroSse: HybridNitroSseSpec {
             self.stopInternal()
             guard !self.isRunning else { return } // Should be false now
             self.isRunning = true
+            self.requestId = nil
             self.establishConnection()
         }
     }
@@ -286,6 +300,7 @@ class NitroSse: HybridNitroSseSpec {
             parent.sseQueue.async { [weak parent] in
                 guard let parent = parent else { return }
                 parent.backoffCounter = 0
+                NitroSseNetworkInspector.reportResponseStart(parent.requestId, response: nil, statusCode: 200, headers: [:])
                 parent.pushEventToBuffer(SseEvent(type: .open, data: nil, id: nil, event: nil, message: nil))
             }
         }
@@ -294,6 +309,10 @@ class NitroSse: HybridNitroSseSpec {
             guard let parent = parent, source === parent.eventSource else { return }
             parent.sseQueue.async { [weak parent] in
                 guard let parent = parent else { return }
+                if let rid = parent.requestId {
+                    NitroSseNetworkInspector.reportResponseEnd(rid, encodedDataLength: Int(parent.totalBytesReceived))
+                    parent.requestId = nil
+                }
                 if parent.isRunning {
                     parent.scheduleAutomaticReconnect(isError: false)
                 }
@@ -312,6 +331,10 @@ class NitroSse: HybridNitroSseSpec {
                     parent.lastProcessedId = messageEvent.lastEventId
                 }
                 
+                if let data = messageEvent.data.data(using: .utf8) {
+                    NitroSseNetworkInspector.reportDataReceived(parent.requestId, data: data)
+                }
+                
                 parent.pushEventToBuffer(SseEvent(type: .message, data: messageEvent.data, id: messageEvent.lastEventId, event: eventType, message: nil))
             }
         }
@@ -321,6 +344,9 @@ class NitroSse: HybridNitroSseSpec {
             parent.sseQueue.async { [weak parent] in
                 guard let parent = parent else { return }
                 parent.totalBytesReceived += Double(comment.utf8.count)
+                if let data = comment.data(using: .utf8) {
+                    NitroSseNetworkInspector.reportDataReceived(parent.requestId, data: data)
+                }
                 parent.pushEventToBuffer(SseEvent(type: .heartbeat, data: nil, id: nil, event: nil, message: comment))
             }
         }
@@ -336,6 +362,9 @@ class NitroSse: HybridNitroSseSpec {
                 parent.lastErrorTime = Date().timeIntervalSince1970 * 1000
                 parent.lastErrorCode = "\(nsError.domain)(\(statusCode))"
 
+                NitroSseNetworkInspector.reportRequestFailed(parent.requestId, cancelled: false)
+                parent.requestId = nil
+                
                 let isFatalError = (statusCode == 401 || statusCode == 403 || statusCode == 400)
                 if isFatalError {
                     parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Fatal Error (\(statusCode)). Stopping."))

@@ -19,6 +19,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.UUID
 import kotlin.random.Random
 
 /**
@@ -41,6 +42,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     @Volatile private var client: OkHttpClient? = null
     @Volatile private var eventSource: EventSource? = null
     @Volatile private var config: SseConfig? = null
+    @Volatile private var requestId: String? = null
     private var onEventsCallback: ((events: Array<SseEvent>) -> Unit)? = null
     
     private val isRunning = AtomicBoolean(false)
@@ -206,6 +208,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         if (config == null || isRunning.get()) return
         isRunning.set(true)
         backoffCounter = 0
+        requestId = null
         sseHandler?.post { performConnection() }
     }
 
@@ -221,6 +224,14 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         // Cancel existing event source if any before starting new one
         eventSource?.cancel()
         eventSource = null
+        
+        // Report end for previous request if it was running
+        requestId?.let { 
+            NetworkInspector.reportResponseEnd(it, totalBytesReceived.getAndSet(0))
+        }
+        
+        val newRequestId = UUID.randomUUID().toString()
+        this.requestId = newRequestId
         
         val requestBuilder = Request.Builder()
             .url(currentConfig.url)
@@ -238,7 +249,10 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             requestBuilder.post(body)
         }
 
-        eventSource = EventSources.createFactory(client!!).newEventSource(requestBuilder.build(), sseListener)
+        val request = requestBuilder.build()
+        NetworkInspector.reportRequestStart(newRequestId, request)
+        
+        eventSource = EventSources.createFactory(client!!).newEventSource(request, sseListener)
     }
 
     private fun extractRetryAfterMillis(response: Response?): Long? {
@@ -257,6 +271,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         override fun onOpen(eventSource: EventSource, response: Response) {
             if (eventSource != this@NitroSse.eventSource) return
             backoffCounter = 0
+            requestId?.let { NetworkInspector.reportResponseStart(it, response.request, response) }
             pushEventToBuffer(SseEvent(SseEventType.OPEN, null, null, null, null))
         }
 
@@ -265,6 +280,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             if (!id.isNullOrEmpty()) {
                 this@NitroSse.lastProcessedId = id
             }
+            requestId?.let { NetworkInspector.reportDataReceived(it, data) }
             pushEventToBuffer(SseEvent(SseEventType.MESSAGE, data, id, type, null))
         }
 
@@ -277,6 +293,8 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             reconnectCount++
             lastErrorTime = System.currentTimeMillis().toDouble()
             lastErrorCode = t?.javaClass?.simpleName ?: statusCode.toString()
+            
+            requestId?.let { NetworkInspector.reportRequestFailed(it, false) }
 
             val isFatal = (statusCode == 401 || statusCode == 403 || statusCode == 400)
             if (isFatal) {
@@ -317,6 +335,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         override fun onClosed(eventSource: EventSource) {
             if (eventSource != this@NitroSse.eventSource) return
             if (isRunning.get()) {
+                requestId?.let { NetworkInspector.reportResponseEnd(it, totalBytesReceived.get()) }
                 val delay = (defaultRetryDelayMs * (0.8 + Random.nextDouble() * 0.4)).toLong()
                 sseHandler?.postDelayed({ if (isRunning.get() && eventSource == this@NitroSse.eventSource) performConnection() }, delay)
             }
@@ -342,6 +361,10 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         sseHandler?.removeCallbacksAndMessages(null)
         eventSource?.cancel()
         eventSource = null
+        requestId?.let { 
+            NetworkInspector.reportResponseEnd(it, totalBytesReceived.get())
+            requestId = null
+        }
         synchronized(eventBuffer) {
             eventBuffer.clear()
         }
