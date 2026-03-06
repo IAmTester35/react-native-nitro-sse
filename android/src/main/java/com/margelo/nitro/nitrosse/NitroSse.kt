@@ -17,6 +17,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.UUID
 import kotlin.random.Random
 
@@ -45,6 +46,9 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     
     private val isRunning = AtomicBoolean(false)
     private var wasRunningBeforePaused = false
+    private val needsHeaderRefresh = AtomicBoolean(true) 
+    private val consecutiveAuthErrors = AtomicInteger(0)
+    private val maxAuthRetries = 3
     private var sseHandlerThread: android.os.HandlerThread? = null
     private var sseHandler: Handler? = null
     
@@ -72,6 +76,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     override fun setup(config: SseConfig, onEvent: (events: Array<SseEvent>) -> Unit) {
         this.config = config
         this.onEventsCallback = onEvent
+        this.needsHeaderRefresh.set(true)
         
         if (this.client == null) {
             this.client = OkHttpClient.Builder()
@@ -107,8 +112,6 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                                                 val b = sink.get(bufferOffset + i)
                                                 if (isAtStartOfLine && b == ':'.code.toByte()) {
                                                     // This is a comment/heartbeat.
-                                                    // For simplicity, we just notify that a heartbeat occurred.
-                                                    // In a more complex impl, we would buffer until \n to get the full comment.
                                                     pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, "keep-alive", null, null))
                                                 }
                                                 isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
@@ -200,7 +203,8 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         synchronized(this) {
             this.config?.let {
                 this.config = it.copy(headers = headers)
-                Log.d(TAG, "Headers updated for subsequent connections")
+                this.needsHeaderRefresh.set(false) // Manual update satisfies refresh
+                Log.d(TAG, "Headers updated manually")
             }
         }
     }
@@ -217,12 +221,54 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     override fun start() {
         if (config == null || isRunning.get()) return
         isRunning.set(true)
+        needsHeaderRefresh.set(true) // Fresh headers on explicit start
         backoffCounter = 0
         requestId = null
         sseHandler?.post { performConnection() }
     }
 
     private fun performConnection() {
+        if (!isRunning.get()) return
+        
+        val currentConfig = synchronized(this) { config } ?: return
+        val interceptor = currentConfig.onBeforeRequest
+        
+        if (interceptor != null && needsHeaderRefresh.get()) {
+            interceptor.invoke().then { promise2 ->
+                promise2.then { newHeaders ->
+                    sseHandler?.post {
+                        if (!isRunning.get()) return@post
+                        synchronized(this) {
+                            config = config?.copy(headers = newHeaders)
+                            needsHeaderRefresh.set(false)
+                        }
+                        executeConnection()
+                    }
+                }.catch { error ->
+                    handleInterceptorError(error)
+                }
+            }.catch { error ->
+                handleInterceptorError(error)
+            }
+        } else {
+            executeConnection()
+        }
+    }
+
+    private fun handleInterceptorError(t: Throwable?) {
+        sseHandler?.post {
+            if (!isRunning.get()) return@post
+            Log.e(TAG, "Request Interceptor Error: ${t?.message}")
+            pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Interceptor Error: ${t?.message}", -1.0, null))
+            
+            // Reconnect with delay, still needing refresh
+            needsHeaderRefresh.set(true)
+            val delay = (defaultRetryDelayMs * (0.8 + Random.nextDouble() * 0.4)).toLong()
+            sseHandler?.postDelayed({ if (isRunning.get()) performConnection() }, delay)
+        }
+    }
+
+    private fun executeConnection() {
         val currentConfig: SseConfig
         val currentLastId: String?
         synchronized(this) {
@@ -280,6 +326,9 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     }
 
     private val sseListener = object : EventSourceListener() {
+        override fun onOpen(eventSource: EventSource, response: Response) {
+            if (eventSource != this@NitroSse.eventSource) return
+            consecutiveAuthErrors.set(0) // Successful connection, reset error counter
             backoffCounter = 0
             pushEventToBuffer(SseEvent(SseEventType.OPEN, null, null, null, null, response.code.toDouble(), null))
         }
@@ -304,9 +353,25 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             
             requestId?.let { NetworkInspector.reportRequestFailed(it, false) }
 
-            val isFatal = (statusCode == 401 || statusCode == 403 || statusCode == 400)
+            // 401/403 are recoverable if we have an interceptor, but with a limit
+            if (statusCode == 401 || statusCode == 403) {
+                val retries = consecutiveAuthErrors.incrementAndGet()
+                if (retries > maxAuthRetries) {
+                    pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Auth Error ($statusCode) - Retry limit reached ($maxAuthRetries). Stopping.", statusCode.toDouble(), null))
+                    stop()
+                    return
+                }
+                
+                needsHeaderRefresh.set(true)
+                pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Auth Error ($statusCode) - Retry $retries/$maxAuthRetries. Refreshing token...", statusCode.toDouble(), null))
+                val delay = (defaultRetryDelayMs * (0.8 + Random.nextDouble() * 0.4)).toLong()
+                sseHandler?.postDelayed({ if (isRunning.get()) performConnection() }, delay)
+                return
+            }
+
+            val isFatal = (statusCode == 400)
             if (isFatal) {
-                pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Fatal Error ($statusCode). Stopping."))
+                pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Fatal Error ($statusCode). Stopping.", statusCode.toDouble(), null))
                 stop()
                 return
             }
@@ -315,13 +380,13 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             if ((statusCode == 429 || statusCode == 503) && retryAfterMillis != null) {
                 val jitter = (500 + Random.nextInt(1500)).toLong()
                 val totalDelay = retryAfterMillis + jitter
-                pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Retry-After received: ${totalDelay/1000}s"))
+                pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Retry-After received: ${totalDelay/1000}s", statusCode.toDouble(), totalDelay.toDouble()))
                 sseHandler?.postDelayed({ if (isRunning.get() && eventSource == this@NitroSse.eventSource) performConnection() }, totalDelay)
                 return
             }
 
             if (statusCode == 429) {
-                pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Rate Limited (429) without Retry-After. Stopping."))
+                pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Rate Limited (429) without Retry-After. Stopping.", 429.0, null))
                 stop()
                 return
             }
@@ -371,6 +436,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     }
 
     override fun stop() {
+        flushBufferToJs()
         isRunning.set(false)
         backoffCounter = 0 
         sseHandler?.removeCallbacksAndMessages(null)
@@ -379,9 +445,6 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         requestId?.let { 
             NetworkInspector.reportResponseEnd(it, totalBytesReceived.get())
             requestId = null
-        }
-        synchronized(eventBuffer) {
-            eventBuffer.clear()
         }
         isFlushPending.set(false)
     }

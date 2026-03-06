@@ -48,6 +48,11 @@ export interface SseConfig {
    * Read timeout in milliseconds.
    */
   readTimeoutMs?: number;
+  /**
+   * Optional interceptor called before every request.
+   * Useful for refreshing tokens or adding dynamic parameters.
+   */
+  onBeforeRequest?: () => Promise<Record<string, string>>;
 }
 
 /**
