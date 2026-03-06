@@ -8,12 +8,13 @@ export function createNitroSse(): NitroSse {
   let nativeSse: NitroSse | undefined;
   try {
     nativeSse = NitroModules.createHybridObject<NitroSse>('NitroSse');
-  } catch {}
-
-  if (!nativeSse) {
+  } catch {
     console.debug(
       'Native NitroSse not found. This might be a test environment or web.'
     );
+  }
+
+  if (!nativeSse) {
     throw new Error(
       'NitroSse: Native module not found. Ensure you have linked the library and built the app for iOS/Android.'
     );

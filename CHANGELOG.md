@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.5.0 (2026-03-06)
+
+### Features
+
+*   **Request Interceptors (Middleware)**: Added `onBeforeRequest` to `SseConfig`. This allows for asynchronous dynamic header updates (e.g., refreshing authentication tokens) before any connection or reconnection attempt.
+*   **Smart Auth Recovery**: Implemented automatic recovery for `HTTP 401` (Unauthorized) and `403` (Forbidden). The client now triggers the interceptor to refresh credentials and reconnects in the background without manually stopping the session.
+*   **Security & Stability**: Added a "Max Auth Retries" guard (limit to 3 consecutive failures) to prevent infinite loops and battery drain in case of hosed credentials.
+*   **Race Condition Prevention**: Hardened the native state machine (Android/iOS) to handle concurrent start/stop actions safely during asynchronous middleware execution.
+*   **SSE Spec Compliance**: Added support for the `HTTP 204 No Content` status code. The client now correctly stops the connection without retrying when the server signals no further data.
+*   **HTTP Status Codes**: Both iOS and Android now report the actual `statusCode` (e.g., 200, 401, 429) in `open`, `message`, and `error` events, allowing for better JS-side error handling.
+*   **Configurable Timeouts**: Added `connectionTimeoutMs` and `readTimeoutMs` to `SseConfig` to allow fine-tuning for different network environments and heartbeat intervals.
+*   **Improved Android Heartbeat**: Enhanced the heartbeat detection logic to better capture SSE comments.
+*   **Reliable Error Delivery**: Improved buffer management to ensure all events (including fatal errors) are flushed to JavaScript before the connection is disposed.
+*   **Request Interceptor**: Now correctly executes before *every* connection and reconnection attempt, ensuring headers are always fresh.
+*   **Header Merging**: Interceptors now merge new headers with existing ones instead of replacing them.
+*   **Auth Retry Fixes**: Corrected the auth retry limits and ensured recovery only triggers when an interceptor is present.
+*   **iOS Timeout Fix**: Properly applied `connectionTimeoutMs` to `URLSessionConfiguration` on iOS.
+
+### Improvements
+
+*   **Example App**: Updated the example application to visualize HTTP status codes and provide clearer debugging information.
+
 ## 1.4.1 (2026-03-05)
 
 ### Fixes

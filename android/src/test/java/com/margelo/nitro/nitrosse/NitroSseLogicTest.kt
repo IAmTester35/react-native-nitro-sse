@@ -35,7 +35,7 @@ class NitroSseLogicTest {
         batchInterval = 100.0 // Enable batching so we don't flush immediately
         
         for (i in 1..10) {
-            pushEventToBuffer(SseEvent(SseEventType.MESSAGE, "data $i", "$i", null, null)) {}
+            pushEventToBuffer(SseEvent(SseEventType.MESSAGE, "data $i", "$i", null, null, null, null)) {}
         }
         
         assertEquals(5, eventBuffer.size)
@@ -48,7 +48,7 @@ class NitroSseLogicTest {
         batchInterval = 0.0
         val flushCount = AtomicInteger(0)
         
-        pushEventToBuffer(SseEvent(SseEventType.OPEN, null, null, null, null)) {
+        pushEventToBuffer(SseEvent(SseEventType.OPEN, null, null, null, null, null, null)) {
             flushCount.incrementAndGet()
         }
         

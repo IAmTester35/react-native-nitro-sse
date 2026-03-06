@@ -1,14 +1,81 @@
 const http = require('http');
+const url = require('url');
 
 const PORT = 33333;
 
+/**
+ * SSE Test Server with support for various scenarios:
+ * - /events: Standard SSE stream
+ * - /events?status=204: Test 'No Content' handling
+ * - /events?status=429&retry=5: Test 'Too Many Requests' with 'Retry-After'
+ * - /events?retry=5000: Send 'retry: 5000' in the stream
+ * - Supports both GET and POST
+ */
 const server = http.createServer((req, res) => {
+  const parsedUrl = url.parse(req.url, true);
+  const query = parsedUrl.query;
+
   console.log(
-    `[${new Date().toLocaleTimeString()}] Request: ${req.method} ${req.url}`
+    `[${new Date().toLocaleTimeString()}] Request: ${req.method} ${
+      parsedUrl.pathname
+    }`
   );
 
-  if (req.url === '/events') {
-    // SSE Headers
+  if (parsedUrl.pathname === '/events') {
+    // 1. Handle custom status codes from query params
+    const requestedStatus = parseInt(query.status) || 200;
+
+    // Check for auth if requested
+    if (query.auth === 'true') {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || authHeader !== 'Bearer Nitro123') {
+        console.log('Unauthorized: Missing or invalid Authorization header');
+        res.writeHead(401, { 'Access-Control-Allow-Origin': '*' });
+        res.end('Unauthorized');
+        return;
+      }
+      console.log('Auth header verified:', authHeader);
+    }
+
+    if (requestedStatus === 204) {
+      console.log('Sending 204 No Content');
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    if (requestedStatus === 429 || requestedStatus === 503) {
+      const retryAfter = query.retry || '5';
+      console.log(
+        `Sending ${requestedStatus} with Retry-After: ${retryAfter}s`
+      );
+      res.writeHead(requestedStatus, {
+        'Retry-After': retryAfter,
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(`Error ${requestedStatus}`);
+      return;
+    }
+
+    if (requestedStatus >= 400) {
+      console.log(`Sending Error Status: ${requestedStatus}`);
+      res.writeHead(requestedStatus, { 'Access-Control-Allow-Origin': '*' });
+      res.end(`Error ${requestedStatus}`);
+      return;
+    }
+
+    // 2. Handle POST body logging
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        console.log('POST Body received:', body);
+      });
+    }
+
+    // 3. SSE Implementation
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -16,14 +83,28 @@ const server = http.createServer((req, res) => {
       'Access-Control-Allow-Origin': '*',
     });
 
-    res.write('retry: 10000\n\n');
+    // Send initial retry if provided
+    if (query.retry) {
+      res.write(`retry: ${query.retry}\n\n`);
+    } else {
+      res.write('retry: 3000\n\n');
+    }
+
     res.write('event: open\ndata: {"status": "connected"}\n\n');
 
     let count = 0;
     const interval = setInterval(() => {
       count++;
+
+      // Every 3 events, send a heartbeat comment
+      if (count % 3 === 0) {
+        console.log('Sending heartbeat comment');
+        res.write(': heartbeat\n\n');
+      }
+
       const data = JSON.stringify({
-        message: `Hello from Server! Event #${count}`,
+        message: `Event #${count}`,
+        method: req.method,
         timestamp: new Date().toISOString(),
       });
 
@@ -31,20 +112,36 @@ const server = http.createServer((req, res) => {
       res.write(`id: ${count}\n`);
       res.write(`event: message\n`);
       res.write(`data: ${data}\n\n`);
+
+      // Auto-close after 20 events to test reconnection
+      if (count >= 20) {
+        console.log('Reached 20 events, closing connection early');
+        clearInterval(interval);
+        res.end();
+      }
     }, 2000);
 
     req.on('close', () => {
       console.log('Client disconnected');
       clearInterval(interval);
-      res.end();
     });
   } else {
     res.writeHead(404);
-    res.end();
+    res.end('Not Found');
   }
 });
 
 server.listen(PORT, () => {
-  console.log(`SSE Test Server running at http://localhost:${PORT}/events`);
-  console.log('Press Ctrl+C to stop.');
+  console.log(
+    `\n🚀 SSE Test Server running at http://localhost:${PORT}/events`
+  );
+  console.log('-------------------------------------------------------');
+  console.log('Test Scenarios:');
+  console.log(`1. Normal:       http://localhost:${PORT}/events`);
+  console.log(`2. No Content:   http://localhost:${PORT}/events?status=204`);
+  console.log(
+    `3. Rate Limit:   http://localhost:${PORT}/events?status=429&retry=10`
+  );
+  console.log(`4. Custom Retry: http://localhost:${PORT}/events?retry=1000`);
+  console.log('-------------------------------------------------------\n');
 });

@@ -118,6 +118,9 @@ nitroSse.updateHeaders({
 | `batchingIntervalMs` | `number` | Time window to buffer events before flushing to JS (Default: 0 - immediate). |
 | `maxBufferSize` | `number` | Native queue limit to prevent memory overflow (Default: 1000). |
 | `backgroundExecution` | `boolean` | (iOS) Attempt to maintain a background task for a short period. |
+| `connectionTimeoutMs`| `number` | Connection timeout in milliseconds (Default: 15000). |
+| `readTimeoutMs`      | `number` | Read/Idle timeout in milliseconds (Default: 35000). |
+| `onBeforeRequest`    | `function`| Async callback to refresh headers before every request attempt. |
 
 ---
 

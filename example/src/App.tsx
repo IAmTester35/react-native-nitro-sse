@@ -52,6 +52,7 @@ interface LogEntry {
   type: string;
   data?: string;
   message?: string;
+  statusCode?: number;
 }
 
 export default function App() {
@@ -59,6 +60,7 @@ export default function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [useInterceptor, setUseInterceptor] = useState(false);
   const [stats, setStats] = useState<SseStats>({
     totalBytesReceived: 0,
     reconnectCount: 0,
@@ -67,8 +69,12 @@ export default function App() {
   // --- Configuration ---
   const [url, setUrl] = useState(DEFAULT_URL);
   const [batching, setBatching] = useState('1000');
-  const [headersJson, setHeadersJson] = useState('{"X-Custom": "Nitro"}');
+  const [headersJson, setHeadersJson] = useState('{"authorization": "Nitro"}');
   const [manualId, setManualId] = useState('');
+  const [method, setMethod] = useState<'get' | 'post'>('get');
+  const [body, setBody] = useState('');
+  const [connectionTimeout, setConnectionTimeout] = useState('15000');
+  const [readTimeout, setReadTimeout] = useState('35000');
   const [showConfig, setShowConfig] = useState(false);
 
   // --- Refs ---
@@ -78,7 +84,7 @@ export default function App() {
 
   // --- Helpers ---
   const addLog = useCallback(
-    (type: string, data?: string, message?: string) => {
+    (type: string, data?: string, message?: string, statusCode?: number) => {
       const entry: LogEntry = {
         id: Math.random().toString(36).substring(7),
         time: new Date().toLocaleTimeString([], {
@@ -90,6 +96,7 @@ export default function App() {
         type,
         data,
         message,
+        statusCode,
       };
       setLogs((prev) => [entry, ...prev].slice(0, 100));
     },
@@ -109,10 +116,13 @@ export default function App() {
   const handleEvents = useCallback(
     (events: SseEvent[]) => {
       events.forEach((event) => {
-        addLog(event.type, event.data, event.message);
+        addLog(event.type, event.data, event.message, event.statusCode);
         if (event.type === 'open') {
           setIsConnected(true);
           setIsConnecting(false);
+        } else if (event.type === 'error') {
+          setIsConnecting(false);
+          setIsConnected(false);
         } else if (event.type === 'close') {
           setIsConnected(false);
         }
@@ -131,8 +141,23 @@ export default function App() {
       const sse = createNitroSse();
       sse.setup(
         {
-          url: url,
+          url: url + (useInterceptor ? '?auth=true' : ''),
+          method: method,
+          body: method === 'post' ? body : undefined,
           batchingIntervalMs: parseInt(batching, 10) || 0,
+          connectionTimeoutMs: parseInt(connectionTimeout, 10) || 15000,
+          readTimeoutMs: parseInt(readTimeout, 10) || 35000,
+          onBeforeRequest: useInterceptor
+            ? async () => {
+                addLog('system', undefined, 'Middleware: Refreshing token...');
+                // Simulate async auth refresh
+                await new Promise((resolve) => setTimeout(resolve, 500));
+                return {
+                  'Authorization': 'Bearer interceptor-token',
+                  'X-Interceptor-Actived': 'true',
+                };
+              }
+            : undefined,
         },
         handleEvents
       );
@@ -227,6 +252,9 @@ export default function App() {
               {item.type.toUpperCase()}
             </Text>
           </View>
+          {item.statusCode ? (
+            <Text style={styles.logStatus}>HTTP {item.statusCode}</Text>
+          ) : null}
         </View>
         {item.data ? <Text style={styles.logData}>{item.data}</Text> : null}
         {item.message ? (
@@ -314,6 +342,69 @@ export default function App() {
                 placeholderTextColor={COLORS.textDim}
               />
             </View>
+            <View style={styles.flex1}>
+              <Text style={styles.inputLabel}>METHOD</Text>
+              <View style={styles.methodRow}>
+                {['get', 'post'].map((m) => (
+                  <TouchableOpacity
+                    key={m}
+                    style={[
+                      styles.methodButton,
+                      method === m && styles.methodButtonActive,
+                    ]}
+                    onPress={() => setMethod(m as any)}
+                  >
+                    <Text
+                      style={[
+                        styles.methodButtonText,
+                        method === m && styles.methodButtonTextActive,
+                      ]}
+                    >
+                      {m.toUpperCase()}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          </View>
+
+          {method === 'post' && (
+            <>
+              <Text style={styles.inputLabel}>POST BODY</Text>
+              <TextInput
+                style={[styles.input, styles.multilineInput]}
+                value={body}
+                onChangeText={setBody}
+                multiline
+                placeholder='{"key": "value"}'
+                placeholderTextColor={COLORS.textDim}
+              />
+            </>
+          )}
+
+          <View style={styles.inputRow}>
+            <View style={styles.flex1}>
+              <Text style={styles.inputLabel}>CONN TIMEOUT (MS)</Text>
+              <TextInput
+                style={styles.input}
+                value={connectionTimeout}
+                onChangeText={setConnectionTimeout}
+                keyboardType="numeric"
+                placeholder="15000"
+                placeholderTextColor={COLORS.textDim}
+              />
+            </View>
+            <View style={styles.flex1}>
+              <Text style={styles.inputLabel}>READ TIMEOUT (MS)</Text>
+              <TextInput
+                style={styles.input}
+                value={readTimeout}
+                onChangeText={setReadTimeout}
+                keyboardType="numeric"
+                placeholder="35000"
+                placeholderTextColor={COLORS.textDim}
+              />
+            </View>
           </View>
 
           <View style={styles.divider} />
@@ -353,6 +444,26 @@ export default function App() {
               <Text style={styles.inlineActionText}>SET</Text>
             </TouchableOpacity>
           </View>
+
+          <View style={styles.divider} />
+          <View style={styles.toggleRow}>
+            <Text style={styles.configTitle}>Interceptor / Middleware</Text>
+            <TouchableOpacity
+              style={[
+                styles.miniToggle,
+                useInterceptor && { backgroundColor: COLORS.primary },
+              ]}
+              onPress={() => setUseInterceptor(!useInterceptor)}
+            >
+              <Text style={styles.miniToggleText}>
+                {useInterceptor ? 'ON' : 'OFF'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.logMessage}>
+            Checks 'Authorization' header in server. Requires interceptor to
+            provide it.
+          </Text>
         </View>
       )}
 
@@ -707,5 +818,60 @@ const styles = StyleSheet.create({
   },
   flex1: {
     flex: 1,
+  },
+  logStatus: {
+    color: COLORS.textDim,
+    fontSize: 9,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  methodRow: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.background,
+    borderRadius: 8,
+    padding: 2,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  methodButton: {
+    flex: 1,
+    height: 34,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 6,
+  },
+  methodButtonActive: {
+    backgroundColor: COLORS.primary,
+  },
+  methodButtonText: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: COLORS.textDim,
+  },
+  methodButtonTextActive: {
+    color: '#fff',
+  },
+  multilineInput: {
+    height: 60,
+    textAlignVertical: 'top',
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 5,
+  },
+  miniToggle: {
+    backgroundColor: COLORS.background,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  miniToggleText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: 'bold',
   },
 });

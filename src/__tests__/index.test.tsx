@@ -286,4 +286,25 @@ describe('NitroSseModule Unit Tests', () => {
       expect(mockNative.setup).toHaveBeenCalledWith(fullConfig, onEvent);
     });
   });
+
+  it('should support onBeforeRequest interceptor', () => {
+    jest.isolateModules(() => {
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
+      const onEvent = jest.fn();
+      const onBeforeRequest = async () => ({
+        Authorization: 'Bearer interceptor-token',
+      });
+      const configWithInterceptor = {
+        url: 'http://localhost:33333/events',
+        onBeforeRequest,
+      };
+
+      NitroSseModule.setup(configWithInterceptor as any, onEvent);
+      expect(mockNative.setup).toHaveBeenCalledWith(
+        configWithInterceptor,
+        onEvent
+      );
+    });
+  });
 });
