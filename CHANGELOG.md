@@ -13,6 +13,10 @@
 *   **Configurable Timeouts**: Added `connectionTimeoutMs` and `readTimeoutMs` to `SseConfig` to allow fine-tuning for different network environments and heartbeat intervals.
 *   **Improved Android Heartbeat**: Enhanced the heartbeat detection logic to better capture SSE comments.
 *   **Reliable Error Delivery**: Improved buffer management to ensure all events (including fatal errors) are flushed to JavaScript before the connection is disposed.
+*   **Request Interceptor**: Now correctly executes before *every* connection and reconnection attempt, ensuring headers are always fresh.
+*   **Header Merging**: Interceptors now merge new headers with existing ones instead of replacing them.
+*   **Auth Retry Fixes**: Corrected the auth retry limits and ensured recovery only triggers when an interceptor is present.
+*   **iOS Timeout Fix**: Properly applied `connectionTimeoutMs` to `URLSessionConfiguration` on iOS.
 
 ### Improvements
 

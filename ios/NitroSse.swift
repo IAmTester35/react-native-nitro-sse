@@ -19,7 +19,6 @@ class NitroSse: HybridNitroSseSpec {
     private var config: SseConfig?
     private var onEventsCallback: ((_ events: [SseEvent]) -> Void)?
     private var isRunning: Bool = false
-    private var needsHeaderRefresh: Bool = true
     private var consecutiveAuthErrors: Int = 0
     private let maxAuthRetries: Int = 3
     private var requestId: String? = nil   
@@ -39,9 +38,18 @@ class NitroSse: HybridNitroSseSpec {
     private let maxBackoffDelay: TimeInterval = 30.0
     
     private let sseQueue = DispatchQueue(label: "com.margelo.nitro.sse", qos: .utility)
+    private var connectionAttemptVersion: Int = 0
     private var backgroundTaskIdentifier: UIBackgroundTaskIdentifier = .invalid
     private var wasRunningBeforeHibernation: Bool = false
 
+    /**
+     * Set up the NitroSse instance with configuration and an event callback.
+     * This prepares the lifecycle observers and internal dispatch queue.
+     *
+     * - Parameters:
+     *   - config: The SSE configuration containing URL, headers, and more.
+     *   - onEvent: Callback function to receive batched SSE events.
+     */
     func setup(config: SseConfig, onEvent: @escaping ((_ events: [SseEvent]) -> Void)) throws {
         self.config = config
         self.onEventsCallback = onEvent
@@ -128,12 +136,19 @@ class NitroSse: HybridNitroSseSpec {
         onEventsCallback?(batch)
     }
 
+    /**
+     * Manually set the last seen event ID.
+     * This will be used as the 'Last-Event-ID' header on the next connection attempt.
+     */
     func setLastProcessedId(id: String) {
         sseQueue.async {
             self.lastProcessedId = id
         }
     }
 
+    /**
+     * Dynamically update the headers for subsequent connection attempts.
+     */
     func updateHeaders(headers: [String: String]) throws {
         sseQueue.async {
             guard var config = self.config else { return }
@@ -149,11 +164,13 @@ class NitroSse: HybridNitroSseSpec {
                 readTimeoutMs: config.readTimeoutMs,
                 onBeforeRequest: config.onBeforeRequest // Ensure onBeforeRequest is copied
             )
-            self.needsHeaderRefresh = false // Explicit update satisfies refresh
             print("[NitroSse] Headers updated for subsequent connections.")
         }
     }
 
+    /**
+     * Returns runtime statistics about the SSE connection.
+     */
     func getStats() throws -> SseStats {
         return sseQueue.sync {
             return SseStats(
@@ -165,31 +182,41 @@ class NitroSse: HybridNitroSseSpec {
         }
     }
 
+    /**
+     * Start the SSE connection.
+     * This triggers the initial request and handles subsequent reconnections.
+     */
     func start() throws {
         sseQueue.async {
             guard !self.isRunning else { return }
             self.isRunning = true
-            self.needsHeaderRefresh = true // Fresh start needs refresh
+            self.consecutiveAuthErrors = 0 // Reset auth retry state
             self.backoffCounter = 0
-            self.establishConnection()
+            self.connectionAttemptVersion += 1
+            let version = self.connectionAttemptVersion
+            self.establishConnection(attemptVersion: version)
         }
     }
 
-    private func establishConnection() {
+    private func establishConnection(attemptVersion: Int) {
         dispatchPrecondition(condition: .onQueue(sseQueue))
-        guard isRunning, let config = config else { return }
+        guard isRunning, let config = config, attemptVersion == self.connectionAttemptVersion else { return }
 
-        if let interceptor = config.onBeforeRequest, needsHeaderRefresh {
+        if let interceptor = config.onBeforeRequest {
             // Strong reference to config to avoid it changing under us during async call
             let capturedConfig = config
             interceptor().then { [weak self] promise2 in
                 promise2.then { [weak self] newHeaders in
                     self?.sseQueue.async {
-                        guard let self = self, self.isRunning else { return }
+                        guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+                        var mergedHeaders = capturedConfig.headers ?? [:]
+                        for (k, v) in newHeaders {
+                            mergedHeaders[k] = v
+                        }
                         self.config = SseConfig(
                             url: capturedConfig.url,
                             method: capturedConfig.method,
-                            headers: newHeaders,
+                            headers: mergedHeaders,
                             body: capturedConfig.body,
                             backgroundExecution: capturedConfig.backgroundExecution,
                             batchingIntervalMs: capturedConfig.batchingIntervalMs,
@@ -198,49 +225,55 @@ class NitroSse: HybridNitroSseSpec {
                             readTimeoutMs: capturedConfig.readTimeoutMs,
                             onBeforeRequest: capturedConfig.onBeforeRequest
                         )
-                        self.needsHeaderRefresh = false
-                        self.performEstablishConnection()
+                        self.performEstablishConnection(attemptVersion: attemptVersion)
                     }
                 }.catch { [weak self] error in
-                    self?.handleInterceptorError(error)
+                    self?.handleInterceptorError(error, attemptVersion: attemptVersion)
                 }
             }.catch { [weak self] error in
-                self?.handleInterceptorError(error)
+                self?.handleInterceptorError(error, attemptVersion: attemptVersion)
             }
         } else {
-            self.performEstablishConnection()
+            self.performEstablishConnection(attemptVersion: attemptVersion)
         }
     }
 
-    private func handleInterceptorError(_ error: Error) {
+    private func handleInterceptorError(_ error: Error, attemptVersion: Int) {
         sseQueue.async {
-            guard self.isRunning else { return }
+            guard self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
             print("[NitroSse] Interceptor failed: \(error.localizedDescription)")
             self.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Interceptor Error: \(error.localizedDescription)", statusCode: -1, retry: nil))
-            // Reconnect after delay, marking that we still need a refresh
-            self.needsHeaderRefresh = true
-            self.scheduleAutomaticReconnect(isError: true)
+            // Reconnect after delay
+            self.scheduleAutomaticReconnect(isError: true, attemptVersion: attemptVersion)
         }
     }
 
-    private func performEstablishConnection() {
+    private func performEstablishConnection(attemptVersion: Int) {
         dispatchPrecondition(condition: .onQueue(sseQueue))
-        guard isRunning, let config = config, let url = URL(string: config.url) else { return }
+        guard isRunning, let config = config, let url = URL(string: config.url), attemptVersion == self.connectionAttemptVersion else { return }
         
         if let rid = self.requestId {
             NitroSseNetworkInspector.reportResponseEnd(rid, encodedDataLength: Int(self.totalBytesReceived))
             self.requestId = nil
         }
         
-        let handler = SseHandler(parent: self)
+        
+        let sessionConfig = URLSessionConfiguration.default
+        sessionConfig.timeoutIntervalForRequest = (config.readTimeoutMs ?? 35000.0) / 1000.0
+        sessionConfig.timeoutIntervalForResource = (config.readTimeoutMs ?? 35000.0) / 1000.0
+        if let connTimeout = config.connectionTimeoutMs {
+            sessionConfig.timeoutIntervalForRequest = connTimeout / 1000.0
+        }
+
+        let handler = SseHandler(parent: self, attemptVersion: attemptVersion)
         var esConfig = EventSource.Config(handler: handler, url: url)
+        esConfig.urlSessionConfiguration = sessionConfig
         esConfig.headers = config.headers ?? [:]
         
         if let lastId = self.lastProcessedId, !lastId.isEmpty {
             esConfig.headers["Last-Event-ID"] = lastId
         }
         
-        esConfig.idleTimeout = (config.readTimeoutMs ?? 35000.0) / 1000.0
         esConfig.lastEventId = self.lastProcessedId ?? ""
         esConfig.method = config.method?.stringValue.uppercased() ?? "GET"
         esConfig.body = config.body?.data(using: .utf8)
@@ -255,6 +288,9 @@ class NitroSse: HybridNitroSseSpec {
         es.start()
     }
 
+    /**
+     * Stop the SSE connection and clear any pending reconnect timers.
+     */
     func stop() {
         sseQueue.async {
             self.stopInternal()
@@ -274,22 +310,32 @@ class NitroSse: HybridNitroSseSpec {
         self.cleanupBackgroundTask()
     }
 
+    /**
+     * Immediately emit any pending buffered events to the JS bridge.
+     */
     func flush() {
         sseQueue.async {
             self.flushEventsToJs()
         }
     }
 
+    /**
+     * Restart the SSE connection by stopping and starting again.
+     */
     func restart() {
         sseQueue.async {
             self.stopInternal()
             guard !self.isRunning else { return } // Should be false now
             self.isRunning = true
             self.requestId = nil
-            self.establishConnection()
+            self.connectionAttemptVersion += 1
+            self.establishConnection(attemptVersion: self.connectionAttemptVersion)
         }
     }
 
+    /**
+     * Indicates if the SSE connection is currently active or trying to connect.
+     */
     func isConnected() -> Bool {
         return sseQueue.sync {
             return isRunning
@@ -318,17 +364,17 @@ class NitroSse: HybridNitroSseSpec {
     // EventSource callback handling is done via SseHandler class below.
 
     
-    private func scheduleAutomaticReconnectWithFixedDelay(_ delay: TimeInterval) {
+    private func scheduleAutomaticReconnectWithFixedDelay(_ delay: TimeInterval, attemptVersion: Int) {
         dispatchPrecondition(condition: .onQueue(sseQueue))
         eventSource?.stop()
         eventSource = nil
         sseQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self = self, self.isRunning else { return }
-            self.establishConnection()
+            guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+            self.establishConnection(attemptVersion: attemptVersion)
         }
     }
     
-    private func scheduleAutomaticReconnect(isError: Bool) {
+    private func scheduleAutomaticReconnect(isError: Bool, attemptVersion: Int) {
         dispatchPrecondition(condition: .onQueue(sseQueue))
         eventSource?.stop()
         var delay: TimeInterval = defaultRetryDelay
@@ -345,23 +391,25 @@ class NitroSse: HybridNitroSseSpec {
         eventSource?.stop()
         eventSource = nil
         sseQueue.asyncAfter(deadline: .now() + safeDelay) { [weak self] in
-            guard let self = self, self.isRunning else { return }
-            self.establishConnection()
+            guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+            self.establishConnection(attemptVersion: attemptVersion)
         }
     }
     
     private class SseHandler: EventHandler {
         weak var parent: NitroSse?
         weak var source: EventSource?
+        let attemptVersion: Int
         
-        init(parent: NitroSse) {
+        init(parent: NitroSse, attemptVersion: Int) {
             self.parent = parent
+            self.attemptVersion = attemptVersion
         }
         
         func onOpened() {
             guard let parent = parent, source === parent.eventSource else { return }
             parent.sseQueue.async { [weak parent] in
-                guard let parent = parent else { return }
+                guard let parent = parent, self.attemptVersion == parent.connectionAttemptVersion else { return }
                 parent.backoffCounter = 0
                 parent.consecutiveAuthErrors = 0 // Successful connection, reset error counter
                 // LDSwiftEventSource doesn't easily expose the response code in onOpened,
@@ -373,13 +421,13 @@ class NitroSse: HybridNitroSseSpec {
         func onClosed() {
             guard let parent = parent, source === parent.eventSource else { return }
             parent.sseQueue.async { [weak parent] in
-                guard let parent = parent else { return }
+                guard let parent = parent, self.attemptVersion == parent.connectionAttemptVersion else { return }
                 if let rid = parent.requestId {
                     NitroSseNetworkInspector.reportResponseEnd(rid, encodedDataLength: Int(parent.totalBytesReceived))
                     parent.requestId = nil
                 }
                 if parent.isRunning {
-                    parent.scheduleAutomaticReconnect(isError: false)
+                    parent.scheduleAutomaticReconnect(isError: false, attemptVersion: self.attemptVersion)
                 }
             }
         }
@@ -387,7 +435,7 @@ class NitroSse: HybridNitroSseSpec {
         func onMessage(eventType: String, messageEvent: MessageEvent) {
             guard let parent = parent, source === parent.eventSource else { return }
             parent.sseQueue.async { [weak parent] in
-                guard let parent = parent else { return }
+                guard let parent = parent, self.attemptVersion == parent.connectionAttemptVersion else { return }
                 let encodedDataSize = Double(messageEvent.data.utf8.count)
                 let metadataSize = Double(eventType.utf8.count) + Double((messageEvent.lastEventId).utf8.count)
                 parent.totalBytesReceived += encodedDataSize + metadataSize
@@ -403,7 +451,7 @@ class NitroSse: HybridNitroSseSpec {
         func onComment(comment: String) {
             guard let parent = parent, source === parent.eventSource else { return }
             parent.sseQueue.async { [weak parent] in
-                guard let parent = parent else { return }
+                guard let parent = parent, self.attemptVersion == parent.connectionAttemptVersion else { return }
                 parent.totalBytesReceived += Double(comment.utf8.count)
                 parent.pushEventToBuffer(SseEvent(type: .heartbeat, data: nil, id: nil, event: nil, message: comment, statusCode: nil, retry: nil))
             }
@@ -412,7 +460,7 @@ class NitroSse: HybridNitroSseSpec {
         func onError(error: Error) {
             guard let parent = parent, source === parent.eventSource else { return }
             parent.sseQueue.async { [weak parent] in
-                guard let parent = parent, parent.isRunning else { return }
+                guard let parent = parent, parent.isRunning, self.attemptVersion == parent.connectionAttemptVersion else { return }
                 let nsError = error as NSError
                 let statusCode = nsError.code
                 
@@ -432,16 +480,21 @@ class NitroSse: HybridNitroSseSpec {
 
                 // 401/403 are recoverable if we have an interceptor, but with a limit
                 if statusCode == 401 || statusCode == 403 {
+                    if parent.config?.onBeforeRequest == nil {
+                        parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Auth Error (\(statusCode)) - No interceptor provided. Stopping.", statusCode: Double(statusCode), retry: nil))
+                        parent.stopInternal()
+                        return
+                    }
+
                     parent.consecutiveAuthErrors += 1
-                    if parent.consecutiveAuthErrors > parent.maxAuthRetries {
+                    if parent.consecutiveAuthErrors >= parent.maxAuthRetries {
                         parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Auth Error (\(statusCode)) - Retry limit reached (\(parent.maxAuthRetries)). Stopping.", statusCode: Double(statusCode), retry: nil))
                         parent.stopInternal()
                         return
                     }
                     
-                    parent.needsHeaderRefresh = true
                     parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Auth Error (\(statusCode)) - Retry \(parent.consecutiveAuthErrors)/\(parent.maxAuthRetries). Refreshing token...", statusCode: Double(statusCode), retry: nil))
-                    parent.scheduleAutomaticReconnect(isError: true)
+                    parent.scheduleAutomaticReconnect(isError: true, attemptVersion: self.attemptVersion)
                     return
                 }
 
@@ -457,7 +510,7 @@ class NitroSse: HybridNitroSseSpec {
                     let jitter = Double.random(in: 0.5...1.5)
                     let totalDelay = retryAfter + jitter
                     parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Retry-After received: \(Int(totalDelay))s", statusCode: Double(statusCode), retry: totalDelay * 1000.0))
-                    parent.scheduleAutomaticReconnectWithFixedDelay(totalDelay)
+                    parent.scheduleAutomaticReconnectWithFixedDelay(totalDelay, attemptVersion: self.attemptVersion)
                     return
                 }
 
@@ -468,7 +521,7 @@ class NitroSse: HybridNitroSseSpec {
                 }
 
                 parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: error.localizedDescription, statusCode: Double(statusCode), retry: nil))
-                parent.scheduleAutomaticReconnect(isError: true)
+                parent.scheduleAutomaticReconnect(isError: true, attemptVersion: self.attemptVersion)
             }
         }
     }
