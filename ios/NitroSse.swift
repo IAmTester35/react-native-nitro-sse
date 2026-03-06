@@ -142,7 +142,9 @@ class NitroSse: HybridNitroSseSpec {
                 body: currentConfig.body,
                 backgroundExecution: currentConfig.backgroundExecution,
                 batchingIntervalMs: currentConfig.batchingIntervalMs,
-                maxBufferSize: currentConfig.maxBufferSize
+                maxBufferSize: currentConfig.maxBufferSize,
+                connectionTimeoutMs: currentConfig.connectionTimeoutMs,
+                readTimeoutMs: currentConfig.readTimeoutMs
             )
             print("[NitroSse] Headers updated for subsequent connections.")
         }
@@ -185,7 +187,8 @@ class NitroSse: HybridNitroSseSpec {
             esConfig.headers["Last-Event-ID"] = lastId
         }
         
-        esConfig.idleTimeout = 35.0
+        esConfig.idleTimeout = (config.readTimeoutMs ?? 35000.0) / 1000.0
+        esConfig.lastEventId = self.lastProcessedId ?? ""
         esConfig.method = config.method?.stringValue.uppercased() ?? "GET"
         esConfig.body = config.body?.data(using: .utf8)
         
@@ -308,8 +311,9 @@ class NitroSse: HybridNitroSseSpec {
             parent.sseQueue.async { [weak parent] in
                 guard let parent = parent else { return }
                 parent.backoffCounter = 0
-                NitroSseNetworkInspector.reportResponseStart(parent.requestId, url: parent.config?.url, response: nil, statusCode: 200, headers: [:])
-                parent.pushEventToBuffer(SseEvent(type: .open, data: nil, id: nil, event: nil, message: nil))
+                // LDSwiftEventSource doesn't easily expose the response code in onOpened,
+                // but we assume 200 if onOpened is called. 
+                parent.pushEventToBuffer(SseEvent(type: .open, data: nil, id: nil, event: nil, message: nil, statusCode: 200, retry: nil))
             }
         }
         
@@ -339,7 +343,7 @@ class NitroSse: HybridNitroSseSpec {
                     parent.lastProcessedId = messageEvent.lastEventId
                 }
                 
-                parent.pushEventToBuffer(SseEvent(type: .message, data: messageEvent.data, id: messageEvent.lastEventId, event: eventType, message: nil))
+                parent.pushEventToBuffer(SseEvent(type: .message, data: messageEvent.data, id: messageEvent.lastEventId, event: eventType, message: nil, statusCode: 200, retry: nil))
             }
         }
         
@@ -348,7 +352,7 @@ class NitroSse: HybridNitroSseSpec {
             parent.sseQueue.async { [weak parent] in
                 guard let parent = parent else { return }
                 parent.totalBytesReceived += Double(comment.utf8.count)
-                parent.pushEventToBuffer(SseEvent(type: .heartbeat, data: nil, id: nil, event: nil, message: comment))
+                parent.pushEventToBuffer(SseEvent(type: .heartbeat, data: nil, id: nil, event: nil, message: comment, statusCode: nil, retry: nil))
             }
         }
         
@@ -366,29 +370,14 @@ class NitroSse: HybridNitroSseSpec {
                 NitroSseNetworkInspector.reportRequestFailed(parent.requestId, cancelled: false)
                 parent.requestId = nil
                 
-                let isFatalError = (statusCode == 401 || statusCode == 403 || statusCode == 400)
-                if isFatalError {
-                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Fatal Error (\(statusCode)). Stopping."))
-                    parent.stopInternal()
-                    return
-                }
-
-                let retryAfterSeconds = parent.extractRetryAfterSeconds(error: error)
-                if (statusCode == 429 || statusCode == 503), let delay = retryAfterSeconds {
-                    let jitter = Double.random(in: 0.5...2.0)
-                    let totalDelay = delay + jitter
-                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Retry-After received (\(statusCode))"))
-                    parent.scheduleAutomaticReconnectWithFixedDelay(totalDelay)
-                    return
-                }
-
-                if statusCode == 429 {
-                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Rate Limited (429) without Retry-After. Stopping."))
-                    parent.stopInternal()
-                    return
-                }
                 
-                parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: error.localizedDescription))
+                if statusCode == 204 {
+                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "No Content (204). Stopping.", statusCode: 204, retry: nil))
+                    parent.stopInternal()
+                    return
+                }
+
+                parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: error.localizedDescription, statusCode: Double(statusCode), retry: nil))
                 parent.scheduleAutomaticReconnect(isError: true)
             }
         }

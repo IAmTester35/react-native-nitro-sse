@@ -52,6 +52,7 @@ interface LogEntry {
   type: string;
   data?: string;
   message?: string;
+  statusCode?: number;
 }
 
 export default function App() {
@@ -78,7 +79,7 @@ export default function App() {
 
   // --- Helpers ---
   const addLog = useCallback(
-    (type: string, data?: string, message?: string) => {
+    (type: string, data?: string, message?: string, statusCode?: number) => {
       const entry: LogEntry = {
         id: Math.random().toString(36).substring(7),
         time: new Date().toLocaleTimeString([], {
@@ -90,6 +91,7 @@ export default function App() {
         type,
         data,
         message,
+        statusCode,
       };
       setLogs((prev) => [entry, ...prev].slice(0, 100));
     },
@@ -109,7 +111,7 @@ export default function App() {
   const handleEvents = useCallback(
     (events: SseEvent[]) => {
       events.forEach((event) => {
-        addLog(event.type, event.data, event.message);
+        addLog(event.type, event.data, event.message, event.statusCode);
         if (event.type === 'open') {
           setIsConnected(true);
           setIsConnecting(false);
@@ -227,6 +229,9 @@ export default function App() {
               {item.type.toUpperCase()}
             </Text>
           </View>
+          {item.statusCode ? (
+            <Text style={styles.logStatus}>HTTP {item.statusCode}</Text>
+          ) : null}
         </View>
         {item.data ? <Text style={styles.logData}>{item.data}</Text> : null}
         {item.message ? (
@@ -707,5 +712,11 @@ const styles = StyleSheet.create({
   },
   flex1: {
     flex: 1,
+  },
+  logStatus: {
+    color: COLORS.textDim,
+    fontSize: 9,
+    fontWeight: '600',
+    marginLeft: 8,
   },
 });

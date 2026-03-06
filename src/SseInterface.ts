@@ -40,6 +40,14 @@ export interface SseConfig {
    * Maximum number of events to hold in the buffer before forced flushing.
    */
   maxBufferSize?: number;
+  /**
+   * Connection timeout in milliseconds.
+   */
+  connectionTimeoutMs?: number;
+  /**
+   * Read timeout in milliseconds.
+   */
+  readTimeoutMs?: number;
 }
 
 /**
@@ -56,6 +64,10 @@ export interface SseEvent {
   event?: string;
   /** System message or error description. */
   message?: string;
+  /** HTTP status code if applicable. */
+  statusCode?: number;
+  /** Server-requested retry delay in milliseconds. */
+  retry?: number;
 }
 
 /**

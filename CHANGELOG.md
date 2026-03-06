@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.5.0 (2026-03-06)
+
+### Features
+
+*   **SSE Spec Compliance**: Added support for the `HTTP 204 No Content` status code. The client now correctly stops the connection without retrying when the server signals no further data.
+*   **HTTP Status Codes**: Both iOS and Android now report the actual `statusCode` (e.g., 200, 401, 429) in `open`, `message`, and `error` events, allowing for better JS-side error handling.
+*   **Configurable Timeouts**: Added `connectionTimeoutMs` and `readTimeoutMs` to `SseConfig` to allow fine-tuning for different network environments and heartbeat intervals.
+*   **Improved Android Heartbeat**: Enhanced the heartbeat detection logic to better capture SSE comments.
+
+### Improvements
+
+*   **Example App**: Updated the example application to visualize HTTP status codes and provide clearer debugging information.
+
 ## 1.4.1 (2026-03-05)
 
 ### Fixes

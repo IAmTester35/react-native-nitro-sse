@@ -75,8 +75,8 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         
         if (this.client == null) {
             this.client = OkHttpClient.Builder()
-                .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(35, TimeUnit.SECONDS)
+                .connectTimeout((config.connectionTimeoutMs ?: 15000.0).toLong(), TimeUnit.MILLISECONDS)
+                .readTimeout((config.readTimeoutMs ?: 35000.0).toLong(), TimeUnit.MILLISECONDS)
                 .addNetworkInterceptor { chain ->
                     val request = chain.request()
                     val rid = request.tag(String::class.java)
@@ -106,7 +106,10 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                                             for (i in 0 until bytesRead) {
                                                 val b = sink.get(bufferOffset + i)
                                                 if (isAtStartOfLine && b == ':'.code.toByte()) {
-                                                    pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, "keep-alive"))
+                                                    // This is a comment/heartbeat.
+                                                    // For simplicity, we just notify that a heartbeat occurred.
+                                                    // In a more complex impl, we would buffer until \n to get the full comment.
+                                                    pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, "keep-alive", null, null))
                                                 }
                                                 isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
                                             }
@@ -277,10 +280,8 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     }
 
     private val sseListener = object : EventSourceListener() {
-        override fun onOpen(eventSource: EventSource, response: Response) {
-            if (eventSource != this@NitroSse.eventSource) return
             backoffCounter = 0
-            pushEventToBuffer(SseEvent(SseEventType.OPEN, null, null, null, null))
+            pushEventToBuffer(SseEvent(SseEventType.OPEN, null, null, null, null, response.code.toDouble(), null))
         }
 
         override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
@@ -288,7 +289,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             if (!id.isNullOrEmpty()) {
                 this@NitroSse.lastProcessedId = id
             }
-            pushEventToBuffer(SseEvent(SseEventType.MESSAGE, data, id, type, null))
+            pushEventToBuffer(SseEvent(SseEventType.MESSAGE, data, id, type, null, 200.0, null))
         }
 
         override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
@@ -335,7 +336,14 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             }
 
             val safeReconnectDelay = Math.max(reconnectDelay, 2000L)
-            pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, t?.message ?: "Link lost ($statusCode)"))
+            
+            if (statusCode == 204) {
+                pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "No Content (204). Stopping.", 204.0, null))
+                stop()
+                return
+            }
+
+            pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, t?.message ?: "Link lost ($statusCode)", if (statusCode != -1) statusCode.toDouble() else null, null))
             sseHandler?.postDelayed({ if (isRunning.get() && eventSource == this@NitroSse.eventSource) performConnection() }, safeReconnectDelay)
         }
 
