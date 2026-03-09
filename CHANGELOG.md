@@ -3,25 +3,21 @@
 ## 1.5.1 (2026-03-09)
 
 ### Reliability & Stability
-
-*   **Atomic State Management**: Optimized `start()` and `stop()` to update the connection state immediately on the calling thread. This eliminates race conditions where UI buttons would appear stuck or incorrectly disabled during rapid interactions.
-*   **JS Reload Safety**: Improved lifecycle handling to prevent "ghost connections".
-    *   **Android**: Added synchronous cleanup in `dispose()` to ensure sockets are closed before the JS bridge reloads.
-    *   **iOS**: Implemented `deinit` hooks for automatic resource release upon instance disposal.
-*   **Idle Stream Stability**: Increased default `readTimeoutMs` from 35s to **300s (5 minutes)**. This prevents premature reconnections on streams with infrequent data or heartbeats.
-*   **Diagnostic Precision**: Fixed Android's byte counter to be cumulative across reconnections, ensuring `getStats()` provides accurate historical data for the entire instance lifecycle.
+- **Thread-Safe State Machine**: Refactored iOS threading to eliminate data races during concurrent start/stop/reload actions.
+- **Background Support**: Implemented `backgroundExecution` flag for both iOS and Android to keep streams alive in the background.
+- **Zero-Loss Buffering**: Replaced tail-drop with forced flushing when `maxBufferSize` is reached.
+- **Improved Timeouts**: Default `readTimeoutMs` increased to 5 minutes for better stability on idle streams.
+- **Accuracy Fixes**: Fixed Android's byte counter to be cumulative across reconnections.
+- **JS Reload Safety**: Synchronous native cleanup to prevent "ghost connections" during hot reloads.
 
 ### Developer Experience (DX)
+- **Native Unit Tests**: Added comprehensive test suites for versioning, auth resets, and stats on both platforms.
+- **JSDoc Updates**: Improved documentation and added `@default` tags for all config options.
+- **Interceptor Safety**: Added native timeouts for `onBeforeRequest` to prevent app hangs.
 
-*   **Clearer Documentation**: Rewrote `SseConfig` JSDoc to provide better guidance on timeout configurations and background execution.
-*   **Intellisense Support**: Added explicit `@default` tags to all configuration properties in `SseInterface.ts`.
-*   **Mockable Interceptors**: Refined the `onBeforeRequest` mechanism to include a native-level timeout, preventing the app from hanging if an async token refresh fails to resolve.
+### Infrastructure & Example
 
-### Example App
-
-*   **Architecture Refactor**: Split the example into a clean Container/Presentation pattern (`App.tsx` vs `Content.tsx`).
-*   **Advanced Debugging**: Added the ability to tap on any log entry to view full event metadata (headers, exact payload, status codes) via a native Alert popup.
-*   **Dynamic Testing**: Included a demonstration of periodic header rotation (auto-refreshing tokens).
+- **Example App**: Refactored architecture and added a detailed event inspector.
 
 ## 1.5.0 (2026-03-06)
 

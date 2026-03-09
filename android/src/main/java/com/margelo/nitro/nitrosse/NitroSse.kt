@@ -125,6 +125,10 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
      */
     override fun onStop(owner: LifecycleOwner) {
         if (isRunning.get()) {
+            if (config?.backgroundExecution == true) {
+                Log.d(TAG, "App backgrounded. backgroundExecution is true, keeping NitroSse connection alive.")
+                return
+            }
             Log.d(TAG, "App backgrounded. Hibernating NitroSse connection.")
             wasRunningBeforePaused = true
             stop()
@@ -135,14 +139,15 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         val batchInterval = config?.batchingIntervalMs ?: 0.0
         val bufferCapacity = config?.maxBufferSize?.toInt() ?: 1000
 
+        var shouldFlush = false
         synchronized(eventBuffer) {
-            while (eventBuffer.size >= bufferCapacity) {
-                eventBuffer.removeAt(0)
-            }
             eventBuffer.add(event)
+            if (eventBuffer.size >= bufferCapacity) {
+                shouldFlush = true
+            }
         }
 
-        if (batchInterval <= 0) {
+        if (batchInterval <= 0 || shouldFlush) {
             flushBufferToJs()
         } else if (!isFlushPending.getAndSet(true)) {
             sseHandler?.postDelayed({
@@ -206,10 +211,12 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         if (!isRunning.compareAndSet(false, true)) return
         
         consecutiveAuthErrors.set(0)
-        backoffCounter = 0
-        requestId = null
         val version = connectionAttemptVersion.incrementAndGet()
-        sseHandler?.post { performConnection(version) }
+        sseHandler?.post { 
+            backoffCounter = 0
+            requestId = null
+            performConnection(version) 
+        }
     }
 
     private fun performConnection(version: Int) {

@@ -16,7 +16,9 @@ import LDSwiftEventSource
  */
 class NitroSse: HybridNitroSseSpec {
     deinit {
-        self.stopInternal()
+        sseQueue.sync {
+            self.stopInternal()
+        }
     }
     private var eventSource: EventSource?
     private var config: SseConfig?
@@ -54,37 +56,54 @@ class NitroSse: HybridNitroSseSpec {
      *   - onEvent: Callback function to receive batched SSE events.
      */
     func setup(config: SseConfig, onEvent: @escaping ((_ events: [SseEvent]) -> Void)) throws {
-        self.config = config
-        self.onEventsCallback = onEvent
-        
-        NotificationCenter.default.removeObserver(self)
-        NotificationCenter.default.addObserver(self, selector: #selector(handleAppDidEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(handleAppWillEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+        sseQueue.async {
+            self.config = config
+            self.onEventsCallback = onEvent
+            
+            NotificationCenter.default.removeObserver(self)
+            NotificationCenter.default.addObserver(self, selector: #selector(self.handleAppDidEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(self.handleAppWillEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+        }
     }
     
     @objc private func handleAppDidEnterBackground() {
         sseQueue.async {
-            guard self.isRunning else { return }
+            guard self.isRunning, let config = self.config else { return }
             
-            self.wasRunningBeforeHibernation = true
-            print("[NitroSse] App backgrounded. Hibernating connection.")
-            
-            self.backgroundTaskIdentifier = UIApplication.shared.beginBackgroundTask(withName: "NitroSse-GracefulHibernate") {
-                self.cleanupBackgroundTask()
+            if config.backgroundExecution {
+                print("[NitroSse] App backgrounded. backgroundExecution is true, keeping connection alive.")
+                // Start a background task to tell the OS we want to keep running
+                self.backgroundTaskIdentifier = UIApplication.shared.beginBackgroundTask(withName: "NitroSse-KeepAlive") { [weak self] in
+                    self?.sseQueue.async {
+                        print("[NitroSse] Background task expired. Hibernating now.")
+                        self?.hibernateConnection()
+                    }
+                }
+                return
             }
             
-            self.flushEventsToJs()
-            
-            self.eventSource?.stop()
-            self.eventSource = nil
-            if let rid = self.requestId {
-                NitroSseNetworkInspector.reportResponseEnd(rid, encodedDataLength: Int(self.totalBytesReceived))
-                self.requestId = nil
-            }
-            self.isRunning = false
-            
-            self.cleanupBackgroundTask()
+            self.hibernateConnection()
         }
+    }
+
+    private func hibernateConnection() {
+        dispatchPrecondition(condition: .onQueue(sseQueue))
+        guard self.isRunning else { return }
+        
+        self.wasRunningBeforeHibernation = true
+        print("[NitroSse] Hibernating NitroSse connection.")
+        
+        self.flushEventsToJs()
+        
+        self.eventSource?.stop()
+        self.eventSource = nil
+        if let rid = self.requestId {
+            NitroSseNetworkInspector.reportResponseEnd(rid, encodedDataLength: Int(self.totalBytesReceived))
+            self.requestId = nil
+        }
+        self.isRunning = false
+        
+        self.cleanupBackgroundTask()
     }
     
     @objc private func handleAppWillEnterForeground() {
@@ -99,6 +118,7 @@ class NitroSse: HybridNitroSseSpec {
     }
     
     private func cleanupBackgroundTask() {
+        dispatchPrecondition(condition: .onQueue(sseQueue))
         if self.backgroundTaskIdentifier != .invalid {
             UIApplication.shared.endBackgroundTask(self.backgroundTaskIdentifier)
             self.backgroundTaskIdentifier = .invalid
@@ -111,17 +131,17 @@ class NitroSse: HybridNitroSseSpec {
         let batchIntervalMs = config?.batchingIntervalMs ?? 0
         let bufferCapacity = Int(config?.maxBufferSize ?? 1000)
         
-        while eventBuffer.count >= bufferCapacity {
-            eventBuffer.removeFirst()
-        }
         eventBuffer.append(event)
         
-        if batchIntervalMs <= 0 {
+        // If we reached capacity, flush immediately regardless of interval
+        if eventBuffer.count >= bufferCapacity || batchIntervalMs <= 0 {
             flushEventsToJs()
         } else if !isFlushPending {
             isFlushPending = true
             sseQueue.asyncAfter(deadline: .now() + (Double(batchIntervalMs) / 1000.0)) { [weak self] in
-                self?.flushEventsToJs()
+                self?.sseQueue.async {
+                    self?.flushEventsToJs()
+                }
             }
         }
     }
@@ -165,7 +185,7 @@ class NitroSse: HybridNitroSseSpec {
                 maxBufferSize: config.maxBufferSize,
                 connectionTimeoutMs: config.connectionTimeoutMs,
                 readTimeoutMs: config.readTimeoutMs,
-                onBeforeRequest: config.onBeforeRequest // Ensure onBeforeRequest is copied
+                onBeforeRequest: config.onBeforeRequest
             )
             print("[NitroSse] Headers updated for subsequent connections.")
         }
@@ -190,15 +210,20 @@ class NitroSse: HybridNitroSseSpec {
      * This triggers the initial request and handles subsequent reconnections.
      */
     func start() throws {
-        guard !self.isRunning else { return }
-        self.isRunning = true
-        
-        self.consecutiveAuthErrors = 0 
-        self.backoffCounter = 0
-        self.connectionAttemptVersion += 1
-        let version = self.connectionAttemptVersion
-
-        sseQueue.async {
+        try sseQueue.sync {
+            guard !self.isRunning else { return }
+            
+            // Critical check: Ensure config is available before starting
+            guard self.config != nil else {
+                throw NSError(domain: "NitroSse", code: -1, userInfo: [NSLocalizedDescriptionKey: "NitroSse not configured. Call setup() first."])
+            }
+            
+            self.isRunning = true
+            self.consecutiveAuthErrors = 0 
+            self.backoffCounter = 0
+            self.connectionAttemptVersion += 1
+            let version = self.connectionAttemptVersion
+            
             self.establishConnection(attemptVersion: version)
         }
     }
@@ -217,11 +242,14 @@ class NitroSse: HybridNitroSseSpec {
             let timeoutMs = capturedConfig.connectionTimeoutMs ?? 15000.0
             
             sseQueue.asyncAfter(deadline: .now() + (timeoutMs / 1000.0)) { [weak self] in
-                guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
-                if !flag.isCompleted {
-                    flag.isCompleted = true
-                    let error = NSError(domain: "NitroSse", code: -1, userInfo: [NSLocalizedDescriptionKey: "onBeforeRequest interceptor timed out after \(timeoutMs) ms"])
-                    self.handleInterceptorError(error, attemptVersion: attemptVersion)
+                guard let self = self else { return }
+                self.sseQueue.async {
+                    guard self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+                    if !flag.isCompleted {
+                        flag.isCompleted = true
+                        let error = NSError(domain: "NitroSse", code: -1, userInfo: [NSLocalizedDescriptionKey: "onBeforeRequest interceptor timed out after \(timeoutMs) ms"])
+                        self.handleInterceptorError(error, attemptVersion: attemptVersion)
+                    }
                 }
             }
 
@@ -274,13 +302,12 @@ class NitroSse: HybridNitroSseSpec {
     }
 
     private func handleInterceptorError(_ error: Error, attemptVersion: Int) {
-        sseQueue.async {
-            guard self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
-            print("[NitroSse] Interceptor failed: \(error.localizedDescription)")
-            self.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Interceptor Error: \(error.localizedDescription)", statusCode: -1, retry: nil))
-            // Reconnect after delay
-            self.scheduleAutomaticReconnect(isError: true, attemptVersion: attemptVersion)
-        }
+        dispatchPrecondition(condition: .onQueue(sseQueue))
+        guard self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+        print("[NitroSse] Interceptor failed: \(error.localizedDescription)")
+        self.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Interceptor Error: \(error.localizedDescription)", statusCode: -1, retry: nil))
+        // Reconnect after delay
+        self.scheduleAutomaticReconnect(isError: true, attemptVersion: attemptVersion)
     }
 
     private func performEstablishConnection(attemptVersion: Int) {
@@ -291,7 +318,6 @@ class NitroSse: HybridNitroSseSpec {
             NitroSseNetworkInspector.reportResponseEnd(rid, encodedDataLength: Int(self.totalBytesReceived))
             self.requestId = nil
         }
-        
         
         let sessionConfig = URLSessionConfiguration.default
         sessionConfig.timeoutIntervalForRequest = (config.readTimeoutMs ?? 300000.0) / 1000.0
@@ -327,15 +353,14 @@ class NitroSse: HybridNitroSseSpec {
      * Stop the SSE connection and clear any pending reconnect timers.
      */
     func stop() {
-        self.isRunning = false
-        self.connectionAttemptVersion += 1
-        
         sseQueue.async {
+            self.connectionAttemptVersion += 1
             self.stopInternal()
         }
     }
 
     private func stopInternal() {
+        dispatchPrecondition(condition: .onQueue(sseQueue))
         self.isRunning = false
         self.eventSource?.stop()
         self.eventSource = nil
@@ -363,7 +388,7 @@ class NitroSse: HybridNitroSseSpec {
     func restart() {
         sseQueue.async {
             self.stopInternal()
-            guard !self.isRunning else { return } // Should be false now
+            guard !self.isRunning else { return } 
             self.isRunning = true
             self.requestId = nil
             self.connectionAttemptVersion += 1
@@ -399,16 +424,16 @@ class NitroSse: HybridNitroSseSpec {
         return nil
     }
 
-    // EventSource callback handling is done via SseHandler class below.
-
-    
     private func scheduleAutomaticReconnectWithFixedDelay(_ delay: TimeInterval, attemptVersion: Int) {
         dispatchPrecondition(condition: .onQueue(sseQueue))
         eventSource?.stop()
         eventSource = nil
         sseQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
-            self.establishConnection(attemptVersion: attemptVersion)
+            guard let self = self else { return }
+            self.sseQueue.async {
+                guard self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+                self.establishConnection(attemptVersion: attemptVersion)
+            }
         }
     }
     
@@ -425,12 +450,14 @@ class NitroSse: HybridNitroSseSpec {
             delay = defaultRetryDelay * (0.8 + Double.random(in: 0...0.4))
         }
         let safeDelay = max(delay, 2.0)
-        let currentSource = self.eventSource
         eventSource?.stop()
         eventSource = nil
         sseQueue.asyncAfter(deadline: .now() + safeDelay) { [weak self] in
-            guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
-            self.establishConnection(attemptVersion: attemptVersion)
+            guard let self = self else { return }
+            self.sseQueue.async {
+                guard self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+                self.establishConnection(attemptVersion: attemptVersion)
+            }
         }
     }
     
@@ -449,9 +476,7 @@ class NitroSse: HybridNitroSseSpec {
             parent.sseQueue.async { [weak parent] in
                 guard let parent = parent, self.attemptVersion == parent.connectionAttemptVersion else { return }
                 parent.backoffCounter = 0
-                parent.consecutiveAuthErrors = 0 // Successful connection, reset error counter
-                // LDSwiftEventSource doesn't easily expose the response code in onOpened,
-                // but we assume 200 if onOpened is called. 
+                parent.consecutiveAuthErrors = 0 
                 parent.pushEventToBuffer(SseEvent(type: .open, data: nil, id: nil, event: nil, message: nil, statusCode: 200, retry: nil))
             }
         }
@@ -509,14 +534,12 @@ class NitroSse: HybridNitroSseSpec {
                 NitroSseNetworkInspector.reportRequestFailed(parent.requestId, cancelled: false)
                 parent.requestId = nil
                 
-                
                 if statusCode == 204 {
                     parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "No Content (204). Stopping.", statusCode: 204, retry: nil))
                     parent.stopInternal()
                     return
                 }
 
-                // 401/403 are recoverable if we have an interceptor, but with a limit
                 if statusCode == 401 || statusCode == 403 {
                     if parent.config?.onBeforeRequest == nil {
                         parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Auth Error (\(statusCode)) - No interceptor provided. Stopping.", statusCode: Double(statusCode), retry: nil))
