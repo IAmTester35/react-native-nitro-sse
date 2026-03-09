@@ -15,6 +15,9 @@ import LDSwiftEventSource
  *    as a single array after a configurable interval.
  */
 class NitroSse: HybridNitroSseSpec {
+    deinit {
+        self.stopInternal()
+    }
     private var eventSource: EventSource?
     private var config: SseConfig?
     private var onEventsCallback: ((_ events: [SseEvent]) -> Void)?
@@ -187,13 +190,15 @@ class NitroSse: HybridNitroSseSpec {
      * This triggers the initial request and handles subsequent reconnections.
      */
     func start() throws {
+        guard !self.isRunning else { return }
+        self.isRunning = true
+        
+        self.consecutiveAuthErrors = 0 
+        self.backoffCounter = 0
+        self.connectionAttemptVersion += 1
+        let version = self.connectionAttemptVersion
+
         sseQueue.async {
-            guard !self.isRunning else { return }
-            self.isRunning = true
-            self.consecutiveAuthErrors = 0 // Reset auth retry state
-            self.backoffCounter = 0
-            self.connectionAttemptVersion += 1
-            let version = self.connectionAttemptVersion
             self.establishConnection(attemptVersion: version)
         }
     }
@@ -203,7 +208,7 @@ class NitroSse: HybridNitroSseSpec {
         guard isRunning, let config = config, attemptVersion == self.connectionAttemptVersion else { return }
 
         if let interceptor = config.onBeforeRequest {
-            // Strong reference to config to avoid it changing under us during async call
+            
             let capturedConfig = config
             class CompletionFlag {
                 var isCompleted = false
@@ -289,8 +294,8 @@ class NitroSse: HybridNitroSseSpec {
         
         
         let sessionConfig = URLSessionConfiguration.default
-        sessionConfig.timeoutIntervalForRequest = (config.readTimeoutMs ?? 35000.0) / 1000.0
-        sessionConfig.timeoutIntervalForResource = (config.readTimeoutMs ?? 35000.0) / 1000.0
+        sessionConfig.timeoutIntervalForRequest = (config.readTimeoutMs ?? 300000.0) / 1000.0
+        sessionConfig.timeoutIntervalForResource = (config.readTimeoutMs ?? 300000.0) / 1000.0
         if let connTimeout = config.connectionTimeoutMs {
             sessionConfig.timeoutIntervalForRequest = connTimeout / 1000.0
         }
@@ -322,6 +327,9 @@ class NitroSse: HybridNitroSseSpec {
      * Stop the SSE connection and clear any pending reconnect timers.
      */
     func stop() {
+        self.isRunning = false
+        self.connectionAttemptVersion += 1
+        
         sseQueue.async {
             self.stopInternal()
         }

@@ -9,6 +9,7 @@ import {
   StatusBar,
   TextInput,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import type { SseStats } from 'react-native-nitro-sse';
 
@@ -113,8 +114,32 @@ export function Content(props: ContentProps) {
     if (item.type === 'message') typeColor = COLORS.primary;
     if (item.type === 'command') typeColor = COLORS.accent;
 
+    const showDetails = () => {
+      const details = [
+        `Type: ${item.type.toUpperCase()}`,
+        item.statusCode ? `Status: ${item.statusCode}` : null,
+        item.data ? `Data: ${item.data}` : null,
+        item.message ? `Message: ${item.message}` : null,
+        item.id ? `Event ID: ${item.id}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+
+      Alert.alert(
+        'Event Details',
+        details,
+        [{ text: 'Close', style: 'cancel' }],
+        { cancelable: true }
+      );
+    };
+
     return (
-      <View key={item.id} style={styles.logItem}>
+      <TouchableOpacity
+        key={item.id}
+        style={styles.logItem}
+        onPress={showDetails}
+        activeOpacity={0.7}
+      >
         <View style={styles.logHeader}>
           <Text style={styles.logTime}>{item.time}</Text>
           <View
@@ -128,11 +153,17 @@ export function Content(props: ContentProps) {
             <Text style={styles.logStatus}>HTTP {item.statusCode}</Text>
           ) : null}
         </View>
-        {item.data ? <Text style={styles.logData}>{item.data}</Text> : null}
-        {item.message ? (
-          <Text style={styles.logMessage}>{item.message}</Text>
+        {item.data ? (
+          <Text style={styles.logData} numberOfLines={2}>
+            {item.data}
+          </Text>
         ) : null}
-      </View>
+        {item.message ? (
+          <Text style={styles.logMessage} numberOfLines={2}>
+            {item.message}
+          </Text>
+        ) : null}
+      </TouchableOpacity>
     );
   };
 

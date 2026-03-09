@@ -87,7 +87,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         if (this.client == null) {
             this.client = OkHttpClient.Builder()
                 .connectTimeout((config.connectionTimeoutMs ?: 15000.0).toLong(), TimeUnit.MILLISECONDS)
-                .readTimeout((config.readTimeoutMs ?: 35000.0).toLong(), TimeUnit.MILLISECONDS)
+                .readTimeout((config.readTimeoutMs ?: 300000.0).toLong(), TimeUnit.MILLISECONDS)
                                 .addNetworkInterceptor(HeartbeatNetworkInterceptor(totalBytesReceived) {
                                     pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, "keep-alive", null, null))
                                 })
@@ -202,9 +202,10 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
      * This triggers the initial request and handles subsequent reconnections.
      */
     override fun start() {
-        if (config == null || isRunning.get()) return
-        isRunning.set(true)
-        consecutiveAuthErrors.set(0) // Reset auth retry state
+        if (config == null) return
+        if (!isRunning.compareAndSet(false, true)) return
+        
+        consecutiveAuthErrors.set(0)
         backoffCounter = 0
         requestId = null
         val version = connectionAttemptVersion.incrementAndGet()
@@ -278,7 +279,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         
         // Report end for previous request if it was running
         requestId?.let { 
-            NetworkInspector.reportResponseEnd(it, totalBytesReceived.getAndSet(0))
+            NetworkInspector.reportResponseEnd(it, totalBytesReceived.get())
             this.requestId = null
         }
         
@@ -461,34 +462,55 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
      * Stop the SSE connection and clear any pending reconnect timers.
      */
     override fun stop() {
-        flushBufferToJs()
         isRunning.set(false)
-        backoffCounter = 0 
-        sseHandler?.removeCallbacksAndMessages(null)
-        eventSource?.cancel()
-        eventSource = null
-        requestId?.let { 
-            NetworkInspector.reportResponseEnd(it, totalBytesReceived.get())
-            requestId = null
+        val version = connectionAttemptVersion.incrementAndGet() 
+        sseHandler?.post {
+            flushBufferToJs()
+            backoffCounter = 0 
+            sseHandler?.removeCallbacksAndMessages(null)
+            eventSource?.cancel()
+            eventSource = null
+            requestId?.let { 
+                NetworkInspector.reportResponseEnd(it, totalBytesReceived.get())
+                requestId = null
+            }
+            isFlushPending.set(false)
         }
-        isFlushPending.set(false)
     }
 
     /**
      * Clean up all resources, including background threads and lifecycle observers.
+     * This is called by Nitro when the HybridObject is being garbage collected or JS reloads.
      */
     override fun dispose() {
         Log.d(TAG, "Disposing NitroSse instance and cleaning up resources...")
-        stop()
+ 
+        isRunning.set(false)
+        connectionAttemptVersion.incrementAndGet()
+        
+        try {
+            eventSource?.cancel()
+            eventSource = null
+            requestId?.let { 
+                NetworkInspector.reportRequestFailed(it, true) 
+                requestId = null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during synchronous dispose: ${e.message}")
+        }
+
         if (hasSubscribedToLifecycle) {
             Handler(Looper.getMainLooper()).post {
                 ProcessLifecycleOwner.get().lifecycle.removeObserver(this@NitroSse)
             }
             hasSubscribedToLifecycle = false
         }
+        
+        sseHandler?.removeCallbacksAndMessages(null)
         sseHandlerThread?.quitSafely()
         sseHandlerThread = null
         sseHandler = null
+        
         super.dispose()
     }
 }

@@ -40,7 +40,7 @@ export default function App() {
   const [method, setMethod] = useState<'get' | 'post'>('get');
   const [body, setBody] = useState('');
   const [connectionTimeout, setConnectionTimeout] = useState('15000');
-  const [readTimeout, setReadTimeout] = useState('35000');
+  const [readTimeout, setReadTimeout] = useState('300000');
   const [showConfig, setShowConfig] = useState(false);
 
   // --- Refs ---
@@ -196,6 +196,10 @@ export default function App() {
   useEffect(() => {
     return () => {
       if (statsInterval.current) clearInterval(statsInterval.current as any);
+      if (sseRef.current) {
+        sseRef.current.stop();
+        sseRef.current = null;
+      }
     };
   }, []);
 

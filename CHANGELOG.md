@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.5.1 (2026-03-09)
+
+### Reliability & Stability
+
+*   **Atomic State Management**: Optimized `start()` and `stop()` to update the connection state immediately on the calling thread. This eliminates race conditions where UI buttons would appear stuck or incorrectly disabled during rapid interactions.
+*   **JS Reload Safety**: Improved lifecycle handling to prevent "ghost connections".
+    *   **Android**: Added synchronous cleanup in `dispose()` to ensure sockets are closed before the JS bridge reloads.
+    *   **iOS**: Implemented `deinit` hooks for automatic resource release upon instance disposal.
+*   **Idle Stream Stability**: Increased default `readTimeoutMs` from 35s to **300s (5 minutes)**. This prevents premature reconnections on streams with infrequent data or heartbeats.
+*   **Diagnostic Precision**: Fixed Android's byte counter to be cumulative across reconnections, ensuring `getStats()` provides accurate historical data for the entire instance lifecycle.
+
+### Developer Experience (DX)
+
+*   **Clearer Documentation**: Rewrote `SseConfig` JSDoc to provide better guidance on timeout configurations and background execution.
+*   **Intellisense Support**: Added explicit `@default` tags to all configuration properties in `SseInterface.ts`.
+*   **Mockable Interceptors**: Refined the `onBeforeRequest` mechanism to include a native-level timeout, preventing the app from hanging if an async token refresh fails to resolve.
+
+### Example App
+
+*   **Architecture Refactor**: Split the example into a clean Container/Presentation pattern (`App.tsx` vs `Content.tsx`).
+*   **Advanced Debugging**: Added the ability to tap on any log entry to view full event metadata (headers, exact payload, status codes) via a native Alert popup.
+*   **Dynamic Testing**: Included a demonstration of periodic header rotation (auto-refreshing tokens).
+
 ## 1.5.0 (2026-03-06)
 
 ### Features

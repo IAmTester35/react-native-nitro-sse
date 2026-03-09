@@ -10144,7 +10144,14 @@ __metadata:
     react-native-builder-bob: "npm:^0.40.17"
     react-native-monorepo-config: "npm:^0.3.1"
     react-native-nitro-modules: "npm:0.35.0"
+    react-native-nitro-sse: "link:.."
   languageName: unknown
+  linkType: soft
+
+"react-native-nitro-sse@link:..::locator=react-native-nitro-sse-example%40workspace%3Aexample":
+  version: 0.0.0-use.local
+  resolution: "react-native-nitro-sse@link:..::locator=react-native-nitro-sse-example%40workspace%3Aexample"
+  languageName: node
   linkType: soft
 
 "react-native-nitro-sse@workspace:.":
