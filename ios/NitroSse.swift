@@ -205,33 +205,63 @@ class NitroSse: HybridNitroSseSpec {
         if let interceptor = config.onBeforeRequest {
             // Strong reference to config to avoid it changing under us during async call
             let capturedConfig = config
+            class CompletionFlag {
+                var isCompleted = false
+            }
+            let flag = CompletionFlag()
+            let timeoutMs = capturedConfig.connectionTimeoutMs ?? 15000.0
+            
+            sseQueue.asyncAfter(deadline: .now() + (timeoutMs / 1000.0)) { [weak self] in
+                guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+                if !flag.isCompleted {
+                    flag.isCompleted = true
+                    let error = NSError(domain: "NitroSse", code: -1, userInfo: [NSLocalizedDescriptionKey: "onBeforeRequest interceptor timed out after \(timeoutMs) ms"])
+                    self.handleInterceptorError(error, attemptVersion: attemptVersion)
+                }
+            }
+
             interceptor().then { [weak self] promise2 in
                 promise2.then { [weak self] newHeaders in
                     self?.sseQueue.async {
                         guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
-                        var mergedHeaders = capturedConfig.headers ?? [:]
-                        for (k, v) in newHeaders {
-                            mergedHeaders[k] = v
+                        if !flag.isCompleted {
+                            flag.isCompleted = true
+                            var mergedHeaders = capturedConfig.headers ?? [:]
+                            for (k, v) in newHeaders {
+                                mergedHeaders[k] = v
+                            }
+                            self.config = SseConfig(
+                                url: capturedConfig.url,
+                                method: capturedConfig.method,
+                                headers: mergedHeaders,
+                                body: capturedConfig.body,
+                                backgroundExecution: capturedConfig.backgroundExecution,
+                                batchingIntervalMs: capturedConfig.batchingIntervalMs,
+                                maxBufferSize: capturedConfig.maxBufferSize,
+                                connectionTimeoutMs: capturedConfig.connectionTimeoutMs,
+                                readTimeoutMs: capturedConfig.readTimeoutMs,
+                                onBeforeRequest: capturedConfig.onBeforeRequest
+                            )
+                            self.performEstablishConnection(attemptVersion: attemptVersion)
                         }
-                        self.config = SseConfig(
-                            url: capturedConfig.url,
-                            method: capturedConfig.method,
-                            headers: mergedHeaders,
-                            body: capturedConfig.body,
-                            backgroundExecution: capturedConfig.backgroundExecution,
-                            batchingIntervalMs: capturedConfig.batchingIntervalMs,
-                            maxBufferSize: capturedConfig.maxBufferSize,
-                            connectionTimeoutMs: capturedConfig.connectionTimeoutMs,
-                            readTimeoutMs: capturedConfig.readTimeoutMs,
-                            onBeforeRequest: capturedConfig.onBeforeRequest
-                        )
-                        self.performEstablishConnection(attemptVersion: attemptVersion)
                     }
                 }.catch { [weak self] error in
-                    self?.handleInterceptorError(error, attemptVersion: attemptVersion)
+                    self?.sseQueue.async {
+                        guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+                        if !flag.isCompleted {
+                            flag.isCompleted = true
+                            self.handleInterceptorError(error, attemptVersion: attemptVersion)
+                        }
+                    }
                 }
             }.catch { [weak self] error in
-                self?.handleInterceptorError(error, attemptVersion: attemptVersion)
+                self?.sseQueue.async {
+                    guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+                    if !flag.isCompleted {
+                        flag.isCompleted = true
+                        self.handleInterceptorError(error, attemptVersion: attemptVersion)
+                    }
+                }
             }
         } else {
             self.performEstablishConnection(attemptVersion: attemptVersion)

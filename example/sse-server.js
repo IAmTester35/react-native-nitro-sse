@@ -11,6 +11,8 @@ const PORT = 33333;
  * - /events?retry=5000: Send 'retry: 5000' in the stream
  * - Supports both GET and POST
  */
+let lastSeenAuthKey = null;
+
 const server = http.createServer((req, res) => {
   const parsedUrl = url.parse(req.url, true);
   const query = parsedUrl.query;
@@ -25,16 +27,26 @@ const server = http.createServer((req, res) => {
     // 1. Handle custom status codes from query params
     const requestedStatus = parseInt(query.status) || 200;
 
-    // Check for auth if requested
+    const authHeader = req.headers.authorization;
+    if (authHeader) {
+      if (lastSeenAuthKey && lastSeenAuthKey !== authHeader) {
+        console.log(
+          `\n🔄 [TOKEN UPDATED] ${lastSeenAuthKey} => ${authHeader}\n`
+        );
+      } else if (!lastSeenAuthKey) {
+        console.log(`\n🔑 [INITIAL TOKEN] ${authHeader}\n`);
+      }
+      lastSeenAuthKey = authHeader;
+    }
+
+    // Check for auth if requested (Commented out validation so the random keys don't get rejected)
     if (query.auth === 'true') {
-      const authHeader = req.headers.authorization;
-      if (!authHeader || authHeader !== 'Bearer Nitro123') {
-        console.log('Unauthorized: Missing or invalid Authorization header');
+      if (!authHeader) {
+        console.log('Unauthorized: Missing Authorization header');
         res.writeHead(401, { 'Access-Control-Allow-Origin': '*' });
         res.end('Unauthorized');
         return;
       }
-      console.log('Auth header verified:', authHeader);
     }
 
     if (requestedStatus === 204) {

@@ -88,54 +88,10 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             this.client = OkHttpClient.Builder()
                 .connectTimeout((config.connectionTimeoutMs ?: 15000.0).toLong(), TimeUnit.MILLISECONDS)
                 .readTimeout((config.readTimeoutMs ?: 35000.0).toLong(), TimeUnit.MILLISECONDS)
-                .addNetworkInterceptor { chain ->
-                    val request = chain.request()
-                    val rid = request.tag(String::class.java)
-                    
-                    val response = chain.proceed(request)
-                    
-                    rid?.let { 
-                        NetworkInspector.reportResponseStart(it, request, response)
-                    }
-                    
-                    val responseBody = response.body
-                    if (responseBody != null) {
-                        val countingBody = object : ResponseBody() {
-                            override fun contentType() = responseBody.contentType()
-                            override fun contentLength() = responseBody.contentLength()
-                            override fun source() = (object : okio.ForwardingSource(responseBody.source()) {
-                                private var isAtStartOfLine = true
-
-                                override fun read(sink: okio.Buffer, byteCount: Long): Long {
-                                    val bufferOffset = sink.size
-                                    val bytesRead = super.read(sink, byteCount)
-                                    if (bytesRead != -1L) {
-                                        totalBytesReceived.addAndGet(bytesRead)
-                                        
-
-                                        try {
-                                            for (i in 0 until bytesRead) {
-                                                val b = sink.get(bufferOffset + i)
-                                                if (isAtStartOfLine && b == ':'.code.toByte()) {
-                                                    // This is a comment/heartbeat.
-                                                    pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, "keep-alive", null, null))
-                                                }
-                                                isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
-                                            }
-                                        } catch (e: Exception) {
-                                            // Silent
-                                        }
-                                    }
-                                    return bytesRead
-                                }
-                            }).buffer()
-                        }
-                        response.newBuilder().body(countingBody).build()
-                    } else {
-                        response
-                    }
-                }
-                .build()
+                                .addNetworkInterceptor(HeartbeatNetworkInterceptor(totalBytesReceived) {
+                                    pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, "keep-alive", null, null))
+                                })
+                                .build()
         }
             
         if (sseHandlerThread == null) {
@@ -262,22 +218,37 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         val interceptor = currentConfig.onBeforeRequest
         
         if (interceptor != null) {
+            val interceptorCompleted = AtomicBoolean(false)
+            val timeoutMs = (currentConfig.connectionTimeoutMs ?: 15000.0).toLong()
+
+            sseHandler?.postDelayed({
+                if (interceptorCompleted.compareAndSet(false, true)) {
+                    handleInterceptorError(Exception("onBeforeRequest interceptor timed out after $timeoutMs ms"), version)
+                }
+            }, timeoutMs)
+
             interceptor.invoke().then { promise2 ->
                 promise2.then { newHeaders ->
                     sseHandler?.post {
                         if (!isRunning.get() || version != connectionAttemptVersion.get()) return@post
-                        synchronized(this) {
-                            val mergedHeaders = (config?.headers ?: emptyMap()).toMutableMap()
-                            newHeaders.forEach { (k, v) -> mergedHeaders[k] = v }
-                            config = config?.copy(headers = mergedHeaders)
+                        if (interceptorCompleted.compareAndSet(false, true)) {
+                            synchronized(this) {
+                                val mergedHeaders = (config?.headers ?: emptyMap()).toMutableMap()
+                                newHeaders.forEach { (k, v) -> mergedHeaders[k] = v }
+                                config = config?.copy(headers = mergedHeaders)
+                            }
+                            executeConnection(version)
                         }
-                        executeConnection(version)
                     }
                 }.catch { error ->
-                    handleInterceptorError(error, version)
+                    if (interceptorCompleted.compareAndSet(false, true)) {
+                        handleInterceptorError(error, version)
+                    }
                 }
             }.catch { error ->
-                handleInterceptorError(error, version)
+                if (interceptorCompleted.compareAndSet(false, true)) {
+                    handleInterceptorError(error, version)
+                }
             }
         } else {
             executeConnection(version)
@@ -519,5 +490,58 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         sseHandlerThread = null
         sseHandler = null
         super.dispose()
+    }
+}
+
+/**
+ * Separates the network interception logic (counting bytes, intercepting SSE heartbeats) 
+ * from the main NitroSse connection manager.
+ */
+internal class HeartbeatNetworkInterceptor(
+    private val totalBytesReceived: AtomicLong,
+    private val onHeartbeat: () -> Unit
+) : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val rid = request.tag(String::class.java)
+
+        val response = chain.proceed(request)
+
+        rid?.let {
+            NetworkInspector.reportResponseStart(it, request, response)
+        }
+
+        val responseBody = response.body
+        if (responseBody != null) {
+            val countingBody = object : ResponseBody() {
+                override fun contentType() = responseBody.contentType()
+                override fun contentLength() = responseBody.contentLength()
+                override fun source() = (object : okio.ForwardingSource(responseBody.source()) {
+                    private var isAtStartOfLine = true
+
+                    override fun read(sink: okio.Buffer, byteCount: Long): Long {
+                        val bufferOffset = sink.size
+                        val bytesRead = super.read(sink, byteCount)
+                        if (bytesRead != -1L) {
+                            totalBytesReceived.addAndGet(bytesRead)
+                            try {
+                                for (i in 0 until bytesRead) {
+                                    val b = sink.get(bufferOffset + i)
+                                    if (isAtStartOfLine && b == ':'.code.toByte()) {
+                                        onHeartbeat()
+                                    }
+                                    isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
+                                }
+                            } catch (e: Exception) {
+                                // Silent
+                            }
+                        }
+                        return bytesRead
+                    }
+                }).buffer()
+            }
+            return response.newBuilder().body(countingBody).build()
+        }
+        return response
     }
 }
