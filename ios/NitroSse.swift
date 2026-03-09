@@ -320,11 +320,9 @@ class NitroSse: HybridNitroSseSpec {
         }
         
         let sessionConfig = URLSessionConfiguration.default
-        sessionConfig.timeoutIntervalForRequest = (config.readTimeoutMs ?? 300000.0) / 1000.0
-        sessionConfig.timeoutIntervalForResource = (config.readTimeoutMs ?? 300000.0) / 1000.0
-        if let connTimeout = config.connectionTimeoutMs {
-            sessionConfig.timeoutIntervalForRequest = connTimeout / 1000.0
-        }
+        let readTimeout = (config.readTimeoutMs ?? 300000.0) / 1000.0
+        sessionConfig.timeoutIntervalForRequest = readTimeout
+        sessionConfig.timeoutIntervalForResource = readTimeout
 
         let handler = SseHandler(parent: self, attemptVersion: attemptVersion)
         var esConfig = EventSource.Config(handler: handler, url: url)
@@ -388,7 +386,6 @@ class NitroSse: HybridNitroSseSpec {
     func restart() {
         sseQueue.async {
             self.stopInternal()
-            guard !self.isRunning else { return } 
             self.isRunning = true
             self.requestId = nil
             self.connectionAttemptVersion += 1
