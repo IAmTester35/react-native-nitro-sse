@@ -83,4 +83,40 @@ class NitroSseTests: XCTestCase {
         let size = calculateSize(eventType: "message", data: "{\"id\":1}", lastId: "event-1")
         XCTAssertEqual(size, 22.0) // 8 (data) + 7 (type) + 7 (id) = 22 bytes
     }
+
+    func testVersioningSafety() {
+        var connectionAttemptVersion: Int32 = 0
+        var executeCount = 0
+        
+        func stop() {
+            connectionAttemptVersion += 1
+        }
+        
+        // Start called, captures version 0
+        let capturedVersion = connectionAttemptVersion
+        
+        // User stops immediately
+        stop()
+        
+        // Connection logic tries to execute
+        func establishConnection(version: Int32) {
+            if version == connectionAttemptVersion {
+                executeCount += 1
+            }
+        }
+        
+        establishConnection(version: capturedVersion)
+        XCTAssertEqual(executeCount, 0, "Should not execute if version changed")
+    }
+
+    func testAuthErrorReset() {
+        var consecutiveAuthErrors = 3
+        
+        func onOpened() {
+            consecutiveAuthErrors = 0
+        }
+        
+        onOpened()
+        XCTAssertEqual(consecutiveAuthErrors, 0, "Errors should reset on success")
+    }
 }

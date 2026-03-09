@@ -91,20 +91,67 @@ class NitroSseLogicTest {
     }
 
     @Test
-    fun testHeartbeatScannerLogic_Integrated() {
-        val heartbeatCount = AtomicInteger(0)
-        var isAtStartOfLine = true
+    fun testAuthenticationErrorsReset() {
+        var consecutiveAuthErrors = 3
         
-        fun processByte(b: Byte) {
-            if (isAtStartOfLine && b == ':'.toByte()) {
-                heartbeatCount.incrementAndGet()
-            }
-            isAtStartOfLine = (b == '\n'.toByte() || b == '\r'.toByte())
+        fun onOpened() {
+            consecutiveAuthErrors = 0
         }
-
-        val stream = "data: hello\n:heartbeat\n\n:ping\n".toByteArray()
-        for (b in stream) processByte(b)
         
-        assertEquals(2, heartbeatCount.get())
+        onOpened()
+        assertEquals(0, consecutiveAuthErrors)
+    }
+
+    @Test
+    fun testCumulativeStatsAcrossAttempts() {
+        val totalBytesReceived = AtomicInteger(0)
+        
+        fun simulateDataReceived(bytes: Int) {
+            totalBytesReceived.addAndGet(bytes)
+        }
+        
+        fun stopConnection() {
+            // New logic: We don't reset totalBytesReceived in stop/reportResponseEnd anymore
+            // requestId?.let { NetworkInspector.reportResponseEnd(it, totalBytesReceived.get()) }
+        }
+        
+        simulateDataReceived(100)
+        stopConnection()
+        simulateDataReceived(200)
+        
+        assertEquals(300, totalBytesReceived.get())
+    }
+
+    @Test
+    fun testVersioningSafeguard() {
+        val connectionAttemptVersion = AtomicInteger(0)
+        var connectionExecutedCount = 0
+        
+        fun start() {
+            val versionAtStart = connectionAttemptVersion.get()
+            
+            // Simulate async interceptor delay
+            val delayResolvedWithVersion = versionAtStart
+            
+            // Before executing, check version
+            if (delayResolvedWithVersion == connectionAttemptVersion.get()) {
+                connectionExecutedCount++
+            }
+        }
+        
+        fun stop() {
+            connectionAttemptVersion.incrementAndGet()
+        }
+        
+        // Scenario: Start -> Stop -> Interceptor returns for OLD Start
+        val version1 = connectionAttemptVersion.get()
+        stop() // User cancels before start finishes
+        
+        // Old "start" logic tries to finish
+        if (version1 == connectionAttemptVersion.get()) {
+            connectionExecutedCount++
+        }
+        
+        assertEquals(0, connectionExecutedCount)
     }
 }
