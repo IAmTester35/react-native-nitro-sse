@@ -275,21 +275,22 @@ class NitroSse: HybridNitroSseSpec {
                         guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
                         if !flag.isCompleted {
                             flag.isCompleted = true
-                            var mergedHeaders = capturedConfig.headers ?? [:]
+                            let currentConfig = self.config ?? capturedConfig
+                            var mergedHeaders = currentConfig.headers ?? [:]
                             for (k, v) in newHeaders {
                                 mergedHeaders[k] = v
                             }
                             self.config = SseConfig(
-                                url: capturedConfig.url,
-                                method: capturedConfig.method,
+                                url: currentConfig.url,
+                                method: currentConfig.method,
                                 headers: mergedHeaders,
-                                body: capturedConfig.body,
-                                backgroundExecution: capturedConfig.backgroundExecution,
-                                batchingIntervalMs: capturedConfig.batchingIntervalMs,
-                                maxBufferSize: capturedConfig.maxBufferSize,
-                                connectionTimeoutMs: capturedConfig.connectionTimeoutMs,
-                                readTimeoutMs: capturedConfig.readTimeoutMs,
-                                onBeforeRequest: capturedConfig.onBeforeRequest
+                                body: currentConfig.body,
+                                backgroundExecution: currentConfig.backgroundExecution,
+                                batchingIntervalMs: currentConfig.batchingIntervalMs,
+                                maxBufferSize: currentConfig.maxBufferSize,
+                                connectionTimeoutMs: currentConfig.connectionTimeoutMs,
+                                readTimeoutMs: currentConfig.readTimeoutMs,
+                                onBeforeRequest: currentConfig.onBeforeRequest
                             )
                             self.performEstablishConnection(attemptVersion: attemptVersion)
                         }
