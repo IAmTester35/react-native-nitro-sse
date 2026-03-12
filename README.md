@@ -33,7 +33,7 @@ npm install react-native-nitro-sse react-native-nitro-modules
 
 | react-native-nitro-sse | react-native-nitro-modules |
 | :--------------------- | :------------------------- |
-| **1.4.0 - 1.4.1**      | **0.35.0**                 |
+| **1.4.0 - 1.6.0**      | **0.35.0**                 |
 | **1.2.2 - 1.3.1**      | **0.34.1**                 |
 | **1.2.0 - 1.2.1**      | **0.34.0**                 |
 | **1.1.0**              | **0.33.9**                 |
@@ -62,65 +62,61 @@ nitroSse.setup(
     },
     // Batch messages every 100ms to optimize UI rendering
     batchingIntervalMs: 100,
-    // Maximum of 1000 messages in the native queue before tail-drop
+    // Maximum of 1000 messages in the native queue before forced flush
     maxBufferSize: 1000,
+    // Optional: Auto-refresh tokens or dynamic headers
+    onBeforeRequest: async () => {
+      const token = await fetchNewToken();
+      return { 'Authorization': `Bearer ${token}` };
+    }
   },
   (events) => {
+    // events is an array of SseEvent objects
     events.forEach((event) => {
-      if (event.type === 'message') {
-        console.log('Data received:', event.data);
-      } else if (event.type === 'heartbeat') {
-        console.log('Server heartbeat detected...');
-      }
+      console.log('Received:', event);
     });
   }
 );
 
 // Start the connection
 nitroSse.start();
-
-// Stop the connection when unmounting or no longer needed
-// nitroSse.stop();
 ```
 
+### 2. Monitoring & Statistics
 
-### 2. Check Connection Status
-
-You can synchronously check the connection status at any time:
+NitroSSE provides synchronous access to connection health and throughput data.
 
 ```tsx
-const connected = nitroSse.isConnected();
-console.log('Is Connected:', connected);
+const stats = nitroSse.getStats();
+console.log(`Downloaded: ${stats.totalBytesReceived / 1024} KB`);
+console.log(`Reconnections: ${stats.reconnectCount}`);
 ```
-
-
-### 3. Dynamic Token Updates
-
-When your authentication token expires, update the headers instantly. The native layer will apply these headers to the next automatic reconnection attempt without interrupting the current flow if not necessary.
-
-```tsx
-nitroSse.updateHeaders({
-  'Authorization': 'Bearer new-fresh-token',
-});
-```
-
 
 ---
 
 ## ⚙️ Configuration (SseConfig)
 
-| Parameter | Type | Description |
-| :--- | :--- | :--- |
-| `url` | `string` | **Required**. The URL of the SSE endpoint. |
-| `method` | `'get' \| 'post'` | HTTP method (Default: `get`). |
-| `headers` | `Record<string, string>` | Custom headers (e.g., Auth, Content-Type). |
-| `body` | `string` | Request body (payload) for POST requests. |
-| `batchingIntervalMs` | `number` | Time window to buffer events before flushing to JS (Default: 0 - immediate). |
-| `maxBufferSize` | `number` | Native queue limit to prevent memory overflow (Default: 1000). |
-| `backgroundExecution` | `boolean` | (iOS) Attempt to maintain a background task for a short period. |
-| `connectionTimeoutMs`| `number` | Connection timeout in milliseconds (Default: 15000). |
-| `readTimeoutMs`      | `number` | Read/Idle timeout in milliseconds (Default: 35000). |
-| `onBeforeRequest`    | `function`| Async callback to refresh headers before every request attempt. |
+| Parameter | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `url` | `string` | - | **Required**. The URL of the SSE endpoint. |
+| `method` | `'get' \| 'post'` | `get` | HTTP method. |
+| `headers` | `Record<string, string>` | `{}` | Custom HTTP headers. |
+| `body` | `string` | - | Request body (payload) for POST requests. |
+| `batchingIntervalMs` | `number` | `0` | Time window (ms) to group events. `0` = real-time. |
+| `maxBufferSize` | `number` | `1000` | Native queue limit to prevent memory overflow. |
+| `connectionTimeoutMs`| `number` | `15000` | Max time for initial handshake / connect. |
+| `readTimeoutMs`      | `number` | `300000`| Max idle time between data packets before reconnecting. |
+| `backgroundExecution` | `boolean` | `false` | (iOS) Attempt to maintain connection via background tasks. |
+| `onBeforeRequest`    | `function`| - | Async hook to refresh headers/tokens before every attempt. |
+
+---
+
+## 🛡️ Reliability Features (v1.5.1+)
+
+-   **Atomic State Management**: Calling `.start()` or `.stop()` updates the instance status immediately on the JSI thread, ensuring the UI (e.g., `isConnected()`) never feels laggy or stuck.
+-   **Promise Safety**: The `onBeforeRequest` interceptor is wrapped in a native fallback timeout. Even if your JS token refresh hangs indefinitely, the native state machine will recover and retry safely.
+-   **Zero-Ghost Reloads**: Seamlessly handles React Native Hot Reloads. The native layer detects when the JS environment is being destroyed and synchronously kills active sockets to prevent duplicate connections.
+-   **Cumulative Logic**: Statistics (`totalBytesReceived`) are preserved across reconnections, giving you a true 360-degree view of the session's data usage.
 
 ---
 

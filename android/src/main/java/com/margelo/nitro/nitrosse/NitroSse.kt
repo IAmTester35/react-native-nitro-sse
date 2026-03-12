@@ -87,55 +87,11 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         if (this.client == null) {
             this.client = OkHttpClient.Builder()
                 .connectTimeout((config.connectionTimeoutMs ?: 15000.0).toLong(), TimeUnit.MILLISECONDS)
-                .readTimeout((config.readTimeoutMs ?: 35000.0).toLong(), TimeUnit.MILLISECONDS)
-                .addNetworkInterceptor { chain ->
-                    val request = chain.request()
-                    val rid = request.tag(String::class.java)
-                    
-                    val response = chain.proceed(request)
-                    
-                    rid?.let { 
-                        NetworkInspector.reportResponseStart(it, request, response)
-                    }
-                    
-                    val responseBody = response.body
-                    if (responseBody != null) {
-                        val countingBody = object : ResponseBody() {
-                            override fun contentType() = responseBody.contentType()
-                            override fun contentLength() = responseBody.contentLength()
-                            override fun source() = (object : okio.ForwardingSource(responseBody.source()) {
-                                private var isAtStartOfLine = true
-
-                                override fun read(sink: okio.Buffer, byteCount: Long): Long {
-                                    val bufferOffset = sink.size
-                                    val bytesRead = super.read(sink, byteCount)
-                                    if (bytesRead != -1L) {
-                                        totalBytesReceived.addAndGet(bytesRead)
-                                        
-
-                                        try {
-                                            for (i in 0 until bytesRead) {
-                                                val b = sink.get(bufferOffset + i)
-                                                if (isAtStartOfLine && b == ':'.code.toByte()) {
-                                                    // This is a comment/heartbeat.
-                                                    pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, "keep-alive", null, null))
-                                                }
-                                                isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
-                                            }
-                                        } catch (e: Exception) {
-                                            // Silent
-                                        }
-                                    }
-                                    return bytesRead
-                                }
-                            }).buffer()
-                        }
-                        response.newBuilder().body(countingBody).build()
-                    } else {
-                        response
-                    }
-                }
-                .build()
+                .readTimeout((config.readTimeoutMs ?: 300000.0).toLong(), TimeUnit.MILLISECONDS)
+                                .addNetworkInterceptor(HeartbeatNetworkInterceptor(totalBytesReceived) {
+                                    pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, "keep-alive", null, null))
+                                })
+                                .build()
         }
             
         if (sseHandlerThread == null) {
@@ -169,6 +125,10 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
      */
     override fun onStop(owner: LifecycleOwner) {
         if (isRunning.get()) {
+            if (config?.backgroundExecution == true) {
+                Log.d(TAG, "App backgrounded. backgroundExecution is true, keeping NitroSse connection alive.")
+                return
+            }
             Log.d(TAG, "App backgrounded. Hibernating NitroSse connection.")
             wasRunningBeforePaused = true
             stop()
@@ -179,14 +139,15 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         val batchInterval = config?.batchingIntervalMs ?: 0.0
         val bufferCapacity = config?.maxBufferSize?.toInt() ?: 1000
 
+        var shouldFlush = false
         synchronized(eventBuffer) {
-            while (eventBuffer.size >= bufferCapacity) {
-                eventBuffer.removeAt(0)
-            }
             eventBuffer.add(event)
+            if (eventBuffer.size >= bufferCapacity) {
+                shouldFlush = true
+            }
         }
 
-        if (batchInterval <= 0) {
+        if (batchInterval <= 0 || shouldFlush) {
             flushBufferToJs()
         } else if (!isFlushPending.getAndSet(true)) {
             sseHandler?.postDelayed({
@@ -246,13 +207,16 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
      * This triggers the initial request and handles subsequent reconnections.
      */
     override fun start() {
-        if (config == null || isRunning.get()) return
-        isRunning.set(true)
-        consecutiveAuthErrors.set(0) // Reset auth retry state
-        backoffCounter = 0
-        requestId = null
+        if (config == null) return
+        if (!isRunning.compareAndSet(false, true)) return
+        
+        consecutiveAuthErrors.set(0)
         val version = connectionAttemptVersion.incrementAndGet()
-        sseHandler?.post { performConnection(version) }
+        sseHandler?.post { 
+            backoffCounter = 0
+            requestId = null
+            performConnection(version) 
+        }
     }
 
     private fun performConnection(version: Int) {
@@ -262,22 +226,37 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         val interceptor = currentConfig.onBeforeRequest
         
         if (interceptor != null) {
+            val interceptorCompleted = AtomicBoolean(false)
+            val timeoutMs = (currentConfig.connectionTimeoutMs ?: 15000.0).toLong()
+
+            sseHandler?.postDelayed({
+                if (interceptorCompleted.compareAndSet(false, true)) {
+                    handleInterceptorError(Exception("onBeforeRequest interceptor timed out after $timeoutMs ms"), version)
+                }
+            }, timeoutMs)
+
             interceptor.invoke().then { promise2 ->
                 promise2.then { newHeaders ->
                     sseHandler?.post {
                         if (!isRunning.get() || version != connectionAttemptVersion.get()) return@post
-                        synchronized(this) {
-                            val mergedHeaders = (config?.headers ?: emptyMap()).toMutableMap()
-                            newHeaders.forEach { (k, v) -> mergedHeaders[k] = v }
-                            config = config?.copy(headers = mergedHeaders)
+                        if (interceptorCompleted.compareAndSet(false, true)) {
+                            synchronized(this) {
+                                val mergedHeaders = (config?.headers ?: emptyMap()).toMutableMap()
+                                newHeaders.forEach { (k, v) -> mergedHeaders[k] = v }
+                                config = config?.copy(headers = mergedHeaders)
+                            }
+                            executeConnection(version)
                         }
-                        executeConnection(version)
                     }
                 }.catch { error ->
-                    handleInterceptorError(error, version)
+                    if (interceptorCompleted.compareAndSet(false, true)) {
+                        handleInterceptorError(error, version)
+                    }
                 }
             }.catch { error ->
-                handleInterceptorError(error, version)
+                if (interceptorCompleted.compareAndSet(false, true)) {
+                    handleInterceptorError(error, version)
+                }
             }
         } else {
             executeConnection(version)
@@ -307,7 +286,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         
         // Report end for previous request if it was running
         requestId?.let { 
-            NetworkInspector.reportResponseEnd(it, totalBytesReceived.getAndSet(0))
+            NetworkInspector.reportResponseEnd(it, totalBytesReceived.get())
             this.requestId = null
         }
         
@@ -490,34 +469,108 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
      * Stop the SSE connection and clear any pending reconnect timers.
      */
     override fun stop() {
-        flushBufferToJs()
         isRunning.set(false)
-        backoffCounter = 0 
-        sseHandler?.removeCallbacksAndMessages(null)
-        eventSource?.cancel()
-        eventSource = null
-        requestId?.let { 
-            NetworkInspector.reportResponseEnd(it, totalBytesReceived.get())
-            requestId = null
+        val version = connectionAttemptVersion.incrementAndGet() 
+        sseHandler?.post {
+            flushBufferToJs()
+            backoffCounter = 0 
+            sseHandler?.removeCallbacksAndMessages(null)
+            eventSource?.cancel()
+            eventSource = null
+            requestId?.let { 
+                NetworkInspector.reportResponseEnd(it, totalBytesReceived.get())
+                requestId = null
+            }
+            isFlushPending.set(false)
         }
-        isFlushPending.set(false)
     }
 
     /**
      * Clean up all resources, including background threads and lifecycle observers.
+     * This is called by Nitro when the HybridObject is being garbage collected or JS reloads.
      */
     override fun dispose() {
         Log.d(TAG, "Disposing NitroSse instance and cleaning up resources...")
-        stop()
+ 
+        isRunning.set(false)
+        connectionAttemptVersion.incrementAndGet()
+        
+        try {
+            eventSource?.cancel()
+            eventSource = null
+            requestId?.let { 
+                NetworkInspector.reportRequestFailed(it, true) 
+                requestId = null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during synchronous dispose: ${e.message}")
+        }
+
         if (hasSubscribedToLifecycle) {
             Handler(Looper.getMainLooper()).post {
                 ProcessLifecycleOwner.get().lifecycle.removeObserver(this@NitroSse)
             }
             hasSubscribedToLifecycle = false
         }
+        
+        sseHandler?.removeCallbacksAndMessages(null)
         sseHandlerThread?.quitSafely()
         sseHandlerThread = null
         sseHandler = null
+        
         super.dispose()
+    }
+}
+
+/**
+ * Separates the network interception logic (counting bytes, intercepting SSE heartbeats) 
+ * from the main NitroSse connection manager.
+ */
+internal class HeartbeatNetworkInterceptor(
+    private val totalBytesReceived: AtomicLong,
+    private val onHeartbeat: () -> Unit
+) : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val rid = request.tag(String::class.java)
+
+        val response = chain.proceed(request)
+
+        rid?.let {
+            NetworkInspector.reportResponseStart(it, request, response)
+        }
+
+        val responseBody = response.body
+        if (responseBody != null) {
+            val countingBody = object : ResponseBody() {
+                override fun contentType() = responseBody.contentType()
+                override fun contentLength() = responseBody.contentLength()
+                override fun source() = (object : okio.ForwardingSource(responseBody.source()) {
+                    private var isAtStartOfLine = true
+
+                    override fun read(sink: okio.Buffer, byteCount: Long): Long {
+                        val bufferOffset = sink.size
+                        val bytesRead = super.read(sink, byteCount)
+                        if (bytesRead != -1L) {
+                            totalBytesReceived.addAndGet(bytesRead)
+                            try {
+                                for (i in 0 until bytesRead) {
+                                    val b = sink.get(bufferOffset + i)
+                                    if (isAtStartOfLine && b == ':'.code.toByte()) {
+                                        onHeartbeat()
+                                    }
+                                    isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
+                                }
+                            } catch (e: Exception) {
+                                // Silent
+                            }
+                        }
+                        return bytesRead
+                    }
+                }).buffer()
+            }
+            return response.newBuilder().body(countingBody).build()
+        }
+        return response
     }
 }

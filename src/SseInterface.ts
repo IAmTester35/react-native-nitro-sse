@@ -27,30 +27,40 @@ export interface SseConfig {
   body?: string;
   /**
    * Whether to continue processing events when the app is in the background.
-   * Note: OS limitations may restrict background execution time.
+   * Note: On iOS, this uses background tasks which are limited in time by the OS.
    * @default false
    */
   backgroundExecution?: boolean;
   /**
-   * Interval in milliseconds to batch events before sending them to JS.
-   * Set to 0 to disable batching (real-time mode).
+   * How long (in ms) to wait and group multiple events before sending them to the JS side.
+   * High-frequency streams should use this to reduce JS bridge overhead and improve UI performance.
+   * Set to 0 to deliver events immediately one-by-one.
+   * @default 0
    */
   batchingIntervalMs?: number;
   /**
-   * Maximum number of events to hold in the buffer before forced flushing.
+   * Maximum number of events to keep in the native buffer before forcing a flush to JS,
+   * regardless of the `batchingIntervalMs`. Prevents memory pressure.
+   * @default 1000
    */
   maxBufferSize?: number;
   /**
-   * Connection timeout in milliseconds.
+   * Maximum time (in ms) to wait for the initial server connection and handshake to complete.
+   * Effectively the "Connect Timeout".
+   * @default 15000
    */
   connectionTimeoutMs?: number;
   /**
-   * Read timeout in milliseconds.
+   * Maximum idle time (in ms) allowed between receiving data packets or heartbeats.
+   * If the server remains silent longer than this, the connection is considered stalled and will reconnect.
+   * Increase this for streams that transmit data infrequently.
+   * @default 300000
    */
   readTimeoutMs?: number;
   /**
-   * Optional interceptor called before every request.
-   * Useful for refreshing tokens or adding dynamic parameters.
+   * Async interceptor called before every connection attempt (including auto-reconnects).
+   * Use this to refresh tokens or calculate dynamic headers.
+   * Note: This is protected by a native timeout to prevent the app from hanging.
    */
   onBeforeRequest?: () => Promise<Record<string, string>>;
 }

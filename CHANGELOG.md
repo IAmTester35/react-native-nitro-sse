@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.6.0 (2026-03-12)
+
+### Reliability & Stability
+- **Thread-Safe State Machine**: Refactored iOS threading to eliminate data races during concurrent start/stop/reload actions. Fixed potential deadlocks in `deinit` and `start()` using queue-aware `DispatchSpecificKey`. Resolved race conditions in `onBeforeRequest` interceptor to prevent overwriting updated headers.
+- **Background Support**: Implemented `backgroundExecution` flag for both iOS and Android to keep streams alive in the background.
+- **Zero-Loss Buffering**: Replaced tail-drop with forced flushing when `maxBufferSize` is reached.
+- **Improved Timeouts**: Default `readTimeoutMs` increased to 5 minutes for better stability on idle streams.
+- **Accuracy Fixes**: Fixed Android's byte counter to be cumulative across reconnections.
+- **JS Reload Safety**: Synchronous native cleanup to prevent "ghost connections" during hot reloads.
+
+### Developer Experience (DX)
+- **Native Unit Tests**: Added comprehensive test suites for versioning, auth resets, and stats on both platforms.
+- **JSDoc Updates**: Improved documentation and added `@default` tags for all config options.
+- **Interceptor Safety**: Added native timeouts for `onBeforeRequest` to prevent app hangs.
+
+### Infrastructure & Example
+
+- **Example App**: Refactored architecture and added a detailed event inspector.
+
 ## 1.5.0 (2026-03-06)
 
 ### Features
