@@ -1,9 +1,9 @@
 # Changelog
 
-## 1.5.1 (2026-03-09)
+## 1.6.0 (2026-03-12)
 
 ### Reliability & Stability
-- **Thread-Safe State Machine**: Refactored iOS threading to eliminate data races during concurrent start/stop/reload actions.
+- **Thread-Safe State Machine**: Refactored iOS threading to eliminate data races during concurrent start/stop/reload actions. Fixed potential deadlocks in `deinit` and `start()` using queue-aware `DispatchSpecificKey`.
 - **Background Support**: Implemented `backgroundExecution` flag for both iOS and Android to keep streams alive in the background.
 - **Zero-Loss Buffering**: Replaced tail-drop with forced flushing when `maxBufferSize` is reached.
 - **Improved Timeouts**: Default `readTimeoutMs` increased to 5 minutes for better stability on idle streams.

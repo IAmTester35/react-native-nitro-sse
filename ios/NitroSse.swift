@@ -15,9 +15,15 @@ import LDSwiftEventSource
  *    as a single array after a configurable interval.
  */
 class NitroSse: HybridNitroSseSpec {
+    private static let sseQueueKey = DispatchSpecificKey<Void>()
+
     deinit {
-        sseQueue.sync {
+        if DispatchQueue.getSpecific(key: NitroSse.sseQueueKey) != nil {
             self.stopInternal()
+        } else {
+            sseQueue.sync {
+                self.stopInternal()
+            }
         }
     }
     private var eventSource: EventSource?
@@ -42,7 +48,11 @@ class NitroSse: HybridNitroSseSpec {
     private let baseBackoffDelay: TimeInterval = 1.0
     private let maxBackoffDelay: TimeInterval = 30.0
     
-    private let sseQueue = DispatchQueue(label: "com.margelo.nitro.sse", qos: .utility)
+    private let sseQueue: DispatchQueue = {
+        let queue = DispatchQueue(label: "com.margelo.nitro.sse", qos: .utility)
+        queue.setSpecific(key: NitroSse.sseQueueKey, value: ())
+        return queue
+    }()
     private var connectionAttemptVersion: Int = 0
     private var backgroundTaskIdentifier: UIBackgroundTaskIdentifier = .invalid
     private var wasRunningBeforeHibernation: Bool = false
@@ -210,7 +220,7 @@ class NitroSse: HybridNitroSseSpec {
      * This triggers the initial request and handles subsequent reconnections.
      */
     func start() throws {
-        try sseQueue.sync {
+        let startBody = {
             guard !self.isRunning else { return }
             
             // Critical check: Ensure config is available before starting
@@ -225,6 +235,12 @@ class NitroSse: HybridNitroSseSpec {
             let version = self.connectionAttemptVersion
             
             self.establishConnection(attemptVersion: version)
+        }
+
+        if DispatchQueue.getSpecific(key: NitroSse.sseQueueKey) != nil {
+            try startBody()
+        } else {
+            try sseQueue.sync(execute: startBody)
         }
     }
 
