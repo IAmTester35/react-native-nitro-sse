@@ -80,7 +80,7 @@ class NitroSse: HybridNitroSseSpec {
         sseQueue.async {
             guard self.isRunning, let config = self.config else { return }
             
-            if config.backgroundExecution {
+            if config.backgroundExecution == true {
                 print("[NitroSse] App backgrounded. backgroundExecution is true, keeping connection alive.")
                 // Start a background task to tell the OS we want to keep running
                 self.backgroundTaskIdentifier = UIApplication.shared.beginBackgroundTask(withName: "NitroSse-KeepAlive") { [weak self] in
@@ -184,7 +184,7 @@ class NitroSse: HybridNitroSseSpec {
      */
     func updateHeaders(headers: [String: String]) throws {
         sseQueue.async {
-            guard var config = self.config else { return }
+            guard let config = self.config else { return }
             self.config = SseConfig(
                 url: config.url,
                 method: config.method,

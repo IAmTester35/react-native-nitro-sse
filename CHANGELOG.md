@@ -1,6 +1,13 @@
 # Changelog
 
+## 1.6.1 (2026-03-12)
+
+### Fixes
+- **iOS**: Fixed a compilation error where `config.backgroundExecution` (Optional Bool) was used directly in an `if` statement.
+- **iOS**: Resolved a Swift warning by changing an unused `var` mutation to a `let` constant in `updateHeaders`.
+
 ## 1.6.0 (2026-03-12)
+
 
 ### Reliability & Stability
 - **Thread-Safe State Machine**: Refactored iOS threading to eliminate data races during concurrent start/stop/reload actions. Fixed potential deadlocks in `deinit` and `start()` using queue-aware `DispatchSpecificKey`. Resolved race conditions in `onBeforeRequest` interceptor to prevent overwriting updated headers.
