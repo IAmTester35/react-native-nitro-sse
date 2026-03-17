@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.2 (2026-03-17)
+
+### Infrastructure
+- **Nitro**: Updated `react-native-nitro-modules` and `nitrogen` to `0.35.2`.
+- **Nitro**: Migrated `nitro.json` to the new platform-specific autolinking syntax introduced in 0.35.1.
+
 ## 1.6.1 (2026-03-12)
 
 ### Fixes
