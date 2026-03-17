@@ -9,8 +9,14 @@
   },
   "autolinking": {
     "NitroSse": {
-      "swift": "NitroSse",
-      "kotlin": "NitroSse"
+      "ios": {
+        "language": "swift",
+        "implementationClassName": "NitroSse"
+      },
+      "android": {
+        "language": "kotlin",
+        "implementationClassName": "NitroSse"
+      }
     }
   },
   "ignorePaths": ["node_modules"]
