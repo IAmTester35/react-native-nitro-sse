@@ -38,7 +38,10 @@ describe('NitroSseModule Unit Tests', () => {
       const onEvent = jest.fn();
 
       NitroSseModule.setup(config, onEvent);
-      expect(mockNative.setup).toHaveBeenCalledWith(config, onEvent);
+      expect(mockNative.setup).toHaveBeenCalledWith(
+        config,
+        expect.any(Function)
+      );
     });
   });
 
@@ -102,7 +105,10 @@ describe('NitroSseModule Unit Tests', () => {
       NitroSseModule.setup(config, onEvent);
 
       // Verify setup was called
-      expect(mockNative.setup).toHaveBeenCalledWith(config, onEvent);
+      expect(mockNative.setup).toHaveBeenCalledWith(
+        config,
+        expect.any(Function)
+      );
 
       // Simulate native side calling the callback
       const registeredCallback = mockNative.setup.mock.calls[0][1];
@@ -185,7 +191,10 @@ describe('NitroSseModule Unit Tests', () => {
       };
 
       NitroSseModule.setup(config, onEvent);
-      expect(mockNative.setup).toHaveBeenCalledWith(config, onEvent);
+      expect(mockNative.setup).toHaveBeenCalledWith(
+        config,
+        expect.any(Function)
+      );
 
       // Simulate native buffering behavior (conceptual check only as logic is native)
       // We verify that the config passed includes the batching parameters
@@ -280,10 +289,17 @@ describe('NitroSseModule Unit Tests', () => {
         backgroundExecution: true,
         batchingIntervalMs: 100,
         maxBufferSize: 5000,
+        retryIntervalMs: 1500,
+        maxRetryIntervalMs: 45000,
+        jitterFactor: 0.3,
+        maxReconnectAttempts: 10,
       };
 
       NitroSseModule.setup(fullConfig as any, onEvent);
-      expect(mockNative.setup).toHaveBeenCalledWith(fullConfig, onEvent);
+      expect(mockNative.setup).toHaveBeenCalledWith(
+        fullConfig,
+        expect.any(Function)
+      );
     });
   });
 
@@ -303,8 +319,37 @@ describe('NitroSseModule Unit Tests', () => {
       NitroSseModule.setup(configWithInterceptor as any, onEvent);
       expect(mockNative.setup).toHaveBeenCalledWith(
         configWithInterceptor,
-        onEvent
+        expect.any(Function)
       );
+    });
+  });
+
+  it('should dispatch events to typed listeners', () => {
+    jest.isolateModules(() => {
+      const { createNitroSse } = require('../index');
+      const NitroSseModule = createNitroSse();
+      const messageListener = jest.fn();
+      const customEventListener = jest.fn();
+
+      NitroSseModule.addEventListener('message', messageListener);
+      NitroSseModule.addEventListener('update', customEventListener);
+
+      NitroSseModule.setup({ url: 'http://localhost:33333/events' });
+
+      // Simulate native side calling the callback
+      const registeredCallback = mockNative.setup.mock.calls[0][1];
+      const events = [
+        { type: 'message', data: 'hello' },
+        { type: 'message', data: 'world', event: 'update' },
+      ];
+      registeredCallback(events);
+
+      expect(messageListener).toHaveBeenCalledTimes(2);
+      expect(messageListener).toHaveBeenNthCalledWith(1, events[0]);
+      expect(messageListener).toHaveBeenNthCalledWith(2, events[1]);
+
+      expect(customEventListener).toHaveBeenCalledTimes(1);
+      expect(customEventListener).toHaveBeenCalledWith(events[1]);
     });
   });
 });

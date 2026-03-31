@@ -37,16 +37,13 @@ class NitroSse: HybridNitroSseSpec {
     private var isFlushPending: Bool = false
     
     private var backoffCounter: Int = 0
+    private var currentReconnectAttempts: Int = 0
     private var lastProcessedId: String? = nil
     
     private var totalBytesReceived: Double = 0
     private var reconnectCount: Double = 0
     private var lastErrorTime: Double? = nil
     private var lastErrorCode: String? = nil
-    
-    private let defaultRetryDelay: TimeInterval = 3.0
-    private let baseBackoffDelay: TimeInterval = 1.0
-    private let maxBackoffDelay: TimeInterval = 30.0
     
     private let sseQueue: DispatchQueue = {
         let queue = DispatchQueue(label: "com.margelo.nitro.sse", qos: .utility)
@@ -195,6 +192,10 @@ class NitroSse: HybridNitroSseSpec {
                 maxBufferSize: config.maxBufferSize,
                 connectionTimeoutMs: config.connectionTimeoutMs,
                 readTimeoutMs: config.readTimeoutMs,
+                retryIntervalMs: config.retryIntervalMs,
+                maxRetryIntervalMs: config.maxRetryIntervalMs,
+                jitterFactor: config.jitterFactor,
+                maxReconnectAttempts: config.maxReconnectAttempts,
                 onBeforeRequest: config.onBeforeRequest
             )
             print("[NitroSse] Headers updated for subsequent connections.")
@@ -290,6 +291,10 @@ class NitroSse: HybridNitroSseSpec {
                                 maxBufferSize: currentConfig.maxBufferSize,
                                 connectionTimeoutMs: currentConfig.connectionTimeoutMs,
                                 readTimeoutMs: currentConfig.readTimeoutMs,
+                                retryIntervalMs: currentConfig.retryIntervalMs,
+                                maxRetryIntervalMs: currentConfig.maxRetryIntervalMs,
+                                jitterFactor: currentConfig.jitterFactor,
+                                maxReconnectAttempts: currentConfig.maxReconnectAttempts,
                                 onBeforeRequest: currentConfig.onBeforeRequest
                             )
                             self.performEstablishConnection(attemptVersion: attemptVersion)
@@ -454,16 +459,33 @@ class NitroSse: HybridNitroSseSpec {
     private func scheduleAutomaticReconnect(isError: Bool, attemptVersion: Int) {
         dispatchPrecondition(condition: .onQueue(sseQueue))
         eventSource?.stop()
-        var delay: TimeInterval = defaultRetryDelay
+
+        let jitterFactor = config?.jitterFactor ?? 0.5
+        let retryInterval = (config?.retryIntervalMs ?? 1000.0) / 1000.0
+        let maxRetryInterval = (config?.maxRetryIntervalMs ?? 30000.0) / 1000.0
+
+        var delay: TimeInterval = retryInterval
+        
+        let maxAttempts = Int(config?.maxReconnectAttempts ?? -1.0)
+        if maxAttempts != -1 && currentReconnectAttempts >= maxAttempts {
+            print("[NitroSse] Max reconnection attempts reached (\(maxAttempts)). Stopping.")
+            self.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Max reconnection attempts reached (\(maxAttempts)).", statusCode: nil, retry: nil))
+            self.stopInternal()
+            return
+        }
+        
+        currentReconnectAttempts += 1
+        
         if isError {
             let exponent = Double(backoffCounter)
-            let base = min(baseBackoffDelay * pow(2.0, exponent), maxBackoffDelay)
+            let base = min(retryInterval * pow(2.0, exponent), maxRetryInterval)
             backoffCounter += 1
-            delay = base * (0.5 + Double.random(in: 0...1))
+            delay = base * (1.0 - jitterFactor + Double.random(in: 0...(2 * jitterFactor)))
         } else {
-            delay = defaultRetryDelay * (0.8 + Double.random(in: 0...0.4))
+            delay = retryInterval * (1.0 - jitterFactor + Double.random(in: 0...(2 * jitterFactor)))
         }
-        let safeDelay = max(delay, 2.0)
+
+        let safeDelay = max(delay, 1.0)
         eventSource?.stop()
         eventSource = nil
         sseQueue.asyncAfter(deadline: .now() + safeDelay) { [weak self] in
@@ -490,6 +512,7 @@ class NitroSse: HybridNitroSseSpec {
             parent.sseQueue.async { [weak parent] in
                 guard let parent = parent, self.attemptVersion == parent.connectionAttemptVersion else { return }
                 parent.backoffCounter = 0
+                parent.currentReconnectAttempts = 0
                 parent.consecutiveAuthErrors = 0 
                 parent.pushEventToBuffer(SseEvent(type: .open, data: nil, id: nil, event: nil, message: nil, statusCode: 200, retry: nil))
             }

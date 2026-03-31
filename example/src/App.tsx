@@ -3,7 +3,7 @@ import { Platform, LayoutAnimation, UIManager } from 'react-native';
 import { Content, type LogEntry } from './Content';
 import {
   createNitroSse,
-  type NitroSse,
+  type SseClient,
   type SseEvent,
   type SseStats,
 } from 'react-native-nitro-sse';
@@ -44,7 +44,7 @@ export default function App() {
   const [showConfig, setShowConfig] = useState(false);
 
   // --- Refs ---
-  const sseRef = useRef<NitroSse | null>(null);
+  const sseRef = useRef<SseClient | null>(null);
   const statsInterval = useRef<Record<string, any> | null>(null);
   const scrollViewRef = useRef<any>(null);
 
