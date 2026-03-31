@@ -7,8 +7,10 @@ export * from './SseInterface';
 export * from './NitroSse.nitro';
 
 /**
- * Creates a high-performance SSE client.
- * Supports typed event listeners (addEventListener) and legacy batching.
+ * Creates a high-performance SSE client that supports typed event listeners (`addEventListener`) and legacy batching.
+ *
+ * @returns An SseClient instance wrapping the native NitroSse implementation.
+ * @throws If the native NitroSse module cannot be found. Ensure the library is linked and the app is built for iOS/Android.
  */
 export function createNitroSse(): SseClient {
   let nativeSse: NitroSse | undefined;

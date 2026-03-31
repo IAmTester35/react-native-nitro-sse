@@ -20,6 +20,14 @@ if (
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
+/**
+ * Root React component that manages an SSE client and provides a UI for controlling and observing its connection.
+ *
+ * Manages SSE lifecycle, connection and reconnection configuration, logging, periodic statistics polling, and token/header rotation.
+ * Registers typed SSE event listeners, exposes control handlers (start, stop, flush, restart, apply headers, set last processed ID, toggle config), and passes all relevant state and handlers to the rendered Content component.
+ *
+ * @returns The application UI as a JSX element (renders the Content component with current state and control callbacks).
+ */
 export default function App() {
   // --- States ---
   const [logs, setLogs] = useState<LogEntry[]>([]);

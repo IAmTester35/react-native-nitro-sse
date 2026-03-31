@@ -188,7 +188,13 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     }
 
     /**
-     * Returns runtime statistics about the SSE connection.
+     * Provide current runtime statistics for the SSE connection.
+     *
+     * @return An SseStats snapshot with:
+     *  - the total bytes received (as Double),
+     *  - the total number of reconnects (as Double),
+     *  - the timestamp of the last error in milliseconds since epoch (nullable),
+     *  - the last error code or identifier (nullable).
      */
     override fun getStats(): SseStats {
         // getStats is called from JS thread, so we should sync with sseHandler thread
@@ -266,6 +272,16 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         }
     }
 
+    /**
+     * Handles a failure from the request-level interceptor by emitting an ERROR event and scheduling a reconnect.
+     *
+     * Posts work onto the SSE handler that (if the connection attempt version is still current and streaming is running)
+     * pushes an ERROR SseEvent describing the interceptor failure and schedules performConnection(...) after a
+     * jittered retry delay derived from the current configuration.
+     *
+     * @param t The throwable from the interceptor failure, or null if unavailable.
+     * @param version Snapshot of connectionAttemptVersion used to ignore stale work. 
+     */
     private fun handleInterceptorError(t: Throwable?, version: Int) {
         sseHandler?.post {
             if (!isRunning.get() || version != connectionAttemptVersion.get()) return@post
@@ -338,6 +354,14 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     }
 
     private val sseListener = object : EventSourceListener() {
+        /**
+         * Handles a successful SSE connection open by resetting reconnection/auth counters and emitting an OPEN event to the JS bridge.
+         *
+         * Synchronizes access when pushing the event and includes the HTTP response code in the emitted `SseEvent`.
+         *
+         * @param eventSource The EventSource instance that was opened.
+         * @param response The HTTP response received when the SSE connection was established; its status code is included in the emitted OPEN event.
+         */
         override fun onOpen(eventSource: EventSource, response: Response) {
             sseHandler?.post {
                 if (eventSource != this@NitroSse.eventSource) return@post
@@ -350,6 +374,15 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             }
         }
 
+        /**
+         * Handles an incoming SSE message by validating the active stream, updating the last processed event id when present,
+         * and buffering a `MESSAGE` SseEvent for delivery to the JS bridge.
+         *
+         * @param eventSource The source that produced the event; ignored if it is not the currently active stream.
+         * @param id The event id; when non-empty it is stored as the last processed id.
+         * @param type Optional event type.
+         * @param data The event payload.
+         */
         override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
             sseHandler?.post {
                 if (eventSource != this@NitroSse.eventSource) return@post
@@ -362,6 +395,22 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             }
         }
 
+        /**
+         * Handles an SSE connection failure: records error stats, reports the network failure, emits an appropriate ERROR event, and decides whether to stop or schedule a reconnect.
+         *
+         * Behavior by status code:
+         * - 401/403: if no `onBeforeRequest` interceptor is configured, emits an auth error and stops; otherwise increments an auth-retry counter, stops when the max is reached, or schedules a reconnect to allow token refresh.
+         * - 400 or 204: emits a fatal error and stops.
+         * - 429 or 503 with a valid `Retry-After`: emits an error describing the computed delay and retries after the server-specified delay plus jitter.
+         * - 429 without `Retry-After`: emits an error and stops.
+         * - Other or unknown codes: emits an error and schedules a reconnect using the configured backoff and jitter.
+         *
+         * Side effects: updates reconnect/last-error statistics, reports request failure to NetworkInspector, clears the active request id, pushes events into the internal buffer, may call `stop()` or schedule `performConnection(...)`.
+         *
+         * @param eventSource The EventSource instance that reported the failure.
+         * @param t The throwable that caused the failure, if any.
+         * @param response The HTTP response associated with the failure, if any.
+         */
         override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
             sseHandler?.post {
                 if (eventSource != this@NitroSse.eventSource) return@post
@@ -435,6 +484,15 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             }
         }
 
+        /**
+         * Handles the SSE stream being closed by the server.
+         *
+         * When the closed `eventSource` is the currently active stream and streaming is running,
+         * reports the response end to the network inspector with the total bytes received,
+         * clears the stored `requestId`, and schedules a reconnect that is treated as a normal (non-error) reconnect.
+         *
+         * @param eventSource The EventSource instance that was closed.
+         */
         override fun onClosed(eventSource: EventSource) {
             sseHandler?.post {
                 if (eventSource != this@NitroSse.eventSource) return@post
@@ -448,6 +506,16 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             }
         }
 
+        /**
+         * Schedule a future reconnect attempt using configurable backoff, jitter, and attempt limits.
+         *
+         * If the configured maximum reconnect attempts is reached, emits an ERROR event and stops the stream.
+         * Otherwise computes a delay (exponential backoff when `isError` is true, simple retry interval when false),
+         * applies jitter, enforces a minimum delay of 1000 ms, increments reconnect counters, and posts a
+         * connection retry task to the SSE handler.
+         *
+         * @param isError True when the reconnect is triggered by an error; false for a normal/non-error reconnect.
+         */
         private fun scheduleReconnect(isError: Boolean) {
             val currentConfig = synchronized(this@NitroSse) { config } ?: return
             val currentJitterFactor = currentConfig.jitterFactor ?: 0.5

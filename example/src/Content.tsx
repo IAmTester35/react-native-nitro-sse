@@ -78,6 +78,16 @@ export interface ContentProps {
   applyManualId: () => void;
 }
 
+/**
+ * Main screen component rendering the SSE dashboard, connection controls, configuration sheet, and activity log.
+ *
+ * Renders a header with live/connecting/disconnected status, stats (data received and reconnects), an optional
+ * collapsible configuration sheet for connection settings, action buttons to control the connection (establish,
+ * flush, restart, stop), and a scrollable stream activity log with tappable entries that show event details.
+ *
+ * @param props - ContentProps containing UI state, connection/configuration values, log state setters, and action handlers used by the component.
+ * @returns The rendered React element representing the SSE UI and its interactive controls.
+ */
 export function Content(props: ContentProps) {
   const {
     logs,
