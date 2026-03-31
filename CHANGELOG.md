@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.7.0 (2026-03-31)
+## 2.0.0 (2026-03-31)
 
 ### ⚠️ Breaking Changes
 - **Client Factory**: The `createNitroSse()` function now returns an `SseClient` object instead of the native `NitroSse` object. This allows for typed event listeners and internal state management. Ensure you update your type references (e.g., `useRef<SseClient>(null)`).
