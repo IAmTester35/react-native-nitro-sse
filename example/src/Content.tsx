@@ -33,6 +33,7 @@ export interface LogEntry {
   data?: string;
   message?: string;
   statusCode?: number;
+  parsedData?: any;
 }
 
 export interface ContentProps {
@@ -53,6 +54,7 @@ export interface ContentProps {
   maxRetryInterval: string;
   jitter: string;
   reconnectAttempts: string;
+  autoParseJSON: boolean;
   showConfig: boolean;
   scrollViewRef: any;
   setLogs: (logs: LogEntry[]) => void;
@@ -66,6 +68,7 @@ export interface ContentProps {
   setMaxRetryInterval: (val: string) => void;
   setJitter: (val: string) => void;
   setReconnectAttempts: (val: string) => void;
+  setAutoParseJSON: (val: boolean) => void;
   setHeadersJson: (val: string) => void;
   setManualId: (val: string) => void;
   setUseInterceptor: (val: boolean) => void;
@@ -80,13 +83,6 @@ export interface ContentProps {
 
 /**
  * Main screen component rendering the SSE dashboard, connection controls, configuration sheet, and activity log.
- *
- * Renders a header with live/connecting/disconnected status, stats (data received and reconnects), an optional
- * collapsible configuration sheet for connection settings, action buttons to control the connection (establish,
- * flush, restart, stop), and a scrollable stream activity log with tappable entries that show event details.
- *
- * @param props - ContentProps containing UI state, connection/configuration values, log state setters, and action handlers used by the component.
- * @returns The rendered React element representing the SSE UI and its interactive controls.
  */
 export function Content(props: ContentProps) {
   const {
@@ -107,6 +103,7 @@ export function Content(props: ContentProps) {
     maxRetryInterval,
     jitter,
     reconnectAttempts,
+    autoParseJSON,
     showConfig,
     scrollViewRef,
     setLogs,
@@ -120,6 +117,7 @@ export function Content(props: ContentProps) {
     setMaxRetryInterval,
     setJitter,
     setReconnectAttempts,
+    setAutoParseJSON,
     setHeadersJson,
     setManualId,
     setUseInterceptor,
@@ -132,7 +130,6 @@ export function Content(props: ContentProps) {
     applyManualId,
   } = props;
 
-  // --- Render Functions ---
   const renderLogItem = (item: LogEntry) => {
     let typeColor = COLORS.textDim;
     if (item.type === 'open') typeColor = COLORS.success;
@@ -144,7 +141,10 @@ export function Content(props: ContentProps) {
       const details = [
         `Type: ${item.type.toUpperCase()}`,
         item.statusCode ? `Status: ${item.statusCode}` : null,
-        item.data ? `Data: ${item.data}` : null,
+        item.data ? `Raw Data: ${item.data}` : null,
+        item.parsedData
+          ? `Parsed Data (Native):\n${JSON.stringify(item.parsedData, null, 2)}`
+          : null,
         item.message ? `Message: ${item.message}` : null,
         item.id ? `Event ID: ${item.id}` : null,
       ]
@@ -197,7 +197,6 @@ export function Content(props: ContentProps) {
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" />
 
-      {/* --- Header & Status --- */}
       <View style={styles.header}>
         <View>
           <Text style={styles.brandTitle}>
@@ -230,7 +229,6 @@ export function Content(props: ContentProps) {
         </TouchableOpacity>
       </View>
 
-      {/* --- Stats Dashboard --- */}
       <View style={styles.statsContainer}>
         <View style={styles.statCard}>
           <Text style={styles.statLabel}>DATA RECEIVED</Text>
@@ -245,7 +243,6 @@ export function Content(props: ContentProps) {
         </View>
       </View>
 
-      {/* --- Configuration Sheet (Collapsible) --- */}
       {showConfig && (
         <View style={styles.configSheet}>
           <Text style={styles.configTitle}>Connection Settings</Text>
@@ -386,6 +383,23 @@ export function Content(props: ContentProps) {
             </View>
           </View>
 
+          <View style={styles.inputRow}>
+            <View style={styles.flex1}>
+              <Text style={styles.inputLabel}>AUTO PARSE JSON</Text>
+              <TouchableOpacity
+                style={[
+                  styles.miniToggle,
+                  autoParseJSON && { backgroundColor: COLORS.success },
+                ]}
+                onPress={() => setAutoParseJSON(!autoParseJSON)}
+              >
+                <Text style={styles.miniToggleText}>
+                  {autoParseJSON ? 'ENABLED' : 'DISABLED'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
           <View style={styles.divider} />
 
           <Text style={styles.inputLabel}>CUSTOM HEADERS (JSON)</Text>
@@ -446,7 +460,6 @@ export function Content(props: ContentProps) {
         </View>
       )}
 
-      {/* --- Main Controls --- */}
       <View style={styles.mainControls}>
         {!isConnected && !isConnecting ? (
           <TouchableOpacity
@@ -481,7 +494,6 @@ export function Content(props: ContentProps) {
         )}
       </View>
 
-      {/* --- Log Viewer --- */}
       <View style={styles.logViewer}>
         <View style={styles.logViewerHeader}>
           <Text style={styles.logViewerTitle}>STREAM ACTIVITY</Text>
@@ -788,6 +800,21 @@ const styles = StyleSheet.create({
     flex: 1,
     marginBottom: 0,
   },
+  miniToggle: {
+    backgroundColor: COLORS.card,
+    borderRadius: 8,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingHorizontal: 12,
+  },
+  miniToggleText: {
+    color: COLORS.text,
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
   inputLabelMargin: {
     color: COLORS.primary,
     fontSize: 9,
@@ -839,18 +866,5 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 5,
-  },
-  miniToggle: {
-    backgroundColor: COLORS.background,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  miniToggleText: {
-    color: '#fff',
-    fontSize: 10,
-    fontWeight: 'bold',
   },
 });

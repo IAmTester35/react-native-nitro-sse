@@ -152,18 +152,28 @@ class NitroSse: HybridNitroSseSpec {
             }
         }
     }
-    
     private func flushEventsToJs() {
         dispatchPrecondition(condition: .onQueue(sseQueue))
-        guard !eventBuffer.isEmpty else { 
-            isFlushPending = false
-            return 
-        }
+        guard !eventBuffer.isEmpty else { return }
         
         let batch = eventBuffer
         eventBuffer.removeAll()
         isFlushPending = false
+        
         onEventsCallback?(batch)
+    }
+
+    internal func parseJsonToAnyMap(_ data: String) -> AnyMap? {
+        guard let jsonData = data.data(using: .utf8) else { return nil }
+        do {
+            if let dictionary = try JSONSerialization.jsonObject(with: jsonData, options: []) as? [String: Any?] {
+                return AnyMap.fromDictionaryIgnoreIncompatible(dictionary)
+            }
+        } catch {
+            // Non-fatal, just log and return nil
+            print("[NitroSse] Failed to parse JSON: \(error.localizedDescription)")
+        }
+        return nil
     }
 
     /**
@@ -196,6 +206,7 @@ class NitroSse: HybridNitroSseSpec {
                 maxRetryIntervalMs: config.maxRetryIntervalMs,
                 jitterFactor: config.jitterFactor,
                 maxReconnectAttempts: config.maxReconnectAttempts,
+                autoParseJSON: config.autoParseJSON,
                 onBeforeRequest: config.onBeforeRequest
             )
             print("[NitroSse] Headers updated for subsequent connections.")
@@ -265,8 +276,8 @@ class NitroSse: HybridNitroSseSpec {
             
             sseQueue.asyncAfter(deadline: .now() + (timeoutMs / 1000.0)) { [weak self] in
                 guard let self = self else { return }
-                self.sseQueue.async {
-                    guard self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+                self.sseQueue.async { [weak self] in
+                    guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
                     if !flag.isCompleted {
                         flag.isCompleted = true
                         let error = NSError(domain: "NitroSse", code: -1, userInfo: [NSLocalizedDescriptionKey: "onBeforeRequest interceptor timed out after \(timeoutMs) ms"])
@@ -277,7 +288,7 @@ class NitroSse: HybridNitroSseSpec {
 
             interceptor().then { [weak self] promise2 in
                 promise2.then { [weak self] newHeaders in
-                    self?.sseQueue.async {
+                    self?.sseQueue.async { [weak self] in
                         guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
                         if !flag.isCompleted {
                             flag.isCompleted = true
@@ -300,13 +311,14 @@ class NitroSse: HybridNitroSseSpec {
                                 maxRetryIntervalMs: currentConfig.maxRetryIntervalMs,
                                 jitterFactor: currentConfig.jitterFactor,
                                 maxReconnectAttempts: currentConfig.maxReconnectAttempts,
+                                autoParseJSON: currentConfig.autoParseJSON,
                                 onBeforeRequest: currentConfig.onBeforeRequest
                             )
                             self.performEstablishConnection(attemptVersion: attemptVersion)
                         }
                     }
                 }.catch { [weak self] error in
-                    self?.sseQueue.async {
+                    self?.sseQueue.async { [weak self] in
                         guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
                         if !flag.isCompleted {
                             flag.isCompleted = true
@@ -315,7 +327,7 @@ class NitroSse: HybridNitroSseSpec {
                     }
                 }
             }.catch { [weak self] error in
-                self?.sseQueue.async {
+                self?.sseQueue.async { [weak self] in
                     guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
                     if !flag.isCompleted {
                         flag.isCompleted = true
@@ -332,7 +344,7 @@ class NitroSse: HybridNitroSseSpec {
         dispatchPrecondition(condition: .onQueue(sseQueue))
         guard self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
         print("[NitroSse] Interceptor failed: \(error.localizedDescription)")
-        self.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Interceptor Error: \(error.localizedDescription)", statusCode: -1, retry: nil))
+        self.pushEventToBuffer(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Interceptor Error: \(error.localizedDescription)", statusCode: -1, retry: nil))
         // Reconnect after delay
         self.scheduleAutomaticReconnect(isError: true, attemptVersion: attemptVersion)
     }
@@ -480,7 +492,7 @@ class NitroSse: HybridNitroSseSpec {
         let maxAttempts = Int(config?.maxReconnectAttempts ?? -1.0)
         if maxAttempts != -1 && currentReconnectAttempts >= maxAttempts {
             print("[NitroSse] Max reconnection attempts reached (\(maxAttempts)). Stopping.")
-            self.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Max reconnection attempts reached (\(maxAttempts)).", statusCode: nil, retry: nil))
+            self.pushEventToBuffer(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Max reconnection attempts reached (\(maxAttempts)).", statusCode: nil, retry: nil))
             self.stopInternal()
             return
         }
@@ -522,18 +534,18 @@ class NitroSse: HybridNitroSseSpec {
         /// 
         /// If this handler corresponds to the active connection and its attempt version matches the parent's current connectionAttemptVersion, resets `backoffCounter`, `currentReconnectAttempts`, and `consecutiveAuthErrors`, and enqueues an `.open` `SseEvent` with status code 200.
         func onOpened() {
-            guard let parent = parent, source === parent.eventSource else { return }
+            guard let parent = self.parent, source === parent.eventSource else { return }
             parent.sseQueue.async { [weak parent] in
                 guard let parent = parent, self.attemptVersion == parent.connectionAttemptVersion else { return }
                 parent.backoffCounter = 0
                 parent.currentReconnectAttempts = 0
                 parent.consecutiveAuthErrors = 0 
-                parent.pushEventToBuffer(SseEvent(type: .open, data: nil, id: nil, event: nil, message: nil, statusCode: 200, retry: nil))
+                parent.pushEventToBuffer(SseEvent(type: .open, data: nil, parsedData: nil, id: nil, event: nil, message: nil, statusCode: 200, retry: nil))
             }
         }
         
         func onClosed() {
-            guard let parent = parent, source === parent.eventSource else { return }
+            guard let parent = self.parent, source === parent.eventSource else { return }
             parent.sseQueue.async { [weak parent] in
                 guard let parent = parent, self.attemptVersion == parent.connectionAttemptVersion else { return }
                 if let rid = parent.requestId {
@@ -547,7 +559,7 @@ class NitroSse: HybridNitroSseSpec {
         }
         
         func onMessage(eventType: String, messageEvent: MessageEvent) {
-            guard let parent = parent, source === parent.eventSource else { return }
+            guard let parent = self.parent, source === parent.eventSource else { return }
             parent.sseQueue.async { [weak parent] in
                 guard let parent = parent, self.attemptVersion == parent.connectionAttemptVersion else { return }
                 let encodedDataSize = Double(messageEvent.data.utf8.count)
@@ -558,21 +570,23 @@ class NitroSse: HybridNitroSseSpec {
                     parent.lastProcessedId = messageEvent.lastEventId
                 }
                 
-                parent.pushEventToBuffer(SseEvent(type: .message, data: messageEvent.data, id: messageEvent.lastEventId, event: eventType, message: nil, statusCode: 200, retry: nil))
+                let parsedData = (parent.config?.autoParseJSON == true) ? parent.parseJsonToAnyMap(messageEvent.data) : nil
+                
+                parent.pushEventToBuffer(SseEvent(type: .message, data: messageEvent.data, parsedData: parsedData, id: messageEvent.lastEventId, event: eventType, message: nil, statusCode: 200, retry: nil))
             }
         }
         
         func onComment(comment: String) {
-            guard let parent = parent, source === parent.eventSource else { return }
+            guard let parent = self.parent, source === parent.eventSource else { return }
             parent.sseQueue.async { [weak parent] in
                 guard let parent = parent, self.attemptVersion == parent.connectionAttemptVersion else { return }
                 parent.totalBytesReceived += Double(comment.utf8.count)
-                parent.pushEventToBuffer(SseEvent(type: .heartbeat, data: nil, id: nil, event: nil, message: comment, statusCode: nil, retry: nil))
+                parent.pushEventToBuffer(SseEvent(type: .heartbeat, data: nil, parsedData: nil, id: nil, event: nil, message: comment, statusCode: nil, retry: nil))
             }
         }
         
         func onError(error: Error) {
-            guard let parent = parent, source === parent.eventSource else { return }
+            guard let parent = self.parent, source === parent.eventSource else { return }
             parent.sseQueue.async { [weak parent] in
                 guard let parent = parent, parent.isRunning, self.attemptVersion == parent.connectionAttemptVersion else { return }
                 let nsError = error as NSError
@@ -586,33 +600,33 @@ class NitroSse: HybridNitroSseSpec {
                 parent.requestId = nil
                 
                 if statusCode == 204 {
-                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "No Content (204). Stopping.", statusCode: 204, retry: nil))
+                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "No Content (204). Stopping.", statusCode: 204, retry: nil))
                     parent.stopInternal()
                     return
                 }
 
                 if statusCode == 401 || statusCode == 403 {
                     if parent.config?.onBeforeRequest == nil {
-                        parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Auth Error (\(statusCode)) - No interceptor provided. Stopping.", statusCode: Double(statusCode), retry: nil))
+                        parent.pushEventToBuffer(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Auth Error (\(statusCode)) - No interceptor provided. Stopping.", statusCode: Double(statusCode), retry: nil))
                         parent.stopInternal()
                         return
                     }
 
                     parent.consecutiveAuthErrors += 1
                     if parent.consecutiveAuthErrors >= parent.maxAuthRetries {
-                        parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Auth Error (\(statusCode)) - Retry limit reached (\(parent.maxAuthRetries)). Stopping.", statusCode: Double(statusCode), retry: nil))
+                        parent.pushEventToBuffer(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Auth Error (\(statusCode)) - Retry limit reached (\(parent.maxAuthRetries)). Stopping.", statusCode: Double(statusCode), retry: nil))
                         parent.stopInternal()
                         return
                     }
                     
-                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Auth Error (\(statusCode)) - Retry \(parent.consecutiveAuthErrors)/\(parent.maxAuthRetries). Refreshing token...", statusCode: Double(statusCode), retry: nil))
+                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Auth Error (\(statusCode)) - Retry \(parent.consecutiveAuthErrors)/\(parent.maxAuthRetries). Refreshing token...", statusCode: Double(statusCode), retry: nil))
                     parent.scheduleAutomaticReconnect(isError: true, attemptVersion: self.attemptVersion)
                     return
                 }
 
                 let isFatal = (statusCode == 400)
                 if isFatal {
-                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Fatal Error (\(statusCode)). Stopping.", statusCode: Double(statusCode), retry: nil))
+                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Fatal Error (\(statusCode)). Stopping.", statusCode: Double(statusCode), retry: nil))
                     parent.stopInternal()
                     return
                 }
@@ -621,18 +635,18 @@ class NitroSse: HybridNitroSseSpec {
                 if (statusCode == 429 || statusCode == 503), let retryAfter = retryAfterSeconds {
                     let jitter = Double.random(in: 0.5...1.5)
                     let totalDelay = retryAfter + jitter
-                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Retry-After received: \(Int(totalDelay))s", statusCode: Double(statusCode), retry: totalDelay * 1000.0))
+                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Retry-After received: \(Int(totalDelay))s", statusCode: Double(statusCode), retry: totalDelay * 1000.0))
                     parent.scheduleAutomaticReconnectWithFixedDelay(totalDelay, attemptVersion: self.attemptVersion)
                     return
                 }
 
                 if statusCode == 429 {
-                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Rate Limited (429) without Retry-After. Stopping.", statusCode: 429, retry: nil))
+                    parent.pushEventToBuffer(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Rate Limited (429) without Retry-After. Stopping.", statusCode: 429, retry: nil))
                     parent.stopInternal()
                     return
                 }
 
-                parent.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: error.localizedDescription, statusCode: Double(statusCode), retry: nil))
+                parent.pushEventToBuffer(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: error.localizedDescription, statusCode: Double(statusCode), retry: nil))
                 parent.scheduleAutomaticReconnect(isError: true, attemptVersion: self.attemptVersion)
             }
         }

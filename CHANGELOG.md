@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.0 (2026-03-31)
+
+### Features
+- **Native JSON Parsing**: Added `autoParseJSON` to `SseConfig`. When enabled, message data is parsed as JSON in the background native thread and exposed via `parsedData` in the `SseEvent`. This significantly improves performance for high-frequency or heavy-payload streams by offloading CPU-intensive JSON parsing from the JavaScript thread to the platform's native JSON engine.
+
+### Improvements
+- **Native Unit Testing**: Added a comprehensive suite of native tests for both Android (Kotlin) and iOS (Swift) to verify JSON parsing accuracy, including support for nested objects and arrays.
+- **Thread Safety**: Hardened the internal state machine to ensure consistent configuration access during background processing.
+
 ## 2.0.0 (2026-03-31)
 
 ### ⚠️ Breaking Changes
