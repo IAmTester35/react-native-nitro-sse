@@ -49,6 +49,10 @@ export interface ContentProps {
   body: string;
   connectionTimeout: string;
   readTimeout: string;
+  retryInterval: string;
+  maxRetryInterval: string;
+  jitter: string;
+  reconnectAttempts: string;
   showConfig: boolean;
   scrollViewRef: any;
   setLogs: (logs: LogEntry[]) => void;
@@ -58,6 +62,10 @@ export interface ContentProps {
   setBody: (val: string) => void;
   setConnectionTimeout: (val: string) => void;
   setReadTimeout: (val: string) => void;
+  setRetryInterval: (val: string) => void;
+  setMaxRetryInterval: (val: string) => void;
+  setJitter: (val: string) => void;
+  setReconnectAttempts: (val: string) => void;
   setHeadersJson: (val: string) => void;
   setManualId: (val: string) => void;
   setUseInterceptor: (val: boolean) => void;
@@ -85,6 +93,10 @@ export function Content(props: ContentProps) {
     body,
     connectionTimeout,
     readTimeout,
+    retryInterval,
+    maxRetryInterval,
+    jitter,
+    reconnectAttempts,
     showConfig,
     scrollViewRef,
     setLogs,
@@ -94,6 +106,10 @@ export function Content(props: ContentProps) {
     setBody,
     setConnectionTimeout,
     setReadTimeout,
+    setRetryInterval,
+    setMaxRetryInterval,
+    setJitter,
+    setReconnectAttempts,
     setHeadersJson,
     setManualId,
     setUseInterceptor,
@@ -304,7 +320,57 @@ export function Content(props: ContentProps) {
                 value={readTimeout}
                 onChangeText={setReadTimeout}
                 keyboardType="numeric"
-                placeholder="35000"
+                placeholder="300000"
+                placeholderTextColor={COLORS.textDim}
+              />
+            </View>
+          </View>
+
+          <View style={styles.inputRow}>
+            <View style={styles.flex1}>
+              <Text style={styles.inputLabel}>RETRY INT. (MS)</Text>
+              <TextInput
+                style={styles.input}
+                value={retryInterval}
+                onChangeText={setRetryInterval}
+                keyboardType="numeric"
+                placeholder="1000"
+                placeholderTextColor={COLORS.textDim}
+              />
+            </View>
+            <View style={styles.flex1}>
+              <Text style={styles.inputLabel}>MAX RETRY (MS)</Text>
+              <TextInput
+                style={styles.input}
+                value={maxRetryInterval}
+                onChangeText={setMaxRetryInterval}
+                keyboardType="numeric"
+                placeholder="30000"
+                placeholderTextColor={COLORS.textDim}
+              />
+            </View>
+          </View>
+
+          <View style={styles.inputRow}>
+            <View style={styles.flex1}>
+              <Text style={styles.inputLabel}>JITTER (0-1)</Text>
+              <TextInput
+                style={styles.input}
+                value={jitter}
+                onChangeText={setJitter}
+                keyboardType="numeric"
+                placeholder="0.5"
+                placeholderTextColor={COLORS.textDim}
+              />
+            </View>
+            <View style={styles.flex1}>
+              <Text style={styles.inputLabel}>MAX ATTEMPTS</Text>
+              <TextInput
+                style={styles.input}
+                value={reconnectAttempts}
+                onChangeText={setReconnectAttempts}
+                keyboardType="numeric"
+                placeholder="-1 = inf"
                 placeholderTextColor={COLORS.textDim}
               />
             </View>
