@@ -6,7 +6,7 @@
 - **Client Factory**: The `createNitroSse()` function now returns an `SseClient` object instead of the native `NitroSse` object. This allows for typed event listeners and internal state management. Ensure you update your type references (e.g., `useRef<SseClient>(null)`).
 
 ### Features
-- **Typed Event Emitters**: Supported industry-standard `.addEventListener(type, listener)` and `.removeEventListener(name, listener)` for a more intuitive developer experience.
+- **Typed Event Emitters**: Supported industry-standard `.addEventListener(type, listener)` and `.removeEventListener(type, listener)` for a more intuitive developer experience.
     - Granular logic separation based on the SSE `event:` field (e.g., `sse.addEventListener('update', ...)`).
     - Automatic dispatching to pre-defined system types: `'open'`, `'message'`, `'error'`, `'close'`, and `'heartbeat'`.
     - Fully type-safe TypeScript implementation powered by a high-performance JS wrapper.
