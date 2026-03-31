@@ -46,7 +46,7 @@ export interface SseConfig {
   maxBufferSize?: number;
   /**
    * Maximum time (in ms) to wait for the initial server connection and handshake to complete.
-   * Effectively the "Connect Timeout".
+   * Effectively the \"Connect Timeout\".
    * @default 15000
    */
   connectionTimeoutMs?: number;
@@ -57,6 +57,29 @@ export interface SseConfig {
    * @default 300000
    */
   readTimeoutMs?: number;
+  /**
+   * Initial delay (in ms) for reconnection attempts.
+   * Subsequent attempts use exponential backoff.
+   * @default 1000
+   */
+  retryIntervalMs?: number;
+  /**
+   * Maximum delay (in ms) for reconnection attempts.
+   * @default 30000
+   */
+  maxRetryIntervalMs?: number;
+  /**
+   * Factor to randomize reconnection attempts (0.0 to 1.0).
+   * 0 means no jitter, 1.0 means up to 100% randomization.
+   * @default 0.5
+   */
+  jitterFactor?: number;
+  /**
+   * Maximum number of reconnection attempts before giving up.
+   * Use -1 for infinite (default), 0 to disable auto-reconnection.
+   * @default -1
+   */
+  maxReconnectAttempts?: number;
   /**
    * Async interceptor called before every connection attempt (including auto-reconnects).
    * Use this to refresh tokens or calculate dynamic headers.
@@ -97,4 +120,49 @@ export interface SseStats {
   lastErrorTime?: number;
   /** Error code of the last error. */
   lastErrorCode?: string;
+}
+
+/**
+ * Listener for a specific SSE event.
+ */
+export type SseListener = (event: SseEvent) => void;
+
+/**
+ * Public interface for the NitroSse client, supporting typed event listeners.
+ */
+export interface SseClient {
+  /**
+   * Configure SSE and setup event callback.
+   * @param config The SSE configuration.
+   * @param onEvent Optional legacy batch callback for all events.
+   */
+  setup(config: SseConfig, onEvent?: (events: SseEvent[]) => void): void;
+
+  /**
+   * Register a listener for a specific event type ('message', 'open', etc.)
+   * or a custom SSE event name (from the 'event:' field).
+   */
+  addEventListener(type: string, listener: SseListener): void;
+
+  /**
+   * Unregister a listener.
+   */
+  removeEventListener(type: string, listener: SseListener): void;
+
+  /** Start the connection. */
+  start(): void;
+  /** Stop the connection. */
+  stop(): void;
+  /** Restart the connection (stop + start). */
+  restart(): void;
+  /** Force flush buffered events to JS. */
+  flush(): void;
+  /** Check if active. */
+  isConnected(): boolean;
+  /** Get stats. */
+  getStats(): SseStats;
+  /** Manually update headers. */
+  updateHeaders(headers: Record<string, string>): void;
+  /** Set last event ID. */
+  setLastProcessedId(id: string): void;
 }

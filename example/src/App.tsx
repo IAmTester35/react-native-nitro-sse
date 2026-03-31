@@ -3,8 +3,7 @@ import { Platform, LayoutAnimation, UIManager } from 'react-native';
 import { Content, type LogEntry } from './Content';
 import {
   createNitroSse,
-  type NitroSse,
-  type SseEvent,
+  type SseClient,
   type SseStats,
 } from 'react-native-nitro-sse';
 
@@ -21,6 +20,14 @@ if (
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
+/**
+ * Root React component that manages an SSE client and provides a UI for controlling and observing its connection.
+ *
+ * Manages SSE lifecycle, connection and reconnection configuration, logging, periodic statistics polling, and token/header rotation.
+ * Registers typed SSE event listeners, exposes control handlers (start, stop, flush, restart, apply headers, set last processed ID, toggle config), and passes all relevant state and handlers to the rendered Content component.
+ *
+ * @returns The application UI as a JSX element (renders the Content component with current state and control callbacks).
+ */
 export default function App() {
   // --- States ---
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -41,10 +48,14 @@ export default function App() {
   const [body, setBody] = useState('');
   const [connectionTimeout, setConnectionTimeout] = useState('15000');
   const [readTimeout, setReadTimeout] = useState('300000');
+  const [retryInterval, setRetryInterval] = useState('1000');
+  const [maxRetryInterval, setMaxRetryInterval] = useState('30000');
+  const [jitter, setJitter] = useState('0.5');
+  const [reconnectAttempts, setReconnectAttempts] = useState('-1');
   const [showConfig, setShowConfig] = useState(false);
 
   // --- Refs ---
-  const sseRef = useRef<NitroSse | null>(null);
+  const sseRef = useRef<SseClient | null>(null);
   const statsInterval = useRef<Record<string, any> | null>(null);
   const scrollViewRef = useRef<any>(null);
 
@@ -79,23 +90,6 @@ export default function App() {
   }, []);
 
   // --- Handlers ---
-  const handleEvents = useCallback(
-    (events: SseEvent[]) => {
-      events.forEach((event) => {
-        addLog(event.type, event.data, event.message, event.statusCode);
-        if (event.type === 'open') {
-          setIsConnected(true);
-          setIsConnecting(false);
-        } else if (event.type === 'error') {
-          setIsConnecting(false);
-          setIsConnected(false);
-        } else if (event.type === 'close') {
-          setIsConnected(false);
-        }
-      });
-    },
-    [addLog]
-  );
 
   const startConnection = () => {
     if (sseRef.current) return;
@@ -105,28 +99,66 @@ export default function App() {
       addLog('system', undefined, 'Initializing connection...');
 
       const sse = createNitroSse();
-      sse.setup(
-        {
-          url: url + (useInterceptor ? '?auth=true' : ''),
-          method: method,
-          body: method === 'post' ? body : undefined,
-          batchingIntervalMs: parseInt(batching, 10) || 0,
-          connectionTimeoutMs: parseInt(connectionTimeout, 10) || 15000,
-          readTimeoutMs: parseInt(readTimeout, 10) || 35000,
-          onBeforeRequest: useInterceptor
-            ? async () => {
-                addLog('system', undefined, 'Middleware: Refreshing token...');
-                // Simulate async auth refresh
-                await new Promise((resolve) => setTimeout(resolve, 500));
-                return {
-                  'Authorization': 'Bearer interceptor-token',
-                  'X-Interceptor-Actived': 'true',
-                };
-              }
-            : undefined,
-        },
-        handleEvents
-      );
+
+      // --- New: Typed Event Listeners ---
+      sse.addEventListener('open', (event) => {
+        addLog(
+          'open',
+          event.data,
+          'Connection established (via listener)',
+          event.statusCode
+        );
+        setIsConnected(true);
+        setIsConnecting(false);
+      });
+
+      sse.addEventListener('message', (event) => {
+        addLog(event.type, event.data, event.message, event.statusCode);
+      });
+
+      sse.addEventListener('error', (event) => {
+        addLog('error', event.data, event.message, event.statusCode);
+        setIsConnecting(false);
+        setIsConnected(false);
+      });
+
+      sse.addEventListener('heartbeat', (event) => {
+        addLog('heartbeat', undefined, 'Keep-alive received', event.statusCode);
+      });
+
+      // Demonstrate custom SSE event name listening
+      sse.addEventListener('update', (event) => {
+        addLog(
+          'update',
+          event.data,
+          'Custom "update" event received!',
+          event.statusCode
+        );
+      });
+
+      sse.setup({
+        url: url + (useInterceptor ? '?auth=true' : ''),
+        method: method,
+        body: method === 'post' ? body : undefined,
+        batchingIntervalMs: parseInt(batching, 10) || 0,
+        connectionTimeoutMs: parseInt(connectionTimeout, 10) || 15000,
+        readTimeoutMs: parseInt(readTimeout, 10) || 35000,
+        // --- New: Reconnection Logic ---
+        retryIntervalMs: parseInt(retryInterval, 10) || 1000,
+        maxRetryIntervalMs: parseInt(maxRetryInterval, 10) || 30000,
+        jitterFactor: parseFloat(jitter) || 0.5,
+        maxReconnectAttempts: parseInt(reconnectAttempts, 10) || -1,
+        onBeforeRequest: useInterceptor
+          ? async () => {
+              addLog('system', undefined, 'Middleware: Refreshing token...');
+              await new Promise((resolve) => setTimeout(resolve, 500));
+              return {
+                'Authorization': 'Bearer interceptor-token',
+                'X-Interceptor-Actived': 'true',
+              };
+            }
+          : undefined,
+      });
 
       sse.start();
       sseRef.current = sse;
@@ -237,6 +269,10 @@ export default function App() {
       body={body}
       connectionTimeout={connectionTimeout}
       readTimeout={readTimeout}
+      retryInterval={retryInterval}
+      maxRetryInterval={maxRetryInterval}
+      jitter={jitter}
+      reconnectAttempts={reconnectAttempts}
       showConfig={showConfig}
       scrollViewRef={scrollViewRef}
       setLogs={setLogs}
@@ -246,6 +282,10 @@ export default function App() {
       setBody={setBody}
       setConnectionTimeout={setConnectionTimeout}
       setReadTimeout={setReadTimeout}
+      setRetryInterval={setRetryInterval}
+      setMaxRetryInterval={setMaxRetryInterval}
+      setJitter={setJitter}
+      setReconnectAttempts={setReconnectAttempts}
       setHeadersJson={setHeadersJson}
       setManualId={setManualId}
       setUseInterceptor={setUseInterceptor}

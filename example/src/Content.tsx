@@ -49,6 +49,10 @@ export interface ContentProps {
   body: string;
   connectionTimeout: string;
   readTimeout: string;
+  retryInterval: string;
+  maxRetryInterval: string;
+  jitter: string;
+  reconnectAttempts: string;
   showConfig: boolean;
   scrollViewRef: any;
   setLogs: (logs: LogEntry[]) => void;
@@ -58,6 +62,10 @@ export interface ContentProps {
   setBody: (val: string) => void;
   setConnectionTimeout: (val: string) => void;
   setReadTimeout: (val: string) => void;
+  setRetryInterval: (val: string) => void;
+  setMaxRetryInterval: (val: string) => void;
+  setJitter: (val: string) => void;
+  setReconnectAttempts: (val: string) => void;
   setHeadersJson: (val: string) => void;
   setManualId: (val: string) => void;
   setUseInterceptor: (val: boolean) => void;
@@ -70,6 +78,16 @@ export interface ContentProps {
   applyManualId: () => void;
 }
 
+/**
+ * Main screen component rendering the SSE dashboard, connection controls, configuration sheet, and activity log.
+ *
+ * Renders a header with live/connecting/disconnected status, stats (data received and reconnects), an optional
+ * collapsible configuration sheet for connection settings, action buttons to control the connection (establish,
+ * flush, restart, stop), and a scrollable stream activity log with tappable entries that show event details.
+ *
+ * @param props - ContentProps containing UI state, connection/configuration values, log state setters, and action handlers used by the component.
+ * @returns The rendered React element representing the SSE UI and its interactive controls.
+ */
 export function Content(props: ContentProps) {
   const {
     logs,
@@ -85,6 +103,10 @@ export function Content(props: ContentProps) {
     body,
     connectionTimeout,
     readTimeout,
+    retryInterval,
+    maxRetryInterval,
+    jitter,
+    reconnectAttempts,
     showConfig,
     scrollViewRef,
     setLogs,
@@ -94,6 +116,10 @@ export function Content(props: ContentProps) {
     setBody,
     setConnectionTimeout,
     setReadTimeout,
+    setRetryInterval,
+    setMaxRetryInterval,
+    setJitter,
+    setReconnectAttempts,
     setHeadersJson,
     setManualId,
     setUseInterceptor,
@@ -304,7 +330,57 @@ export function Content(props: ContentProps) {
                 value={readTimeout}
                 onChangeText={setReadTimeout}
                 keyboardType="numeric"
-                placeholder="35000"
+                placeholder="300000"
+                placeholderTextColor={COLORS.textDim}
+              />
+            </View>
+          </View>
+
+          <View style={styles.inputRow}>
+            <View style={styles.flex1}>
+              <Text style={styles.inputLabel}>RETRY INT. (MS)</Text>
+              <TextInput
+                style={styles.input}
+                value={retryInterval}
+                onChangeText={setRetryInterval}
+                keyboardType="numeric"
+                placeholder="1000"
+                placeholderTextColor={COLORS.textDim}
+              />
+            </View>
+            <View style={styles.flex1}>
+              <Text style={styles.inputLabel}>MAX RETRY (MS)</Text>
+              <TextInput
+                style={styles.input}
+                value={maxRetryInterval}
+                onChangeText={setMaxRetryInterval}
+                keyboardType="numeric"
+                placeholder="30000"
+                placeholderTextColor={COLORS.textDim}
+              />
+            </View>
+          </View>
+
+          <View style={styles.inputRow}>
+            <View style={styles.flex1}>
+              <Text style={styles.inputLabel}>JITTER (0-1)</Text>
+              <TextInput
+                style={styles.input}
+                value={jitter}
+                onChangeText={setJitter}
+                keyboardType="numeric"
+                placeholder="0.5"
+                placeholderTextColor={COLORS.textDim}
+              />
+            </View>
+            <View style={styles.flex1}>
+              <Text style={styles.inputLabel}>MAX ATTEMPTS</Text>
+              <TextInput
+                style={styles.input}
+                value={reconnectAttempts}
+                onChangeText={setReconnectAttempts}
+                keyboardType="numeric"
+                placeholder="-1 = inf"
                 placeholderTextColor={COLORS.textDim}
               />
             </View>

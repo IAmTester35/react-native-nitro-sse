@@ -1,5 +1,30 @@
 # Changelog
 
+## 2.0.0 (2026-03-31)
+
+### ⚠️ Breaking Changes
+- **Client Factory**: The `createNitroSse()` function now returns an `SseClient` object instead of the native `NitroSse` object. This allows for typed event listeners and internal state management. Ensure you update your type references (e.g., `useRef<SseClient>(null)`).
+
+### Features
+- **Typed Event Emitters**: Supported industry-standard `.addEventListener(type, listener)` and `.removeEventListener(type, listener)` for a more intuitive developer experience.
+    - Granular logic separation based on the SSE `event:` field (e.g., `sse.addEventListener('update', ...)`).
+    - Automatic dispatching to pre-defined system types: `'open'`, `'message'`, `'error'`, `'close'`, and `'heartbeat'`.
+    - Fully type-safe TypeScript implementation powered by a high-performance JS wrapper.
+- **Custom Reconnection Logic**: Added support for fine-tuned backoff and jitter in `SseConfig`.
+    - `retryIntervalMs`: Initial delay for reconnection attempts (default: 1000ms).
+    - `maxRetryIntervalMs`: Maximum delay between reconnection attempts (default: 30000ms).
+    - `jitterFactor`: Randomization factor (0.0 to 1.0) to prevent the "thundering herd" problem (default: 0.5).
+- **Reconnection Limits**: Added `maxReconnectAttempts` to `SseConfig`.
+    - Allows limiting continuous reconnection attempts before stopping (default: `-1` for infinite, `0` to disable).
+
+### Improvements
+- **Native Logic Consistency**: Standardized the reconnection algorithm across Android (Kotlin) and iOS (Swift) to ensure predictable behavior on both platforms.
+- **Testing**: Updated Android (Kotlin), iOS (Swift), and Jest unit tests to cover new algorithms and the new `SseClient` wrapper.
+
+### Fixes
+- **iOS**: Fixed a regression where `SseConfig` parameters (intervals, jitter, limits) were lost when using an `onBeforeRequest` interceptor.
+
+
 ## 1.6.2 (2026-03-17)
 
 ### Infrastructure
@@ -13,7 +38,6 @@
 - **iOS**: Resolved a Swift warning by changing an unused `var` mutation to a `let` constant in `updateHeaders`.
 
 ## 1.6.0 (2026-03-12)
-
 
 ### Reliability & Stability
 - **Thread-Safe State Machine**: Refactored iOS threading to eliminate data races during concurrent start/stop/reload actions. Fixed potential deadlocks in `deinit` and `start()` using queue-aware `DispatchSpecificKey`. Resolved race conditions in `onBeforeRequest` interceptor to prevent overwriting updated headers.

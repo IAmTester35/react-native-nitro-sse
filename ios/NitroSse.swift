@@ -37,16 +37,13 @@ class NitroSse: HybridNitroSseSpec {
     private var isFlushPending: Bool = false
     
     private var backoffCounter: Int = 0
+    private var currentReconnectAttempts: Int = 0
     private var lastProcessedId: String? = nil
     
     private var totalBytesReceived: Double = 0
     private var reconnectCount: Double = 0
     private var lastErrorTime: Double? = nil
     private var lastErrorCode: String? = nil
-    
-    private let defaultRetryDelay: TimeInterval = 3.0
-    private let baseBackoffDelay: TimeInterval = 1.0
-    private let maxBackoffDelay: TimeInterval = 30.0
     
     private let sseQueue: DispatchQueue = {
         let queue = DispatchQueue(label: "com.margelo.nitro.sse", qos: .utility)
@@ -179,9 +176,9 @@ class NitroSse: HybridNitroSseSpec {
         }
     }
 
-    /**
-     * Dynamically update the headers for subsequent connection attempts.
-     */
+    /// Update the HTTP headers that will be used for subsequent SSE connections.
+    /// - Parameters:
+    ///   - headers: A dictionary of HTTP header names and values to replace the current headers for future connections.
     func updateHeaders(headers: [String: String]) throws {
         sseQueue.async {
             guard let config = self.config else { return }
@@ -195,6 +192,10 @@ class NitroSse: HybridNitroSseSpec {
                 maxBufferSize: config.maxBufferSize,
                 connectionTimeoutMs: config.connectionTimeoutMs,
                 readTimeoutMs: config.readTimeoutMs,
+                retryIntervalMs: config.retryIntervalMs,
+                maxRetryIntervalMs: config.maxRetryIntervalMs,
+                jitterFactor: config.jitterFactor,
+                maxReconnectAttempts: config.maxReconnectAttempts,
                 onBeforeRequest: config.onBeforeRequest
             )
             print("[NitroSse] Headers updated for subsequent connections.")
@@ -244,6 +245,11 @@ class NitroSse: HybridNitroSseSpec {
         }
     }
 
+    /// Initiates a new SSE connection attempt using the current configuration, honoring the provided attempt version to ignore stale async work.
+    /// 
+    /// If a configured `onBeforeRequest` interceptor is present, this method executes it (with a configurable timeout); when the interceptor resolves with additional headers those headers are merged into the active configuration before proceeding. If the interceptor fails or times out, interceptor error handling is invoked. If no interceptor is configured, the connection is established immediately.
+    /// - Parameters:
+    ///   - attemptVersion: A numeric token representing the connection attempt version; the method aborts if this does not match the current `connectionAttemptVersion`, ensuring stale asynchronous results are ignored.
     private func establishConnection(attemptVersion: Int) {
         dispatchPrecondition(condition: .onQueue(sseQueue))
         guard isRunning, let config = config, attemptVersion == self.connectionAttemptVersion else { return }
@@ -290,6 +296,10 @@ class NitroSse: HybridNitroSseSpec {
                                 maxBufferSize: currentConfig.maxBufferSize,
                                 connectionTimeoutMs: currentConfig.connectionTimeoutMs,
                                 readTimeoutMs: currentConfig.readTimeoutMs,
+                                retryIntervalMs: currentConfig.retryIntervalMs,
+                                maxRetryIntervalMs: currentConfig.maxRetryIntervalMs,
+                                jitterFactor: currentConfig.jitterFactor,
+                                maxReconnectAttempts: currentConfig.maxReconnectAttempts,
                                 onBeforeRequest: currentConfig.onBeforeRequest
                             )
                             self.performEstablishConnection(attemptVersion: attemptVersion)
@@ -451,19 +461,42 @@ class NitroSse: HybridNitroSseSpec {
         }
     }
     
+    /// Schedules an automatic reconnection attempt using the configured retry interval, exponential backoff, and jitter.
+    /// 
+    /// If the configured maximum reconnect attempts has been reached, this method emits an error event and stops the connection instead of scheduling a reconnect. Otherwise it increments the reconnect attempt counter, computes a delay (exponential backoff when `isError` is true, with jitter applied and a minimum delay of 1 second), clears the current event source, and schedules `establishConnection(attemptVersion:)` to run after the computed delay only if the client is still running and the provided `attemptVersion` matches the current connection attempt version.
+    /// - Parameters:
+    ///   - isError: Whether the reconnect is being scheduled in response to an error (affects use of exponential backoff).
+    ///   - attemptVersion: The connection attempt version that must match the current `connectionAttemptVersion` when the scheduled reconnect fires; used to ignore stale or superseded reconnect attempts.
     private func scheduleAutomaticReconnect(isError: Bool, attemptVersion: Int) {
         dispatchPrecondition(condition: .onQueue(sseQueue))
         eventSource?.stop()
-        var delay: TimeInterval = defaultRetryDelay
+
+        let jitterFactor = config?.jitterFactor ?? 0.5
+        let retryInterval = (config?.retryIntervalMs ?? 1000.0) / 1000.0
+        let maxRetryInterval = (config?.maxRetryIntervalMs ?? 30000.0) / 1000.0
+
+        var delay: TimeInterval = retryInterval
+        
+        let maxAttempts = Int(config?.maxReconnectAttempts ?? -1.0)
+        if maxAttempts != -1 && currentReconnectAttempts >= maxAttempts {
+            print("[NitroSse] Max reconnection attempts reached (\(maxAttempts)). Stopping.")
+            self.pushEventToBuffer(SseEvent(type: .error, data: nil, id: nil, event: nil, message: "Max reconnection attempts reached (\(maxAttempts)).", statusCode: nil, retry: nil))
+            self.stopInternal()
+            return
+        }
+        
+        currentReconnectAttempts += 1
+        
         if isError {
             let exponent = Double(backoffCounter)
-            let base = min(baseBackoffDelay * pow(2.0, exponent), maxBackoffDelay)
+            let base = min(retryInterval * pow(2.0, exponent), maxRetryInterval)
             backoffCounter += 1
-            delay = base * (0.5 + Double.random(in: 0...1))
+            delay = base * (1.0 - jitterFactor + Double.random(in: 0...(2 * jitterFactor)))
         } else {
-            delay = defaultRetryDelay * (0.8 + Double.random(in: 0...0.4))
+            delay = retryInterval * (1.0 - jitterFactor + Double.random(in: 0...(2 * jitterFactor)))
         }
-        let safeDelay = max(delay, 2.0)
+
+        let safeDelay = max(delay, 1.0)
         eventSource?.stop()
         eventSource = nil
         sseQueue.asyncAfter(deadline: .now() + safeDelay) { [weak self] in
@@ -485,11 +518,15 @@ class NitroSse: HybridNitroSseSpec {
             self.attemptVersion = attemptVersion
         }
         
+        /// Handle a successful SSE connection open for this handler.
+        /// 
+        /// If this handler corresponds to the active connection and its attempt version matches the parent's current connectionAttemptVersion, resets `backoffCounter`, `currentReconnectAttempts`, and `consecutiveAuthErrors`, and enqueues an `.open` `SseEvent` with status code 200.
         func onOpened() {
             guard let parent = parent, source === parent.eventSource else { return }
             parent.sseQueue.async { [weak parent] in
                 guard let parent = parent, self.attemptVersion == parent.connectionAttemptVersion else { return }
                 parent.backoffCounter = 0
+                parent.currentReconnectAttempts = 0
                 parent.consecutiveAuthErrors = 0 
                 parent.pushEventToBuffer(SseEvent(type: .open, data: nil, id: nil, event: nil, message: nil, statusCode: 200, retry: nil))
             }
