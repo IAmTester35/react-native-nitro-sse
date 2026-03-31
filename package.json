@@ -1,6 +1,6 @@
 {
   "name": "react-native-nitro-sse",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "High-performance Server-Sent Events (SSE) for React Native, powered by Nitro Modules.",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
@@ -40,6 +40,9 @@
     "nitrogen": "nitrogen",
     "typecheck": "tsc",
     "test": "jest",
+    "test:android": "cd example/android && ./gradlew :react-native-nitro-sse:testDebugUnitTest",
+    "test:ios": "cd example/ios && xcodebuild test -workspace NitroSseExample.xcworkspace -scheme NitroSse -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16'",
+    "test:native": "yarn test:android && yarn test:ios",
     "release": "release-it --only-version",
     "server": "node example/sse-server.js",
     "lint": "eslint \"**/*.{js,ts,tsx}\""

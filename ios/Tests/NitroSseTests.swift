@@ -239,4 +239,42 @@ class NitroSseTests: XCTestCase {
         XCTAssertEqual(getHeartbeatSize(comment: ":keep-alive"), 11.0)
         XCTAssertEqual(getHeartbeatSize(comment: ":"), 1.0)
     }
+
+    func testJsonParsingLogic() {
+        let sse = NitroSse()
+        
+        let json = """
+        {
+            "name": "Nitro",
+            "metadata": {
+                "tags": ["a", "b"],
+                "active": true
+            }
+        }
+        """
+        
+        // We test that JSONSerialization works as expected for our needs
+        guard let data = json.data(using: .utf8) else {
+            XCTFail("Failed to convert string to data")
+            return
+        }
+        
+        do {
+            if let dict = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
+                XCTAssertEqual(dict["name"] as? String, "Nitro")
+                
+                let metadata = dict["metadata"] as? [String: Any]
+                XCTAssertNotNil(metadata)
+                XCTAssertEqual(metadata?["active"] as? Bool, true)
+                
+                let tags = metadata?["tags"] as? [String]
+                XCTAssertEqual(tags?.count, 2)
+                XCTAssertEqual(tags?[0], "a")
+            } else {
+                XCTFail("Failed to parse as dictionary")
+            }
+        } catch {
+            XCTFail("JSONSerialization threw error: \(error)")
+        }
+    }
 }

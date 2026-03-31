@@ -52,6 +52,7 @@ export default function App() {
   const [maxRetryInterval, setMaxRetryInterval] = useState('30000');
   const [jitter, setJitter] = useState('0.5');
   const [reconnectAttempts, setReconnectAttempts] = useState('-1');
+  const [autoParseJSON, setAutoParseJSON] = useState(true);
   const [showConfig, setShowConfig] = useState(false);
 
   // --- Refs ---
@@ -61,7 +62,13 @@ export default function App() {
 
   // --- Helpers ---
   const addLog = useCallback(
-    (type: string, data?: string, message?: string, statusCode?: number) => {
+    (
+      type: string,
+      data?: string,
+      message?: string,
+      statusCode?: number,
+      parsedData?: any
+    ) => {
       const entry: LogEntry = {
         id: Math.random().toString(36).substring(7),
         time: new Date().toLocaleTimeString([], {
@@ -74,6 +81,7 @@ export default function App() {
         data,
         message,
         statusCode,
+        parsedData,
       };
       setLogs((prev) => [entry, ...prev].slice(0, 100));
     },
@@ -106,18 +114,31 @@ export default function App() {
           'open',
           event.data,
           'Connection established (via listener)',
-          event.statusCode
+          event.statusCode,
+          event.parsedData
         );
         setIsConnected(true);
         setIsConnecting(false);
       });
 
       sse.addEventListener('message', (event) => {
-        addLog(event.type, event.data, event.message, event.statusCode);
+        addLog(
+          event.type,
+          event.data,
+          event.message,
+          event.statusCode,
+          event.parsedData
+        );
       });
 
       sse.addEventListener('error', (event) => {
-        addLog('error', event.data, event.message, event.statusCode);
+        addLog(
+          'error',
+          event.data,
+          event.message,
+          event.statusCode,
+          event.parsedData
+        );
         setIsConnecting(false);
         setIsConnected(false);
       });
@@ -132,7 +153,8 @@ export default function App() {
           'update',
           event.data,
           'Custom "update" event received!',
-          event.statusCode
+          event.statusCode,
+          event.parsedData
         );
       });
 
@@ -148,6 +170,7 @@ export default function App() {
         maxRetryIntervalMs: parseInt(maxRetryInterval, 10) || 30000,
         jitterFactor: parseFloat(jitter) || 0.5,
         maxReconnectAttempts: parseInt(reconnectAttempts, 10) || -1,
+        autoParseJSON: autoParseJSON,
         onBeforeRequest: useInterceptor
           ? async () => {
               addLog('system', undefined, 'Middleware: Refreshing token...');
@@ -273,6 +296,7 @@ export default function App() {
       maxRetryInterval={maxRetryInterval}
       jitter={jitter}
       reconnectAttempts={reconnectAttempts}
+      autoParseJSON={autoParseJSON}
       showConfig={showConfig}
       scrollViewRef={scrollViewRef}
       setLogs={setLogs}
@@ -286,6 +310,7 @@ export default function App() {
       setMaxRetryInterval={setMaxRetryInterval}
       setJitter={setJitter}
       setReconnectAttempts={setReconnectAttempts}
+      setAutoParseJSON={setAutoParseJSON}
       setHeadersJson={setHeadersJson}
       setManualId={setManualId}
       setUseInterceptor={setUseInterceptor}

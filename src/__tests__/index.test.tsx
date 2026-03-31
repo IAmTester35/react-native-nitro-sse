@@ -112,7 +112,11 @@ describe('NitroSseModule Unit Tests', () => {
 
       // Simulate native side calling the callback
       const registeredCallback = mockNative.setup.mock.calls[0][1];
-      const testEvent = { type: 'open' };
+      const testEvent = {
+        type: 'message',
+        data: '{"foo":"bar"}',
+        parsedData: { foo: 'bar' },
+      };
       registeredCallback([testEvent]);
 
       expect(onEvent).toHaveBeenCalledWith([testEvent]);
@@ -293,6 +297,7 @@ describe('NitroSseModule Unit Tests', () => {
         maxRetryIntervalMs: 45000,
         jitterFactor: 0.3,
         maxReconnectAttempts: 10,
+        autoParseJSON: true,
       };
 
       NitroSseModule.setup(fullConfig as any, onEvent);

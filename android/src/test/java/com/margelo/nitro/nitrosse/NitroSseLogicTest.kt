@@ -35,7 +35,7 @@ class NitroSseLogicTest {
         
         // Fill buffer to capacity
         for (i in 1..5) {
-            pushEventToBuffer(SseEvent(SseEventType.MESSAGE, "data $i", "$i", null, null, null, null))
+            pushEventToBuffer(SseEvent(SseEventType.MESSAGE, "data $i", null, "$i", null, null, null, null))
         }
         
         assertEquals(1, flushCount)
@@ -43,7 +43,7 @@ class NitroSseLogicTest {
 
         // Check it doesn't drop items when not at capacity
         for (i in 1..3) {
-            pushEventToBuffer(SseEvent(SseEventType.MESSAGE, "data $i", "$i", null, null, null, null))
+            pushEventToBuffer(SseEvent(SseEventType.MESSAGE, "data $i", null, "$i", null, null, null, null))
         }
         assertEquals(3, eventBuffer.size)
         assertEquals(1, flushCount)

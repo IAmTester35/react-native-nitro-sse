@@ -1,3 +1,4 @@
+import type { AnyMap } from 'react-native-nitro-modules';
 /**
  * HTTP method to use for the SSE connection.
  */
@@ -81,6 +82,12 @@ export interface SseConfig {
    */
   maxReconnectAttempts?: number;
   /**
+   * Whether to automatically parse message data as JSON in a background native thread.
+   * If true, and parsing succeeds, the result will be available in the 'parsedData' field.
+   * @default false
+   */
+  autoParseJSON?: boolean;
+  /**
    * Async interceptor called before every connection attempt (including auto-reconnects).
    * Use this to refresh tokens or calculate dynamic headers.
    * Note: This is protected by a native timeout to prevent the app from hanging.
@@ -94,8 +101,10 @@ export interface SseConfig {
 export interface SseEvent {
   /** The type of the event. */
   type: SseEventType;
-  /** The data payload of the event. */
+  /** The data payload of the event as a raw string. */
   data?: string;
+  /** The parsed JSON data, if autoParseJSON is enabled and parsing succeeds. */
+  parsedData?: AnyMap;
   /** The event ID, if provided. */
   id?: string;
   /** The event name, if provided (internal 'event' field in SSE). */

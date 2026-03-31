@@ -11,6 +11,9 @@ import okhttp3.sse.EventSource
 import okhttp3.sse.EventSources
 import okhttp3.sse.EventSourceListener
 import okio.*
+import com.margelo.nitro.core.AnyMap
+import org.json.JSONObject
+import org.json.JSONArray
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
@@ -68,6 +71,40 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
 
     companion object {
         private const val TAG = "NitroSse"
+
+        internal fun jsonObjectToMap(jsonObject: JSONObject): Map<String, Any?> {
+            val map = mutableMapOf<String, Any?>()
+            val keys = jsonObject.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                var value = jsonObject.get(key)
+                if (value is JSONObject) {
+                    value = jsonObjectToMap(value)
+                } else if (value is JSONArray) {
+                    value = jsonArrayToList(value)
+                } else if (value == JSONObject.NULL) {
+                    value = null
+                }
+                map[key] = value
+            }
+            return map
+        }
+
+        internal fun jsonArrayToList(jsonArray: JSONArray): List<Any?> {
+            val list = mutableListOf<Any?>()
+            for (i in 0 until jsonArray.length()) {
+                var value = jsonArray.get(i)
+                if (value is JSONObject) {
+                    value = jsonObjectToMap(value)
+                } else if (value is JSONArray) {
+                    value = jsonArrayToList(value)
+                } else if (value == JSONObject.NULL) {
+                    value = null
+                }
+                list.add(value)
+            }
+            return list
+        }
     }
 
     /**
@@ -85,10 +122,10 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             this.client = OkHttpClient.Builder()
                 .connectTimeout((config.connectionTimeoutMs ?: 15000.0).toLong(), TimeUnit.MILLISECONDS)
                 .readTimeout((config.readTimeoutMs ?: 300000.0).toLong(), TimeUnit.MILLISECONDS)
-                                .addNetworkInterceptor(HeartbeatNetworkInterceptor(totalBytesReceived) {
-                                    pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, "keep-alive", null, null))
-                                })
-                                .build()
+                .addNetworkInterceptor(HeartbeatNetworkInterceptor(totalBytesReceived) {
+                    pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, null, "keep-alive", null, null))
+                })
+                .build()
         }
             
         if (sseHandlerThread == null) {
@@ -165,6 +202,24 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         }
         isFlushPending.set(false)
         onEventsCallback?.invoke(eventsToEmit)
+    }
+
+    private fun parseJsonToAnyMap(data: String): AnyMap? {
+        return try {
+            val trimmed = data.trim()
+            if (trimmed.startsWith("{")) {
+                val jsonObject = JSONObject(trimmed)
+                val map = jsonObjectToMap(jsonObject)
+                AnyMap.fromMap(map, true)
+            } else {
+                // AnyMap represents a JS Object (Map). 
+                // If it's a JSON array or primitive, we currently don't support auto-parsing into AnyMap.
+                null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to parse JSON: ${e.message}")
+            null
+        }
     }
 
     /**
@@ -286,7 +341,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         sseHandler?.post {
             if (!isRunning.get() || version != connectionAttemptVersion.get()) return@post
             Log.e(TAG, "Request Interceptor Error: ${t?.message}")
-            pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Interceptor Error: ${t?.message}", -1.0, null))
+            pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Interceptor Error: ${t?.message}", -1.0, null))
             
             // Reconnect with delay
             val currentJitterFactor = config?.jitterFactor ?: 0.5
@@ -369,7 +424,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                 backoffCounter = 0
                 currentReconnectAttempts = 0
                 synchronized(this@NitroSse) {
-                    pushEventToBuffer(SseEvent(SseEventType.OPEN, null, null, null, null, response.code.toDouble(), null))
+                    pushEventToBuffer(SseEvent(SseEventType.OPEN, null, null, null, null, null, response.code.toDouble(), null))
                 }
             }
         }
@@ -389,8 +444,11 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                 if (!id.isNullOrEmpty()) {
                     this@NitroSse.lastProcessedId = id
                 }
+
+                val parsedData = if (config?.autoParseJSON == true) parseJsonToAnyMap(data) else null
+
                 synchronized(this@NitroSse) {
-                    pushEventToBuffer(SseEvent(SseEventType.MESSAGE, data, id, type, null, 200.0, null))
+                    pushEventToBuffer(SseEvent(SseEventType.MESSAGE, data, parsedData, id, type, null, 200.0, null))
                 }
             }
         }
@@ -433,25 +491,25 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                 if (statusCode == 401 || statusCode == 403) {
                     val currentConfig = synchronized(this@NitroSse) { config }
                     if (currentConfig?.onBeforeRequest == null) {
-                        pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Auth Error ($statusCode) - No interceptor provided. Stopping.", statusCode.toDouble(), null))
+                        pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Auth Error ($statusCode) - No interceptor provided. Stopping.", statusCode.toDouble(), null))
                         stop()
                         return@post
                     }
 
                     val retries = consecutiveAuthErrors.incrementAndGet()
                     if (retries >= maxAuthRetries) {
-                        pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Auth Error ($statusCode) - Retry limit reached ($maxAuthRetries). Stopping.", statusCode.toDouble(), null))
+                        pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Auth Error ($statusCode) - Retry limit reached ($maxAuthRetries). Stopping.", statusCode.toDouble(), null))
                         stop()
                         return@post
                     }
                     
-                    pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Auth Error ($statusCode) - Retry $retries/$maxAuthRetries. Refreshing token...", statusCode.toDouble(), null))
+                    pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Auth Error ($statusCode) - Retry $retries/$maxAuthRetries. Refreshing token...", statusCode.toDouble(), null))
                     scheduleReconnect(true)
                     return@post
                 }
 
                 if (statusCode == 400) {
-                    pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Fatal Error ($statusCode). Stopping.", statusCode.toDouble(), null))
+                    pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Fatal Error ($statusCode). Stopping.", statusCode.toDouble(), null))
                     stop()
                     return@post
                 }
@@ -460,7 +518,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                 if ((statusCode == 429 || statusCode == 503) && retryAfterMillis != null) {
                     val jitter = (500 + Random.nextInt(1500)).toLong()
                     val totalDelay = retryAfterMillis + jitter
-                    pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Retry-After received: ${totalDelay/1000}s", statusCode.toDouble(), totalDelay.toDouble()))
+                    pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Retry-After received: ${totalDelay/1000}s", statusCode.toDouble(), totalDelay.toDouble()))
                     sseHandler?.postDelayed({ 
                         if (isRunning.get() && eventSource == this@NitroSse.eventSource) performConnection(connectionAttemptVersion.get()) 
                     }, totalDelay)
@@ -468,18 +526,18 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                 }
 
                 if (statusCode == 429) {
-                    pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Rate Limited (429) without Retry-After. Stopping.", 429.0, null))
+                    pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Rate Limited (429) without Retry-After. Stopping.", 429.0, null))
                     stop()
                     return@post
                 }
 
                 if (statusCode == 204) {
-                    pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "No Content (204). Stopping.", 204.0, null))
+                    pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "No Content (204). Stopping.", 204.0, null))
                     stop()
                     return@post
                 }
 
-                pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, t?.message ?: "Link lost ($statusCode)", if (statusCode != -1) statusCode.toDouble() else null, null))
+                pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, t?.message ?: "Link lost ($statusCode)", if (statusCode != -1) statusCode.toDouble() else null, null))
                 scheduleReconnect(true)
             }
         }
@@ -525,7 +583,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             val maxAttempts = (currentConfig.maxReconnectAttempts ?: -1.0).toInt()
             if (maxAttempts != -1 && currentReconnectAttempts >= maxAttempts) {
                 Log.d(TAG, "Max reconnection attempts reached ($maxAttempts). Stopping.")
-                pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, "Max reconnection attempts reached ($maxAttempts).", null, null))
+                pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Max reconnection attempts reached ($maxAttempts).", null, null))
                 stop()
                 return
             }

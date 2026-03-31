@@ -33,8 +33,7 @@ npm install react-native-nitro-sse react-native-nitro-modules
 
 | react-native-nitro-sse | react-native-nitro-modules |
 | :--------------------- | :------------------------- |
-| **2.1.0 - latest**     | **0.35.2**                 |
-| **2.0.0**              | **0.35.2**                 |
+| **2.0.0 - latest**     | **0.35.2**                 |
 | **1.6.2**              | **0.35.2**                 |
 | **1.4.0 - 1.6.1**      | **0.35.0**                 |
 | **1.2.2 - 1.3.1**      | **0.34.1**                 |
