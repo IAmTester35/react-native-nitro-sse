@@ -2,6 +2,9 @@
 
 ## 1.7.0 (2026-03-31)
 
+### ⚠️ Breaking Changes
+- **Client Factory**: The `createNitroSse()` function now returns an `SseClient` object instead of the native `NitroSse` object. This allows for typed event listeners and internal state management. Ensure you update your type references (e.g., `useRef<SseClient>(null)`).
+
 ### Features
 - **Typed Event Emitters**: Supported industry-standard `.addEventListener(type, listener)` and `.removeEventListener(name, listener)` for a more intuitive developer experience.
     - Granular logic separation based on the SSE `event:` field (e.g., `sse.addEventListener('update', ...)`).
