@@ -38,7 +38,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - NitroSse (2.1.0):
+  - NitroSse (2.1.1):
     - boost
     - DoubleConversion
     - fast_float
@@ -69,7 +69,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - SocketRocket
     - Yoga
-  - NitroSse/Tests (2.1.0):
+  - NitroSse/Tests (2.1.1):
     - boost
     - DoubleConversion
     - fast_float
@@ -2804,7 +2804,7 @@ SPEC CHECKSUMS:
   hermes-engine: 8b71d71ad50498c192612ef8c2252adc1ab35285
   LDSwiftEventSource: b0826ca826ca890609a9833a05cae1f357fd3b99
   NitroModules: 17f56ebb3581e74931c870a789834582ce75470c
-  NitroSse: 99bc04a63cad2d2603b20a154a02d14c55117fff
+  NitroSse: b58596347755538fdd48c5b596c10c359026ace3
   RCT-Folly: 846fda9475e61ec7bcbf8a3fe81edfcaeb090669
   RCTDeprecation: 9da1d0cf93db23ca8b41e8efe9ae558fd9c0077f
   RCTRequired: 92a63c7041031a131fa5206eb082d53f95729b79
