@@ -1,3 +1,4 @@
+# Cache bust to refresh podspecs after RN upgrade
 ENV['RCT_NEW_ARCH_ENABLED'] = '1'
 
 # Resolve react_native_pods.rb with node to allow for hoisting
