@@ -45,7 +45,6 @@ jobs:
         run: yarn test --maxWorkers=2 --coverage
 
   build-library:
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
 
     steps:
@@ -59,7 +58,6 @@ jobs:
         run: yarn prepare
 
   build-android:
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
 
     env:
@@ -122,7 +120,6 @@ jobs:
           yarn turbo run build:android --cache-dir="${{ env.TURBO_CACHE_DIR }}"
 
   build-ios:
-    if: github.event_name == 'push'
     runs-on: macos-latest
 
     env:

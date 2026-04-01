@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.1 (2026-04-01)
+
+### Infrastructure & Maintenance
+- **React Native**: Updated to `0.83.4` for improved stability and New Architecture compatibility.
+- **Nitro Modules**: Synchronized `react-native-nitro-modules` and `nitrogen` versions across the library and example app to ensure consistent Codegen and build reliability on CI.
+- **Package Size**: Excluded native unit tests (`ios/Tests` and `android/src/test`) from the published npm package to reduce noise and installation size for consumers.
+
 ## 2.1.0 (2026-03-31)
 
 ### Features
