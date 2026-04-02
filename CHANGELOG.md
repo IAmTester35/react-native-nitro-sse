@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.1.1 (2026-04-01)
+## 2.1.1 (2026-04-02)
 
 ### Infrastructure & Maintenance
 - **React Native**: Updated to `0.83.4` for improved stability and New Architecture compatibility.
