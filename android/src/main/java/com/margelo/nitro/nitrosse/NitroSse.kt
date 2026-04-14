@@ -225,7 +225,9 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                 if (isRunning.get()) {
                     Log.d(TAG, "Network lost. Hibernating.")
                     wasRunningBeforeNetworkLoss = true
-                    stop()
+                    isRunning.set(false)
+                    connectionAttemptVersion.incrementAndGet()
+                    performInternalCleanup()
                 }
                 lastNetworkCapabilities = null
             }
@@ -271,7 +273,11 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             }
             Log.d(TAG, "App backgrounded. Hibernating NitroSse connection.")
             wasRunningBeforePaused = true
-            stop()
+            isRunning.set(false)
+            connectionAttemptVersion.incrementAndGet()
+            sseHandler?.post {
+                performInternalCleanup()
+            }
         }
     }
 
@@ -597,14 +603,18 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                     val currentConfig = synchronized(this@NitroSse) { config }
                     if (currentConfig?.onBeforeRequest == null) {
                         pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Auth Error ($statusCode) - No interceptor provided. Stopping.", statusCode.toDouble(), null))
-                        stop()
+                        isRunning.set(false)
+                        connectionAttemptVersion.incrementAndGet()
+                        performInternalCleanup()
                         return@post
                     }
 
                     val retries = consecutiveAuthErrors.incrementAndGet()
                     if (retries >= maxAuthRetries) {
                         pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Auth Error ($statusCode) - Retry limit reached ($maxAuthRetries). Stopping.", statusCode.toDouble(), null))
-                        stop()
+                        isRunning.set(false)
+                        connectionAttemptVersion.incrementAndGet()
+                        performInternalCleanup()
                         return@post
                     }
                     
@@ -615,7 +625,9 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
 
                 if (statusCode == 400) {
                     pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Fatal Error ($statusCode). Stopping.", statusCode.toDouble(), null))
-                    stop()
+                    isRunning.set(false)
+                    connectionAttemptVersion.incrementAndGet()
+                    performInternalCleanup()
                     return@post
                 }
 
@@ -632,13 +644,17 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
 
                 if (statusCode == 429) {
                     pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Rate Limited (429) without Retry-After. Stopping.", 429.0, null))
-                    stop()
+                    isRunning.set(false)
+                    connectionAttemptVersion.incrementAndGet()
+                    performInternalCleanup()
                     return@post
                 }
 
                 if (statusCode == 204) {
                     pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "No Content (204). Stopping.", 204.0, null))
-                    stop()
+                    isRunning.set(false)
+                    connectionAttemptVersion.incrementAndGet()
+                    performInternalCleanup()
                     return@post
                 }
 
@@ -689,7 +705,9 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             if (maxAttempts != -1 && currentReconnectAttempts >= maxAttempts) {
                 Log.d(TAG, "Max reconnection attempts reached ($maxAttempts). Stopping.")
                 pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Max reconnection attempts reached ($maxAttempts).", null, null))
-                stop()
+                isRunning.set(false)
+                connectionAttemptVersion.incrementAndGet()
+                performInternalCleanup()
                 return
             }
 
@@ -736,19 +754,26 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
      */
     override fun stop() {
         isRunning.set(false)
+        wasRunningBeforeNetworkLoss = false
+        wasRunningBeforePaused = false
         val version = connectionAttemptVersion.incrementAndGet() 
         sseHandler?.post {
-            flushBufferToJs()
-            backoffCounter = 0 
-            sseHandler?.removeCallbacksAndMessages(null)
-            eventSource?.cancel()
-            eventSource = null
-            requestId?.let { 
-                NetworkInspector.reportResponseEnd(it, totalBytesReceived.get())
-                requestId = null
-            }
-            isFlushPending.set(false)
+            performInternalCleanup()
         }
+    }
+
+    private fun performInternalCleanup() {
+        // Runs on sseHandler thread
+        flushBufferToJs()
+        backoffCounter = 0 
+        sseHandler?.removeCallbacksAndMessages(null)
+        eventSource?.cancel()
+        eventSource = null
+        requestId?.let { 
+            NetworkInspector.reportResponseEnd(it, totalBytesReceived.get())
+            requestId = null
+        }
+        isFlushPending.set(false)
     }
 
     /**
