@@ -1,6 +1,10 @@
 import Foundation
 import NitroModules
 import LDSwiftEventSource
+import Network
+#if os(iOS)
+import UIKit
+#endif
 
 /**
  * NitroSse implements a high-performance SSE client for iOS using LDSwiftEventSource.
@@ -20,11 +24,14 @@ class NitroSse: HybridNitroSseSpec {
     deinit {
         if DispatchQueue.getSpecific(key: NitroSse.sseQueueKey) != nil {
             self.stopInternal()
+            self.stopNetworkMonitoring()
         } else {
             sseQueue.sync {
                 self.stopInternal()
+                self.stopNetworkMonitoring()
             }
         }
+        NotificationCenter.default.removeObserver(self)
     }
     private var eventSource: EventSource?
     private var config: SseConfig?
@@ -51,8 +58,15 @@ class NitroSse: HybridNitroSseSpec {
         return queue
     }()
     private var connectionAttemptVersion: Int = 0
+#if os(iOS)
     private var backgroundTaskIdentifier: UIBackgroundTaskIdentifier = .invalid
+#endif
     private var wasRunningBeforeHibernation: Bool = false
+    private var isAppInBackground: Bool = false
+
+    private var pathMonitor: NWPathMonitor?
+    private var lastPathInterface: NWInterface.InterfaceType?
+    private var wasRunningBeforeNetworkLoss: Bool = false
 
     /**
      * Set up the NitroSse instance with configuration and an event callback.
@@ -68,24 +82,97 @@ class NitroSse: HybridNitroSseSpec {
             self.onEventsCallback = onEvent
             
             NotificationCenter.default.removeObserver(self)
+#if os(iOS)
             NotificationCenter.default.addObserver(self, selector: #selector(self.handleAppDidEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(self.handleAppWillEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+#endif
+            
+            if config.monitorNetwork != false {
+                self.startNetworkMonitoring()
+            } else {
+                self.stopNetworkMonitoring()
+            }
+        }
+    }
+
+    private func stopNetworkMonitoring() {
+        dispatchPrecondition(condition: .onQueue(sseQueue))
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        lastPathInterface = nil
+    }
+    
+    private func startNetworkMonitoring() {
+        dispatchPrecondition(condition: .onQueue(sseQueue))
+        guard pathMonitor == nil else { return }
+        
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            self?.sseQueue.async {
+                self?.handleNetworkChange(path: path)
+            }
+        }
+        self.pathMonitor = monitor
+        monitor.start(queue: sseQueue)
+    }
+    
+    private func handleNetworkChange(path: NWPath) {
+        dispatchPrecondition(condition: .onQueue(sseQueue))
+        let isSatisfied = path.status == .satisfied
+        let interfaceType = path.availableInterfaces.first?.type
+        
+        print("[NitroSse] Network path changed: status=\(path.status), interface=\(String(describing: interfaceType))")
+        
+        if isSatisfied {
+            if wasRunningBeforeNetworkLoss {
+                print("[NitroSse] Network restored. Resuming stream.")
+                wasRunningBeforeNetworkLoss = false
+                if self.isAppInBackground && self.config?.backgroundExecution != true {
+                    self.wasRunningBeforeHibernation = true
+                } else if isRunning {
+                    self.restart()
+                } else {
+                    try? self.start()
+                }
+            } else if isRunning {
+                if let lastInterface = lastPathInterface, let currentInterface = interfaceType, lastInterface != currentInterface {
+                    print("[NitroSse] Network interface changed (\(lastInterface) -> \(currentInterface)). Restarting stream.")
+                    self.restart()
+                } else if lastPathInterface == nil {
+                    print("[NitroSse] Network interface acquired. Restarting stream.")
+                    self.restart()
+                }
+            }
+        } else {
+            if isRunning {
+                print("[NitroSse] Network lost. Hibernating.")
+                wasRunningBeforeNetworkLoss = true
+                self.hibernateConnection()
+            }
+        }
+        
+        if isSatisfied {
+            self.lastPathInterface = interfaceType
         }
     }
     
     @objc private func handleAppDidEnterBackground() {
         sseQueue.async {
+            self.isAppInBackground = true
             guard self.isRunning, let config = self.config else { return }
             
             if config.backgroundExecution == true {
                 print("[NitroSse] App backgrounded. backgroundExecution is true, keeping connection alive.")
+#if os(iOS)
                 // Start a background task to tell the OS we want to keep running
+                self.cleanupBackgroundTask()
                 self.backgroundTaskIdentifier = UIApplication.shared.beginBackgroundTask(withName: "NitroSse-KeepAlive") { [weak self] in
                     self?.sseQueue.async {
                         print("[NitroSse] Background task expired. Hibernating now.")
                         self?.hibernateConnection()
                     }
                 }
+#endif
                 return
             }
             
@@ -115,6 +202,7 @@ class NitroSse: HybridNitroSseSpec {
     
     @objc private func handleAppWillEnterForeground() {
         sseQueue.async {
+            self.isAppInBackground = false
             self.cleanupBackgroundTask()
             if self.wasRunningBeforeHibernation {
                 print("[NitroSse] App foregrounded. Resuming stream.")
@@ -126,10 +214,12 @@ class NitroSse: HybridNitroSseSpec {
     
     private func cleanupBackgroundTask() {
         dispatchPrecondition(condition: .onQueue(sseQueue))
+#if os(iOS)
         if self.backgroundTaskIdentifier != .invalid {
             UIApplication.shared.endBackgroundTask(self.backgroundTaskIdentifier)
             self.backgroundTaskIdentifier = .invalid
         }
+#endif
     }
 
     private func pushEventToBuffer(_ event: SseEvent) {
@@ -207,6 +297,7 @@ class NitroSse: HybridNitroSseSpec {
                 jitterFactor: config.jitterFactor,
                 maxReconnectAttempts: config.maxReconnectAttempts,
                 autoParseJSON: config.autoParseJSON,
+                monitorNetwork: config.monitorNetwork,
                 onBeforeRequest: config.onBeforeRequest
             )
             print("[NitroSse] Headers updated for subsequent connections.")
@@ -237,7 +328,7 @@ class NitroSse: HybridNitroSseSpec {
             
             // Critical check: Ensure config is available before starting
             guard self.config != nil else {
-                throw NSError(domain: "NitroSse", code: -1, userInfo: [NSLocalizedDescriptionKey: "NitroSse not configured. Call setup() first."])
+                throw RuntimeError("NitroSse not configured. Call setup() first.")
             }
             
             self.isRunning = true
@@ -312,6 +403,7 @@ class NitroSse: HybridNitroSseSpec {
                                 jitterFactor: currentConfig.jitterFactor,
                                 maxReconnectAttempts: currentConfig.maxReconnectAttempts,
                                 autoParseJSON: currentConfig.autoParseJSON,
+                                monitorNetwork: currentConfig.monitorNetwork,
                                 onBeforeRequest: currentConfig.onBeforeRequest
                             )
                             self.performEstablishConnection(attemptVersion: attemptVersion)

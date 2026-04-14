@@ -23,6 +23,12 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.UUID
 import kotlin.random.Random
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import com.margelo.nitro.NitroModules
 
 /**
  * NitroSse implements a high-performance SSE client using OkHttp.
@@ -56,8 +62,10 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     
     private val eventBuffer = mutableListOf<SseEvent>()
     private var isFlushPending = AtomicBoolean(false)
+    private val flushRunnable = java.lang.Runnable { flushBufferToJs() }
     
     private var backoffCounter = 0
+    private val isAppInBackground = AtomicBoolean(false)
     private var currentReconnectAttempts = 0
     @Volatile private var lastProcessedId: String? = null
     
@@ -68,6 +76,10 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     private var lastErrorCode: String? = null
     
     private var hasSubscribedToLifecycle = false
+
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var wasRunningBeforeNetworkLoss = false
+    private var lastNetworkCapabilities: NetworkCapabilities? = null
 
     companion object {
         private const val TAG = "NitroSse"
@@ -139,6 +151,98 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                 hasSubscribedToLifecycle = true
             }
         }
+
+        if (config.monitorNetwork != false) {
+            sseHandler?.post {
+                startNetworkMonitoring()
+            }
+        } else {
+            sseHandler?.post {
+                stopNetworkMonitoring()
+            }
+        }
+    }
+
+    private fun startNetworkMonitoring() {
+        if (networkCallback != null) return
+
+        val context = NitroModules.applicationContext ?: return
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+
+        networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                val capabilities = connectivityManager.getNetworkCapabilities(network)
+                handleNetworkChange(true, capabilities)
+            }
+
+            override fun onLost(network: Network) {
+                handleNetworkChange(false, null)
+            }
+
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                handleNetworkChange(true, capabilities)
+            }
+        }
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            connectivityManager.registerDefaultNetworkCallback(networkCallback!!)
+        } else {
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            connectivityManager.registerNetworkCallback(request, networkCallback!!)
+        }
+    }
+
+    private fun handleNetworkChange(isAvailable: Boolean, capabilities: NetworkCapabilities?) {
+        sseHandler?.post {
+            Log.d(TAG, "Network change: available=$isAvailable")
+            
+            if (isAvailable && capabilities != null) {
+                if (wasRunningBeforeNetworkLoss) {
+                    Log.d(TAG, "Network restored. Resuming stream.")
+                    wasRunningBeforeNetworkLoss = false
+                    if (isAppInBackground.get() && config?.backgroundExecution != true) {
+                        wasRunningBeforePaused = true
+                    } else {
+                        start()
+                    }
+                } else if (isRunning.get()) {
+                    // Check if interface changed (e.g. WiFi -> Cellular)
+                    val isWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                    val isCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                    
+                    val lastWifi = lastNetworkCapabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ?: false
+                    val lastCellular = lastNetworkCapabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ?: false
+                    
+                    if ((isWifi && !lastWifi) || (isCellular && !lastCellular)) {
+                        Log.d(TAG, "Network interface changed. Restarting stream.")
+                        restart()
+                    }
+                }
+                lastNetworkCapabilities = capabilities
+            } else if (!isAvailable) {
+                if (isRunning.get()) {
+                    Log.d(TAG, "Network lost. Hibernating.")
+                    wasRunningBeforeNetworkLoss = true
+                    stop()
+                }
+                lastNetworkCapabilities = null
+            }
+        }
+    }
+
+    private fun stopNetworkMonitoring() {
+        val callback = networkCallback ?: return
+        try {
+            val context = NitroModules.applicationContext
+            val connectivityManager = context?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            connectivityManager?.unregisterNetworkCallback(callback)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to unregister network callback: ${e.message}")
+        }
+        networkCallback = null
+        lastNetworkCapabilities = null
     }
 
     /**
@@ -146,6 +250,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
      * Automatically resumes the stream if it was hibernated.
      */
     override fun onStart(owner: LifecycleOwner) {
+        isAppInBackground.set(false)
         if (wasRunningBeforePaused) {
             Log.d(TAG, "App foregrounded. Resuming NitroSse stream.")
             wasRunningBeforePaused = false
@@ -158,6 +263,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
      * Hibernates the connection to save battery and resources.
      */
     override fun onStop(owner: LifecycleOwner) {
+        isAppInBackground.set(true)
         if (isRunning.get()) {
             if (config?.backgroundExecution == true) {
                 Log.d(TAG, "App backgrounded. backgroundExecution is true, keeping NitroSse connection alive.")
@@ -182,11 +288,10 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         }
 
         if (batchInterval <= 0 || shouldFlush) {
+            sseHandler?.removeCallbacks(flushRunnable)
             flushBufferToJs()
         } else if (!isFlushPending.getAndSet(true)) {
-            sseHandler?.postDelayed({
-                flushBufferToJs()
-            }, batchInterval.toLong())
+            sseHandler?.postDelayed(flushRunnable, batchInterval.toLong())
         }
     }
 
@@ -656,6 +761,8 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         isRunning.set(false)
         connectionAttemptVersion.incrementAndGet()
         
+        stopNetworkMonitoring()
+
         try {
             eventSource?.cancel()
             eventSource = null

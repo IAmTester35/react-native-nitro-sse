@@ -33,7 +33,8 @@ npm install react-native-nitro-sse react-native-nitro-modules
 
 | react-native-nitro-sse | react-native-nitro-modules |
 | :--------------------- | :------------------------- |
-| **2.0.0 - latest**     | **0.35.2**                 |
+| **2.2.0 - latest**     | **0.35.4**                 |
+| **2.0.0 - 2.1.1**      | **0.35.2**                 |
 | **1.6.2**              | **0.35.2**                 |
 | **1.4.0 - 1.6.1**      | **0.35.0**                 |
 | **1.2.2 - 1.3.1**      | **0.34.1**                 |
@@ -110,6 +111,7 @@ console.log(`Reconnections: ${stats.reconnectCount}`);
 | `readTimeoutMs`      | `number` | `300000`| Max idle time between data packets before reconnecting. |
 | `backgroundExecution` | `boolean` | `false` | (iOS) Attempt to maintain connection via background tasks. |
 | `autoParseJSON` | `boolean` | `false` | Automatically parse message data as JSON in a background native thread. Result is in `parsedData`. |
+| `monitorNetwork` | `boolean` | `true` | Automatically hibernate connection on system network loss to save battery. |
 | `onBeforeRequest`    | `function`| - | Async hook to refresh headers/tokens before every attempt. |
 
 ---
