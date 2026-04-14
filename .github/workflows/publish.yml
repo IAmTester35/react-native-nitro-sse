@@ -60,6 +60,8 @@ jobs:
           tag_name: v${{ steps.check.outputs.version }}
           name: Release v${{ steps.check.outputs.version }}
           body_path: RELEASE_NOTES.md
+          generate_release_notes: true
+          make_latest: true
           draft: false
           prerelease: ${{ contains(steps.check.outputs.version, 'beta') || contains(steps.check.outputs.version, 'alpha') }}
         env:

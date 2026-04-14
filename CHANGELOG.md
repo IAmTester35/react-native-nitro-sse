@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.2.0 (2026-04-14)
+
+### Features
+- **Network Monitoring API**: Exposed `monitorNetwork` boolean in `SseConfig`. When enabled (default), the client intelligently hibernates during system-wide network loss and resumes upon reconnections to conserve battery and CPU. 
+- **Dependencies Upgrade**: Updated `react-native-nitro-modules` and `nitrogen` to `0.35.4`.
+
+### Reliability & Stability
+- **iOS Memory Management**: Completely overhauled background app lifecycle handling (added exact app state tracking with `isAppInBackground` and proper `cleanupBackgroundTask()` execution) to prevent persistent background task leaks and Watchdog terminations.
+- **iOS Network Resilience**: Enhanced `NWPathMonitor` integration to jump-start stream recovery without waiting for timeouts when network interfaces re-activate.
+- **Android CPU/Memory Optimization**: Fixed a critical bug in JSI event dispatching where delayed flushes (`postDelayed`) were accumulating indiscriminately. Overhauled the buffering logic with `flushRunnable` to clear and resolve timer overheads.
+
 ## 2.1.1 (2026-04-02)
 
 ### Infrastructure & Maintenance

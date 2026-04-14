@@ -88,6 +88,13 @@ export interface SseConfig {
    */
   autoParseJSON?: boolean;
   /**
+   * Whether to automatically monitor network connectivity changes.
+   * If true, the client will proactively reconnect when switching networks (WiFi <-> Cellular)
+   * and pause/resume based on internet availability.
+   * @default true
+   */
+  monitorNetwork?: boolean;
+  /**
    * Async interceptor called before every connection attempt (including auto-reconnects).
    * Use this to refresh tokens or calculate dynamic headers.
    * Note: This is protected by a native timeout to prevent the app from hanging.
