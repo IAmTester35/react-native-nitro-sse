@@ -119,7 +119,17 @@ class NitroSse: HybridNitroSseSpec {
     private func handleNetworkChange(path: NWPath) {
         dispatchPrecondition(condition: .onQueue(sseQueue))
         let isSatisfied = path.status == .satisfied
-        let interfaceType = path.availableInterfaces.first?.type
+        
+        var interfaceType: NWInterface.InterfaceType? = nil
+        if path.usesInterfaceType(.wifi) {
+            interfaceType = .wifi
+        } else if path.usesInterfaceType(.cellular) {
+            interfaceType = .cellular
+        } else if path.usesInterfaceType(.wiredEthernet) {
+            interfaceType = .wiredEthernet
+        } else {
+            interfaceType = path.availableInterfaces.first?.type
+        }
         
         print("[NitroSse] Network path changed: status=\(path.status), interface=\(String(describing: interfaceType))")
         
@@ -491,6 +501,8 @@ class NitroSse: HybridNitroSseSpec {
     private func stopInternal() {
         dispatchPrecondition(condition: .onQueue(sseQueue))
         self.isRunning = false
+        self.wasRunningBeforeNetworkLoss = false
+        self.wasRunningBeforeHibernation = false
         self.eventSource?.stop()
         self.eventSource = nil
         if let rid = self.requestId {
