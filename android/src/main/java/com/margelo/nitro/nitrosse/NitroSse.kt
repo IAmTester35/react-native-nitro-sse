@@ -215,7 +215,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                     } else {
                         start()
                     }
-                } else if (isRunning.get()) {
+                } else if (isRunning.get() && lastNetworkCapabilities != null) {
                     // Check if interface changed (e.g. WiFi -> Cellular)
                     val isWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
                     val isCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
@@ -784,8 +784,8 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     private fun performInternalCleanup() {
         // Runs on sseHandler thread
         flushBufferToJs()
+        sseHandler?.removeCallbacks(flushRunnable)
         backoffCounter = 0 
-        sseHandler?.removeCallbacksAndMessages(null)
         eventSource?.cancel()
         eventSource = null
         requestId?.let { 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.2 (2026-04-18)
+
+### Fixes
+- **Android**: Fixed an infinite restart loop when `monitorNetwork` is enabled by guarding against initial network detection being treated as an "interface change."
+- **Android**: Fixed a race condition in the asynchronous state machine where `restart()` could fail because a pending cleanup task would cancel the newly initiated connection attempt.
+
 ## 2.2.1 (2026-04-18)
 
 ### Fixes
