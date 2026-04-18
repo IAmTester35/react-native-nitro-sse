@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.1 (2026-04-18)
+
+### Fixes
+- **Android**: Fixed a `SecurityException` crash when starting the connection. Added `ACCESS_NETWORK_STATE` and `INTERNET` permissions to `AndroidManifest.xml` and implemented crash-safe network monitoring registration.
+
 ## 2.2.0 (2026-04-14)
 
 ### Features

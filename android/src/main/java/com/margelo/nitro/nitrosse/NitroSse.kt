@@ -51,7 +51,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     @Volatile private var eventSource: EventSource? = null
     @Volatile private var config: SseConfig? = null
     @Volatile private var requestId: String? = null
-    private var onEventsCallback: ((events: Array<SseEvent>) -> Unit)? = null
+    @Volatile private var onEventsCallback: ((events: Array<SseEvent>) -> Unit)? = null
     
     private val isRunning = AtomicBoolean(false)
     private var wasRunningBeforePaused = false
@@ -184,13 +184,21 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             }
         }
 
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-            connectivityManager.registerDefaultNetworkCallback(networkCallback!!)
-        } else {
-            val request = NetworkRequest.Builder()
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build()
-            connectivityManager.registerNetworkCallback(request, networkCallback!!)
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                connectivityManager.registerDefaultNetworkCallback(networkCallback!!)
+            } else {
+                val request = NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build()
+                connectivityManager.registerNetworkCallback(request, networkCallback!!)
+            }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Failed to register network callback. Missing ACCESS_NETWORK_STATE permission.", e)
+            networkCallback = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register network callback.", e)
+            networkCallback = null
         }
     }
 
@@ -282,22 +290,24 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     }
 
     private fun pushEventToBuffer(event: SseEvent) {
-        val batchInterval = config?.batchingIntervalMs ?: 0.0
-        val bufferCapacity = config?.maxBufferSize?.toInt() ?: 1000
+        sseHandler?.post {
+            val batchInterval = config?.batchingIntervalMs ?: 0.0
+            val bufferCapacity = config?.maxBufferSize?.toInt() ?: 1000
 
-        var shouldFlush = false
-        synchronized(eventBuffer) {
-            eventBuffer.add(event)
-            if (eventBuffer.size >= bufferCapacity) {
-                shouldFlush = true
+            var shouldFlush = false
+            synchronized(eventBuffer) {
+                eventBuffer.add(event)
+                if (eventBuffer.size >= bufferCapacity) {
+                    shouldFlush = true
+                }
             }
-        }
 
-        if (batchInterval <= 0 || shouldFlush) {
-            sseHandler?.removeCallbacks(flushRunnable)
-            flushBufferToJs()
-        } else if (!isFlushPending.getAndSet(true)) {
-            sseHandler?.postDelayed(flushRunnable, batchInterval.toLong())
+            if (batchInterval <= 0 || shouldFlush) {
+                sseHandler?.removeCallbacks(flushRunnable)
+                flushBufferToJs()
+            } else if (!isFlushPending.getAndSet(true)) {
+                sseHandler?.postDelayed(flushRunnable, batchInterval.toLong())
+            }
         }
     }
 
@@ -312,7 +322,16 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             eventBuffer.clear()
         }
         isFlushPending.set(false)
-        onEventsCallback?.invoke(eventsToEmit)
+
+        onEventsCallback?.let { callback ->
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    callback.invoke(eventsToEmit)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error invoking onEventsCallback: ${e.message}")
+                }
+            }
+        }
     }
 
     private fun parseJsonToAnyMap(data: String): AnyMap? {
@@ -811,6 +830,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         sseHandlerThread = null
         sseHandler = null
         
+        onEventsCallback = null
         super.dispose()
     }
 }
