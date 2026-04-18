@@ -290,18 +290,18 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     }
 
     private fun pushEventToBuffer(event: SseEvent) {
-        sseHandler?.post {
-            val batchInterval = config?.batchingIntervalMs ?: 0.0
-            val bufferCapacity = config?.maxBufferSize?.toInt() ?: 1000
+        val batchInterval = config?.batchingIntervalMs ?: 0.0
+        val bufferCapacity = config?.maxBufferSize?.toInt() ?: 1000
 
-            var shouldFlush = false
-            synchronized(eventBuffer) {
-                eventBuffer.add(event)
-                if (eventBuffer.size >= bufferCapacity) {
-                    shouldFlush = true
-                }
+        var shouldFlush = false
+        synchronized(eventBuffer) {
+            eventBuffer.add(event)
+            if (eventBuffer.size >= bufferCapacity) {
+                shouldFlush = true
             }
+        }
 
+        sseHandler?.post {
             if (batchInterval <= 0 || shouldFlush) {
                 sseHandler?.removeCallbacks(flushRunnable)
                 flushBufferToJs()
