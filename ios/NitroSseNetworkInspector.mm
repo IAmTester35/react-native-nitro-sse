@@ -11,8 +11,8 @@
                         encodedDataLength:(NSInteger)encodedDataLength {
 #ifdef HAS_NETWORK_REPORTER
     NSString *requestId = [[NSUUID UUID] UUIDString];
-    [RCTInspectorNetworkReporter reportRequestStart:requestId request:request encodedDataLength:(int)encodedDataLength];
-    [RCTInspectorNetworkReporter reportConnectionTiming:requestId request:request];
+    [RCTInspectorNetworkReporter reportRequestStart:(id)requestId request:request encodedDataLength:(int)encodedDataLength];
+    [RCTInspectorNetworkReporter reportConnectionTiming:(id)requestId request:request];
     return requestId;
 #else
     return nil;
@@ -39,9 +39,9 @@
                                                        HTTPVersion:@"HTTP/1.1"
                                                       headerFields:mergedHeaders];
             // Pass the merged headers to the reporter as well
-            [RCTInspectorNetworkReporter reportResponseStart:requestId response:finalResponse statusCode:(int)statusCode headers:mergedHeaders];
+            [RCTInspectorNetworkReporter reportResponseStart:(id)requestId response:finalResponse statusCode:(int)statusCode headers:mergedHeaders];
         } else {
-            [RCTInspectorNetworkReporter reportResponseStart:requestId response:finalResponse statusCode:(int)statusCode headers:headers ?: @{}];
+            [RCTInspectorNetworkReporter reportResponseStart:(id)requestId response:finalResponse statusCode:(int)statusCode headers:headers ?: @{}];
         }
     }
 #endif
@@ -51,7 +51,7 @@
         encodedDataLength:(NSInteger)encodedDataLength {
 #ifdef HAS_NETWORK_REPORTER
     if (requestId) {
-        [RCTInspectorNetworkReporter reportResponseEnd:requestId encodedDataLength:(int)encodedDataLength];
+        [RCTInspectorNetworkReporter reportResponseEnd:(id)requestId encodedDataLength:(int)encodedDataLength];
     }
 #endif
 }
@@ -60,7 +60,7 @@
                   cancelled:(BOOL)cancelled {
 #ifdef HAS_NETWORK_REPORTER
     if (requestId) {
-        [RCTInspectorNetworkReporter reportRequestFailed:requestId cancelled:cancelled];
+        [RCTInspectorNetworkReporter reportRequestFailed:(id)requestId cancelled:cancelled];
     }
 #endif
 }
