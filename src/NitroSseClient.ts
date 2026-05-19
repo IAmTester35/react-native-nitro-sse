@@ -25,7 +25,7 @@ export class NitroSseClient implements SseClient {
     this._config = { ...config };
     this._legacyCallback = onEvent;
 
-    const isDev = typeof __DEV__ !== 'undefined' ? __DEV__ : true;
+    const isDev = typeof __DEV__ !== 'undefined' ? __DEV__ === true : false;
     if (!isDev) {
       delete this._config.mock;
     }
