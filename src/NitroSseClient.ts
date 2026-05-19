@@ -120,10 +120,31 @@ export class NitroSseClient implements SseClient {
       } = this._config.mock;
       this._mockIndex = 0;
 
-      const delayMs = 1000 / eventsPerSecond;
+      // Validate and normalize eventsPerSecond (must be a finite positive number, default to 1)
+      let validatedEventsPerSecond = Number(eventsPerSecond);
+      if (
+        Number.isNaN(validatedEventsPerSecond) ||
+        !Number.isFinite(validatedEventsPerSecond) ||
+        validatedEventsPerSecond <= 0
+      ) {
+        validatedEventsPerSecond = 1;
+      }
+
+      // Validate and normalize errorRate (must be a finite number within [0,1], default to 0)
+      let validatedErrorRate = Number(errorRate);
+      if (
+        Number.isNaN(validatedErrorRate) ||
+        !Number.isFinite(validatedErrorRate)
+      ) {
+        validatedErrorRate = 0;
+      } else {
+        validatedErrorRate = Math.max(0, Math.min(1, validatedErrorRate));
+      }
+
+      const delayMs = 1000 / validatedEventsPerSecond;
       // Safeguard: if eventsPerSecond is huge (e.g. 1000), setInterval/setTimeout is too slow.
       // We batch events together in chunks if the calculated interval is under 10ms.
-      const batchSize = Math.max(1, Math.round(eventsPerSecond / 100)); // chunk size for 10ms intervals
+      const batchSize = Math.max(1, Math.round(validatedEventsPerSecond / 100)); // chunk size for 10ms intervals
       const intervalMs = Math.max(10, delayMs * batchSize);
 
       const scheduleNext = () => {
@@ -143,7 +164,7 @@ export class NitroSseClient implements SseClient {
         }
 
         // Simulate connection drops
-        if (errorRate && Math.random() < errorRate) {
+        if (validatedErrorRate && Math.random() < validatedErrorRate) {
           const errorEvent: SseEvent = {
             type: 'error',
             message: 'Mock Connection Drop (Simulated Error)',

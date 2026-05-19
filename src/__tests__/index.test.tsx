@@ -805,5 +805,46 @@ describe('NitroSseModule Unit Tests', () => {
         );
       });
     });
+
+    it('should validate and normalize invalid eventsPerSecond and errorRate configurations', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const messageListener = jest.fn();
+        const errorListener = jest.fn();
+
+        NitroSseModule.addEventListener('message', messageListener);
+        NitroSseModule.addEventListener('error', errorListener);
+
+        const mockEvents = [{ type: 'message', data: 'mock-1' }];
+
+        // Set invalid/out of range configurations
+        NitroSseModule.setup({
+          url: 'http://localhost',
+          mock: {
+            mode: 'replace',
+            data: mockEvents,
+            eventsPerSecond: -10, // Invalid: non-positive, should default to 1 (1000ms delay)
+            errorRate: 2.5, // Invalid: >1, should clamp to 1.0 (always drop/error)
+          },
+        });
+
+        NitroSseModule.start();
+
+        // Advance 1000ms (based on normalized eventsPerSecond = 1)
+        jest.advanceTimersByTime(1000);
+
+        // Since errorRate is clamped to 1.0, it should force a simulated connection drop (error)
+        expect(errorListener).toHaveBeenCalledTimes(1);
+        expect(errorListener).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            type: 'error',
+            statusCode: 500,
+          })
+        );
+
+        NitroSseModule.stop();
+      });
+    });
   });
 });
