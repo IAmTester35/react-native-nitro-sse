@@ -41,6 +41,9 @@ export interface ContentProps {
   isConnected: boolean;
   isConnecting: boolean;
   useInterceptor: boolean;
+  useMock: boolean;
+  mockMode: 'replace' | 'inject';
+  mockSpeed: string;
   stats: SseStats;
   url: string;
   batching: string;
@@ -72,6 +75,9 @@ export interface ContentProps {
   setHeadersJson: (val: string) => void;
   setManualId: (val: string) => void;
   setUseInterceptor: (val: boolean) => void;
+  setUseMock: (val: boolean) => void;
+  setMockMode: (val: 'replace' | 'inject') => void;
+  setMockSpeed: (val: string) => void;
   startConnection: () => void;
   stopConnection: () => void;
   manualFlush: () => void;
@@ -90,6 +96,9 @@ export function Content(props: ContentProps) {
     isConnected,
     isConnecting,
     useInterceptor,
+    useMock,
+    mockMode,
+    mockSpeed,
     stats,
     url,
     batching,
@@ -121,6 +130,9 @@ export function Content(props: ContentProps) {
     setHeadersJson,
     setManualId,
     setUseInterceptor,
+    setUseMock,
+    setMockMode,
+    setMockSpeed,
     startConnection,
     stopConnection,
     manualFlush,
@@ -457,6 +469,62 @@ export function Content(props: ContentProps) {
             Checks 'Authorization' header in server. Requires interceptor to
             provide it.
           </Text>
+
+          <View style={styles.divider} />
+          <View style={styles.toggleRow}>
+            <Text style={styles.configTitle}>Mock Data Generator</Text>
+            <TouchableOpacity
+              style={[
+                styles.miniToggle,
+                useMock && { backgroundColor: COLORS.success },
+              ]}
+              onPress={() => setUseMock(!useMock)}
+            >
+              <Text style={styles.miniToggleText}>
+                {useMock ? 'ON' : 'OFF'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.logMessage}>
+            Simulate or inject streaming data locally for testing and debugging.
+          </Text>
+
+          {useMock && (
+            <View style={{ marginTop: 10 }}>
+              <Text style={styles.inputLabel}>MOCK MODE</Text>
+              <View style={[styles.methodRow, { marginBottom: 12 }]}>
+                {['replace', 'inject'].map((m) => (
+                  <TouchableOpacity
+                    key={m}
+                    style={[
+                      styles.methodButton,
+                      mockMode === m && styles.methodButtonActive,
+                    ]}
+                    onPress={() => setMockMode(m as any)}
+                  >
+                    <Text
+                      style={[
+                        styles.methodButtonText,
+                        mockMode === m && styles.methodButtonTextActive,
+                      ]}
+                    >
+                      {m.toUpperCase()}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={styles.inputLabel}>EVENTS PER SECOND (1 - 1000)</Text>
+              <TextInput
+                style={styles.input}
+                value={mockSpeed}
+                onChangeText={setMockSpeed}
+                keyboardType="numeric"
+                placeholder="e.g., 10"
+                placeholderTextColor={COLORS.textDim}
+              />
+            </View>
+          )}
         </View>
       )}
 

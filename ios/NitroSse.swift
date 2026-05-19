@@ -308,7 +308,8 @@ class NitroSse: HybridNitroSseSpec {
                 maxReconnectAttempts: config.maxReconnectAttempts,
                 autoParseJSON: config.autoParseJSON,
                 monitorNetwork: config.monitorNetwork,
-                onBeforeRequest: config.onBeforeRequest
+                onBeforeRequest: config.onBeforeRequest,
+                mock: config.mock
             )
             print("[NitroSse] Headers updated for subsequent connections.")
         }
@@ -414,7 +415,8 @@ class NitroSse: HybridNitroSseSpec {
                                 maxReconnectAttempts: currentConfig.maxReconnectAttempts,
                                 autoParseJSON: currentConfig.autoParseJSON,
                                 monitorNetwork: currentConfig.monitorNetwork,
-                                onBeforeRequest: currentConfig.onBeforeRequest
+                                onBeforeRequest: currentConfig.onBeforeRequest,
+                                mock: currentConfig.mock
                             )
                             self.performEstablishConnection(attemptVersion: attemptVersion)
                         }

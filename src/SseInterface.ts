@@ -100,6 +100,68 @@ export interface SseConfig {
    * Note: This is protected by a native timeout to prevent the app from hanging.
    */
   onBeforeRequest?: () => Promise<Record<string, string>>;
+  /**
+   * Configuration for mock streaming data.
+   * Used for local testing and debugging.
+   */
+  mock?: SseMockConfig;
+}
+
+export type SseMockMode = 'replace' | 'inject';
+
+/**
+ * Represents a single mock SSE event configuration.
+ */
+export interface SseMockEvent {
+  /** The type of the event. */
+  type?: SseEventType;
+  /** The data payload of the event as a raw string. */
+  data?: string;
+  /** The parsed JSON data, if autoParseJSON is enabled and parsing succeeds. */
+  parsedData?: AnyMap;
+  /** The event ID, if provided. */
+  id?: string;
+  /** The event name, if provided (internal 'event' field in SSE). */
+  event?: string;
+  /** System message or error description. */
+  message?: string;
+  /** HTTP status code if applicable. */
+  statusCode?: number;
+  /** Server-requested retry delay in milliseconds. */
+  retry?: number;
+  /** Custom delay in milliseconds before this event is dispatched. */
+  delayMs?: number;
+}
+
+/**
+ * Configuration for mock streaming data.
+ */
+export interface SseMockConfig {
+  /**
+   * - 'replace': Simulates the stream completely in JavaScript without any native network connection.
+   * - 'inject': Establishes the real server connection and injects mock events alongside it.
+   */
+  mode: SseMockMode;
+  /**
+   * The list of mock events to be streamed.
+   */
+  data: SseMockEvent[];
+  /**
+   * The frequency at which mock events are dispatched.
+   * Represented in events per second.
+   * @default 1
+   */
+  eventsPerSecond?: number;
+  /**
+   * Whether to loop the mock stream indefinitely.
+   * @default false
+   */
+  loop?: boolean;
+  /**
+   * Probability of simulated connection drop/error events (0.0 to 1.0).
+   * @default 0
+   */
+  errorRate?: number;
 }
 
 /**
@@ -181,4 +243,6 @@ export interface SseClient {
   updateHeaders(headers: Record<string, string>): void;
   /** Set last event ID. */
   setLastProcessedId(id: string): void;
+  /** Manually inject a mock event into the stream (for testing/debugging). */
+  injectMockEvent(event: Partial<SseEvent>): void;
 }

@@ -5,6 +5,7 @@ import {
   createNitroSse,
   type SseClient,
   type SseStats,
+  type SseEvent,
 } from 'react-native-nitro-sse';
 
 const DEFAULT_URL = Platform.select({
@@ -34,6 +35,9 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [useInterceptor, setUseInterceptor] = useState(false);
+  const [useMock, setUseMock] = useState(true);
+  const [mockMode, setMockMode] = useState<'replace' | 'inject'>('replace');
+  const [mockSpeed, setMockSpeed] = useState('1');
   const [stats, setStats] = useState<SseStats>({
     totalBytesReceived: 0,
     reconnectCount: 0,
@@ -158,6 +162,26 @@ export default function App() {
         );
       });
 
+      // Generate mock events
+      const mockEvents: Partial<SseEvent>[] = [
+        { type: 'message', data: '{"status":"started","source":"Mock JS Engine"}' },
+        { type: 'message', data: '{"value":42,"timestamp":1710000000}' },
+        { type: 'message', data: '{"temperature":24.5,"humidity":52.1}' },
+        { type: 'message', data: '{"event":"user_login","username":"nitro_tester"}', event: 'update' },
+        { type: 'heartbeat', message: 'Keep-alive mock comment' },
+        { type: 'message', data: '{"status":"processing","progress":50}' },
+        { type: 'message', data: '{"temperature":24.8,"humidity":51.8}' },
+        { type: 'message', data: '{"status":"finished","progress":100}' }
+      ];
+
+      const speed = parseInt(mockSpeed, 10) || 1;
+      const dataToMock: Partial<SseEvent>[] = speed > 10
+        ? Array.from({ length: Math.min(10000, speed * 5) }, (_, i) => ({
+          type: 'message',
+          data: `{"event_id":${i},"value":${Math.round(Math.random() * 100)}}`
+        }))
+        : mockEvents;
+
       sse.setup({
         url: url + (useInterceptor ? '?auth=true' : ''),
         method: method,
@@ -173,13 +197,20 @@ export default function App() {
         autoParseJSON: autoParseJSON,
         onBeforeRequest: useInterceptor
           ? async () => {
-              addLog('system', undefined, 'Middleware: Refreshing token...');
-              await new Promise((resolve) => setTimeout(resolve, 500));
-              return {
-                'Authorization': 'Bearer interceptor-token',
-                'X-Interceptor-Actived': 'true',
-              };
-            }
+            addLog('system', undefined, 'Middleware: Refreshing token...');
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            return {
+              'Authorization': 'Bearer interceptor-token',
+              'X-Interceptor-Actived': 'true',
+            };
+          }
+          : undefined,
+        mock: useMock
+          ? {
+            mode: mockMode,
+            data: dataToMock,
+            eventsPerSecond: speed,
+          }
           : undefined,
       });
 
@@ -283,6 +314,9 @@ export default function App() {
       isConnected={isConnected}
       isConnecting={isConnecting}
       useInterceptor={useInterceptor}
+      useMock={useMock}
+      mockMode={mockMode}
+      mockSpeed={mockSpeed}
       stats={stats}
       url={url}
       batching={batching}
@@ -314,6 +348,9 @@ export default function App() {
       setHeadersJson={setHeadersJson}
       setManualId={setManualId}
       setUseInterceptor={setUseInterceptor}
+      setUseMock={setUseMock}
+      setMockMode={setMockMode}
+      setMockSpeed={setMockSpeed}
       startConnection={startConnection}
       stopConnection={stopConnection}
       manualFlush={manualFlush}
