@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.3.0 (2026-05-19)
+
+### Features
+
+- **JS**: Added JS-only mock streaming data engine supporting completely offline simulated streams (`replace` mode) and parallel mock event injection alongside real server streams (`inject` mode).
+- **Example**: Added interactive **Mock Data Generator** configuration section inside example dashboard.
+- **Dependencies Upgrade**: Updated `react-native-nitro-modules` and `nitrogen` to `0.35.6`.
+
 ## 2.2.3 (2026-04-20)
 
 ### Fixes

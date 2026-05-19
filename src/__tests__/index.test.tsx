@@ -357,4 +357,453 @@ describe('NitroSseModule Unit Tests', () => {
       expect(customEventListener).toHaveBeenCalledWith(events[1]);
     });
   });
+
+  describe('Mock Streaming Feature', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('should support replace mock mode without calling native start', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const openListener = jest.fn();
+        const messageListener = jest.fn();
+        const legacyCallback = jest.fn();
+
+        NitroSseModule.addEventListener('open', openListener);
+        NitroSseModule.addEventListener('message', messageListener);
+
+        const mockEvents = [
+          { type: 'message', data: 'mock-1' },
+          { type: 'message', data: 'mock-2' },
+        ];
+
+        NitroSseModule.setup(
+          {
+            url: 'http://localhost',
+            mock: {
+              mode: 'replace',
+              data: mockEvents,
+              eventsPerSecond: 100, // 10ms per event
+            },
+          },
+          legacyCallback
+        );
+
+        NitroSseModule.start();
+
+        // 1. Should NOT call native start
+        expect(mockNative.start).not.toHaveBeenCalled();
+
+        // 2. Should immediately emit simulated 'open' event
+        expect(openListener).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'open', statusCode: 200 })
+        );
+        expect(legacyCallback).toHaveBeenNthCalledWith(1, [
+          expect.objectContaining({ type: 'open', statusCode: 200 }),
+        ]);
+
+        // 3. Fast-forward timer by 10ms to emit first event
+        jest.advanceTimersByTime(10);
+        expect(messageListener).toHaveBeenCalledTimes(1);
+        expect(messageListener).toHaveBeenLastCalledWith(
+          expect.objectContaining({ type: 'message', data: 'mock-1' })
+        );
+
+        // 4. Fast-forward timer by another 10ms to emit second event
+        jest.advanceTimersByTime(10);
+        expect(messageListener).toHaveBeenCalledTimes(2);
+        expect(messageListener).toHaveBeenLastCalledWith(
+          expect.objectContaining({ type: 'message', data: 'mock-2' })
+        );
+
+        // 5. Clean up
+        NitroSseModule.stop();
+      });
+    });
+
+    it('should support inject mock mode calling native start in parallel', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const messageListener = jest.fn();
+
+        NitroSseModule.addEventListener('message', messageListener);
+
+        const mockEvents = [{ type: 'message', data: 'mock-1' }];
+
+        NitroSseModule.setup({
+          url: 'http://localhost',
+          mock: {
+            mode: 'inject',
+            data: mockEvents,
+            eventsPerSecond: 50, // 20ms per event
+          },
+        });
+
+        NitroSseModule.start();
+
+        // 1. Should call native start in inject mode
+        expect(mockNative.start).toHaveBeenCalled();
+
+        // 2. Advance time to emit mock event
+        jest.advanceTimersByTime(20);
+        expect(messageListener).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'message', data: 'mock-1' })
+        );
+
+        // 3. Clean up
+        NitroSseModule.stop();
+      });
+    });
+
+    it('should handle batching at ultra high eventsPerSecond', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const messageListener = jest.fn();
+
+        NitroSseModule.addEventListener('message', messageListener);
+
+        // 100 events to be streamed
+        const mockEvents = Array.from({ length: 100 }, (_, i) => ({
+          type: 'message' as const,
+          data: `mock-${i}`,
+        }));
+
+        NitroSseModule.setup({
+          url: 'http://localhost',
+          mock: {
+            mode: 'replace',
+            data: mockEvents,
+            eventsPerSecond: 1000, // 1000 events/second
+          },
+        });
+
+        NitroSseModule.start();
+
+        // At 1000 events/sec:
+        // delayMs = 1000 / 1000 = 1ms.
+        // batchSize = Math.max(1, 1000 / 100) = 10 events per interval.
+        // intervalMs = Math.max(10, 1 * 10) = 10ms.
+        // So every 10ms, a batch of 10 events is emitted.
+
+        // Advance 10ms -> 10 events should be emitted in a batch
+        jest.advanceTimersByTime(10);
+        expect(messageListener).toHaveBeenCalledTimes(10);
+        expect(messageListener).toHaveBeenNthCalledWith(
+          1,
+          expect.objectContaining({ data: 'mock-0' })
+        );
+        expect(messageListener).toHaveBeenNthCalledWith(
+          10,
+          expect.objectContaining({ data: 'mock-9' })
+        );
+
+        // Clean up
+        NitroSseModule.stop();
+      });
+    });
+
+    it('should clear interval and not emit after stop() is called', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const messageListener = jest.fn();
+
+        NitroSseModule.addEventListener('message', messageListener);
+
+        const mockEvents = [
+          { type: 'message', data: 'mock-1' },
+          { type: 'message', data: 'mock-2' },
+        ];
+
+        NitroSseModule.setup({
+          url: 'http://localhost',
+          mock: {
+            mode: 'replace',
+            data: mockEvents,
+            eventsPerSecond: 100, // 10ms per event
+          },
+        });
+
+        NitroSseModule.start();
+
+        const closeListener = jest.fn();
+        NitroSseModule.addEventListener('close', closeListener);
+
+        // 1st event
+        jest.advanceTimersByTime(10);
+        expect(messageListener).toHaveBeenCalledTimes(1);
+
+        // 2nd event
+        jest.advanceTimersByTime(10);
+        expect(messageListener).toHaveBeenCalledTimes(2);
+
+        // End of stream -> triggers close
+        jest.advanceTimersByTime(10);
+        expect(closeListener).toHaveBeenCalledTimes(1);
+
+        // Stop the mock
+        NitroSseModule.stop();
+      });
+    });
+
+    it('should support restart() in replace mock mode', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const messageListener = jest.fn();
+
+        NitroSseModule.addEventListener('message', messageListener);
+
+        const mockEvents = [
+          { type: 'message', data: 'mock-1' },
+          { type: 'message', data: 'mock-2' },
+        ];
+
+        NitroSseModule.setup({
+          url: 'http://localhost',
+          mock: {
+            mode: 'replace',
+            data: mockEvents,
+            eventsPerSecond: 100, // 10ms per event
+          },
+        });
+
+        NitroSseModule.start();
+
+        jest.advanceTimersByTime(10);
+        expect(messageListener).toHaveBeenCalledTimes(1);
+        expect(messageListener).toHaveBeenLastCalledWith(
+          expect.objectContaining({ type: 'message', data: 'mock-1' })
+        );
+
+        // Restart
+        NitroSseModule.restart();
+
+        // Verify it restarts from mock index 0 and re-emits mock-1
+        jest.advanceTimersByTime(10);
+        expect(messageListener).toHaveBeenCalledTimes(2);
+        expect(messageListener).toHaveBeenLastCalledWith(
+          expect.objectContaining({ type: 'message', data: 'mock-1' })
+        );
+
+        NitroSseModule.stop();
+      });
+    });
+
+    it('should return correct isConnected() and getStats() in replace mock mode', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+
+        mockNative.isConnected.mockReturnValue(false);
+
+        const mockEvents = [{ type: 'message', data: 'mock-1' }];
+
+        NitroSseModule.setup({
+          url: 'http://localhost',
+          mock: {
+            mode: 'replace',
+            data: mockEvents,
+            eventsPerSecond: 100,
+          },
+        });
+
+        // 1. Initially should be disconnected
+        expect(NitroSseModule.isConnected()).toBe(false);
+
+        // 2. Start mock -> should be connected
+        NitroSseModule.start();
+        expect(NitroSseModule.isConnected()).toBe(true);
+
+        // 3. Advance to increment mockIndex
+        jest.advanceTimersByTime(10);
+        expect(NitroSseModule.getStats().totalBytesReceived).toBeGreaterThan(0);
+
+        // 4. Stop mock -> should be disconnected
+        NitroSseModule.stop();
+        expect(NitroSseModule.isConnected()).toBe(false);
+      });
+    });
+
+    it('should disable mock streaming in production environment (when __DEV__ is false)', () => {
+      const originalDev = (global as any).__DEV__;
+      (global as any).__DEV__ = false;
+
+      try {
+        jest.isolateModules(() => {
+          const { createNitroSse } = require('../index');
+          const NitroSseModule = createNitroSse();
+          const mockEvents = [{ type: 'message', data: 'mock-1' }];
+
+          NitroSseModule.setup({
+            url: 'http://localhost',
+            mock: {
+              mode: 'replace',
+              data: mockEvents,
+              eventsPerSecond: 100,
+            },
+          });
+
+          NitroSseModule.start();
+
+          // 1. Should call native start because mock is disabled
+          expect(mockNative.start).toHaveBeenCalled();
+        });
+      } finally {
+        (global as any).__DEV__ = originalDev;
+      }
+    });
+
+    it('should support loop in replace mock mode', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const messageListener = jest.fn();
+
+        NitroSseModule.addEventListener('message', messageListener);
+
+        const mockEvents = [{ type: 'message', data: 'mock-1' }];
+
+        NitroSseModule.setup({
+          url: 'http://localhost',
+          mock: {
+            mode: 'replace',
+            data: mockEvents,
+            eventsPerSecond: 100, // 10ms per event
+            loop: true,
+          },
+        });
+
+        NitroSseModule.start();
+
+        // 1. Advance to emit mock-1 (1st loop)
+        jest.advanceTimersByTime(10);
+        expect(messageListener).toHaveBeenCalledTimes(1);
+        expect(messageListener).toHaveBeenLastCalledWith(
+          expect.objectContaining({ data: 'mock-1' })
+        );
+
+        // 2. Advance to emit mock-1 again (2nd loop)
+        jest.advanceTimersByTime(10);
+        expect(messageListener).toHaveBeenCalledTimes(2);
+        expect(messageListener).toHaveBeenLastCalledWith(
+          expect.objectContaining({ data: 'mock-1' })
+        );
+
+        NitroSseModule.stop();
+      });
+    });
+
+    it('should support custom delays per event', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const messageListener = jest.fn();
+
+        NitroSseModule.addEventListener('message', messageListener);
+
+        const mockEvents = [
+          { type: 'message', data: 'mock-1', delayMs: 50 },
+          { type: 'message', data: 'mock-2', delayMs: 200 },
+        ];
+
+        NitroSseModule.setup({
+          url: 'http://localhost',
+          mock: {
+            mode: 'replace',
+            data: mockEvents,
+            eventsPerSecond: 10,
+          },
+        });
+
+        NitroSseModule.start();
+
+        // 1. First event should be scheduled with custom delayMs 50
+        jest.advanceTimersByTime(50);
+        expect(messageListener).toHaveBeenCalledTimes(1);
+        expect(messageListener).toHaveBeenLastCalledWith(
+          expect.objectContaining({ data: 'mock-1' })
+        );
+
+        // 2. Second event should be scheduled with custom delayMs 200
+        jest.advanceTimersByTime(200);
+        expect(messageListener).toHaveBeenCalledTimes(2);
+        expect(messageListener).toHaveBeenLastCalledWith(
+          expect.objectContaining({ data: 'mock-2' })
+        );
+
+        NitroSseModule.stop();
+      });
+    });
+
+    it('should support simulated connection drops via errorRate', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const errorListener = jest.fn();
+
+        NitroSseModule.addEventListener('error', errorListener);
+
+        const mockEvents = [{ type: 'message', data: 'mock-1' }];
+
+        NitroSseModule.setup({
+          url: 'http://localhost',
+          mock: {
+            mode: 'replace',
+            data: mockEvents,
+            eventsPerSecond: 100,
+            errorRate: 1.0, // Force error on every schedule
+          },
+        });
+
+        NitroSseModule.start();
+
+        // Advance timer to trigger scheduleNext -> forces error due to errorRate = 1.0
+        jest.advanceTimersByTime(10);
+        expect(errorListener).toHaveBeenCalledTimes(1);
+        expect(errorListener).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            type: 'error',
+            message: 'Mock Connection Drop (Simulated Error)',
+            statusCode: 500,
+          })
+        );
+
+        NitroSseModule.stop();
+      });
+    });
+
+    it('should support dynamic manual event injection using injectMockEvent()', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const customListener = jest.fn();
+
+        NitroSseModule.addEventListener('alert', customListener);
+
+        NitroSseModule.setup({ url: 'http://localhost' });
+
+        // Manually inject event
+        const alertEvent = { type: 'message', event: 'alert', data: 'danger' };
+        NitroSseModule.injectMockEvent(alertEvent as any);
+
+        expect(customListener).toHaveBeenCalledTimes(1);
+        expect(customListener).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            type: 'message',
+            event: 'alert',
+            data: 'danger',
+          })
+        );
+      });
+    });
+  });
 });
