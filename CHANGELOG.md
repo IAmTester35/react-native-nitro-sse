@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.3.1 (2026-06-16)
+
+### Improvements
+
+- **Dependencies Upgrade**: Updated `react-native-nitro-modules` and `nitrogen` to `0.35.9`, React Native to `0.85.3`, and React to `19.2.3`.
+- **Example**: Refactored example app implementation and updated native project config for compatibility.
+
+### Fixes
+
+- **iOS**: Fixed background task lifetime management by running UIApplication actions on main thread to avoid leaks.
+- **iOS**: Fixed DevTools Network Inspector reporting by sending correct connection start and failure status codes.
+
 ## 2.3.0 (2026-05-19)
 
 ### Features

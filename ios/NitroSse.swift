@@ -60,6 +60,7 @@ class NitroSse: HybridNitroSseSpec {
     private var connectionAttemptVersion: Int = 0
 #if os(iOS)
     private var backgroundTaskIdentifier: UIBackgroundTaskIdentifier = .invalid
+    private var isBackgroundTaskActive: Bool = false
 #endif
     private var wasRunningBeforeHibernation: Bool = false
     private var isAppInBackground: Bool = false
@@ -174,12 +175,29 @@ class NitroSse: HybridNitroSseSpec {
             if config.backgroundExecution == true {
                 print("[NitroSse] App backgrounded. backgroundExecution is true, keeping connection alive.")
 #if os(iOS)
-                // Start a background task to tell the OS we want to keep running
                 self.cleanupBackgroundTask()
-                self.backgroundTaskIdentifier = UIApplication.shared.beginBackgroundTask(withName: "NitroSse-KeepAlive") { [weak self] in
+                self.isBackgroundTaskActive = true
+                
+                DispatchQueue.main.async { [weak self] in
+                    let taskId = UIApplication.shared.beginBackgroundTask(withName: "NitroSse-KeepAlive") {
+                        self?.sseQueue.async {
+                            print("[NitroSse] Background task expired. Hibernating now.")
+                            self?.hibernateConnection()
+                        }
+                    }
                     self?.sseQueue.async {
-                        print("[NitroSse] Background task expired. Hibernating now.")
-                        self?.hibernateConnection()
+                        if self?.isBackgroundTaskActive == true {
+                            if let oldTaskId = self?.backgroundTaskIdentifier, oldTaskId != .invalid {
+                                DispatchQueue.main.async {
+                                    UIApplication.shared.endBackgroundTask(oldTaskId)
+                                }
+                            }
+                            self?.backgroundTaskIdentifier = taskId
+                        } else {
+                            DispatchQueue.main.async {
+                                UIApplication.shared.endBackgroundTask(taskId)
+                            }
+                        }
                     }
                 }
 #endif
@@ -225,9 +243,13 @@ class NitroSse: HybridNitroSseSpec {
     private func cleanupBackgroundTask() {
         dispatchPrecondition(condition: .onQueue(sseQueue))
 #if os(iOS)
-        if self.backgroundTaskIdentifier != .invalid {
-            UIApplication.shared.endBackgroundTask(self.backgroundTaskIdentifier)
+        self.isBackgroundTaskActive = false
+        let taskId = self.backgroundTaskIdentifier
+        if taskId != .invalid {
             self.backgroundTaskIdentifier = .invalid
+            DispatchQueue.main.async {
+                UIApplication.shared.endBackgroundTask(taskId)
+            }
         }
 #endif
     }
@@ -646,6 +668,15 @@ class NitroSse: HybridNitroSseSpec {
                 parent.backoffCounter = 0
                 parent.currentReconnectAttempts = 0
                 parent.consecutiveAuthErrors = 0 
+                
+                NitroSseNetworkInspector.reportResponseStart(
+                    parent.requestId,
+                    url: parent.config?.url,
+                    response: nil,
+                    statusCode: 200,
+                    headers: parent.config?.headers ?? [:]
+                )
+                
                 parent.pushEventToBuffer(SseEvent(type: .open, data: nil, parsedData: nil, id: nil, event: nil, message: nil, statusCode: 200, retry: nil))
             }
         }
@@ -695,13 +726,26 @@ class NitroSse: HybridNitroSseSpec {
             guard let parent = self.parent, source === parent.eventSource else { return }
             parent.sseQueue.async { [weak parent] in
                 guard let parent = parent, parent.isRunning, self.attemptVersion == parent.connectionAttemptVersion else { return }
+                
                 let nsError = error as NSError
-                let statusCode = nsError.code
+                var statusCode = nsError.code
+                if let responseError = error as? UnsuccessfulResponseError {
+                    statusCode = responseError.responseCode
+                }
                 
                 parent.reconnectCount += 1
                 parent.lastErrorTime = Date().timeIntervalSince1970 * 1000
                 parent.lastErrorCode = "\(nsError.domain)(\(statusCode))"
 
+                if statusCode >= 100 && statusCode < 600 {
+                    NitroSseNetworkInspector.reportResponseStart(
+                        parent.requestId,
+                        url: parent.config?.url,
+                        response: nil,
+                        statusCode: statusCode,
+                        headers: [:]
+                    )
+                }
                 NitroSseNetworkInspector.reportRequestFailed(parent.requestId, cancelled: false)
                 parent.requestId = nil
                 
