@@ -45,6 +45,7 @@
     "test:android": "cd example/android && ./gradlew :react-native-nitro-sse:testDebugUnitTest",
     "test:ios": "cd example/ios && xcodebuild test -workspace NitroSseExample.xcworkspace -scheme NitroSse -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16e'",
     "test:native": "yarn test:android && yarn test:ios",
+    "ci": "yarn lint && yarn typecheck && yarn test && yarn prepare && yarn test:native && yarn turbo run build:android build:ios",
     "release": "release-it --only-version",
     "server": "node example/sse-server.js",
     "lint": "eslint \"**/*.{js,ts,tsx}\""
