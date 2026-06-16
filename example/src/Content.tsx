@@ -7,11 +7,8 @@ import {
   Platform,
   SafeAreaView,
   StatusBar,
-  TextInput,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
-import type { SseStats } from 'react-native-nitro-sse';
 
 export const COLORS = {
   background: '#0F172A',
@@ -23,7 +20,6 @@ export const COLORS = {
   text: '#F8FAFC',
   textDim: '#94A3B8',
   border: '#334155',
-  accent: '#7C3AED',
 };
 
 export interface LogEntry {
@@ -32,114 +28,25 @@ export interface LogEntry {
   type: string;
   data?: string;
   message?: string;
-  statusCode?: number;
-  parsedData?: any;
 }
 
 export interface ContentProps {
   logs: LogEntry[];
   isConnected: boolean;
   isConnecting: boolean;
-  useInterceptor: boolean;
-  useMock: boolean;
-  mockMode: 'replace' | 'inject';
-  mockSpeed: string;
-  stats: SseStats;
-  url: string;
-  batching: string;
-  headersJson: string;
-  manualId: string;
-  method: 'get' | 'post';
-  body: string;
-  connectionTimeout: string;
-  readTimeout: string;
-  retryInterval: string;
-  maxRetryInterval: string;
-  jitter: string;
-  reconnectAttempts: string;
-  autoParseJSON: boolean;
-  showConfig: boolean;
-  scrollViewRef: any;
   setLogs: (logs: LogEntry[]) => void;
-  setUrl: (url: string) => void;
-  setBatching: (val: string) => void;
-  setMethod: (val: 'get' | 'post') => void;
-  setBody: (val: string) => void;
-  setConnectionTimeout: (val: string) => void;
-  setReadTimeout: (val: string) => void;
-  setRetryInterval: (val: string) => void;
-  setMaxRetryInterval: (val: string) => void;
-  setJitter: (val: string) => void;
-  setReconnectAttempts: (val: string) => void;
-  setAutoParseJSON: (val: boolean) => void;
-  setHeadersJson: (val: string) => void;
-  setManualId: (val: string) => void;
-  setUseInterceptor: (val: boolean) => void;
-  setUseMock: (val: boolean) => void;
-  setMockMode: (val: 'replace' | 'inject') => void;
-  setMockSpeed: (val: string) => void;
   startConnection: () => void;
   stopConnection: () => void;
-  manualFlush: () => void;
-  manualRestart: () => void;
-  toggleConfig: () => void;
-  applyCustomHeaders: () => void;
-  applyManualId: () => void;
 }
 
-/**
- * Main screen component rendering the SSE dashboard, connection controls, configuration sheet, and activity log.
- */
 export function Content(props: ContentProps) {
   const {
     logs,
     isConnected,
     isConnecting,
-    useInterceptor,
-    useMock,
-    mockMode,
-    mockSpeed,
-    stats,
-    url,
-    batching,
-    headersJson,
-    manualId,
-    method,
-    body,
-    connectionTimeout,
-    readTimeout,
-    retryInterval,
-    maxRetryInterval,
-    jitter,
-    reconnectAttempts,
-    autoParseJSON,
-    showConfig,
-    scrollViewRef,
     setLogs,
-    setUrl,
-    setBatching,
-    setMethod,
-    setBody,
-    setConnectionTimeout,
-    setReadTimeout,
-    setRetryInterval,
-    setMaxRetryInterval,
-    setJitter,
-    setReconnectAttempts,
-    setAutoParseJSON,
-    setHeadersJson,
-    setManualId,
-    setUseInterceptor,
-    setUseMock,
-    setMockMode,
-    setMockSpeed,
     startConnection,
     stopConnection,
-    manualFlush,
-    manualRestart,
-    toggleConfig,
-    applyCustomHeaders,
-    applyManualId,
   } = props;
 
   const renderLogItem = (item: LogEntry) => {
@@ -147,49 +54,16 @@ export function Content(props: ContentProps) {
     if (item.type === 'open') typeColor = COLORS.success;
     if (item.type === 'error') typeColor = COLORS.error;
     if (item.type === 'message') typeColor = COLORS.primary;
-    if (item.type === 'command') typeColor = COLORS.accent;
-
-    const showDetails = () => {
-      const details = [
-        `Type: ${item.type.toUpperCase()}`,
-        item.statusCode ? `Status: ${item.statusCode}` : null,
-        item.data ? `Raw Data: ${item.data}` : null,
-        item.parsedData
-          ? `Parsed Data (Native):\n${JSON.stringify(item.parsedData, null, 2)}`
-          : null,
-        item.message ? `Message: ${item.message}` : null,
-        item.id ? `Event ID: ${item.id}` : null,
-      ]
-        .filter(Boolean)
-        .join('\n\n');
-
-      Alert.alert(
-        'Event Details',
-        details,
-        [{ text: 'Close', style: 'cancel' }],
-        { cancelable: true }
-      );
-    };
 
     return (
-      <TouchableOpacity
-        key={item.id}
-        style={styles.logItem}
-        onPress={showDetails}
-        activeOpacity={0.7}
-      >
+      <View key={item.id} style={styles.logItem}>
         <View style={styles.logHeader}>
           <Text style={styles.logTime}>{item.time}</Text>
-          <View
-            style={[styles.typeBadge, { backgroundColor: typeColor + '20' }]}
-          >
+          <View style={[styles.typeBadge, { backgroundColor: typeColor + '20' }]}>
             <Text style={[styles.typeText, { color: typeColor }]}>
               {item.type.toUpperCase()}
             </Text>
           </View>
-          {item.statusCode ? (
-            <Text style={styles.logStatus}>HTTP {item.statusCode}</Text>
-          ) : null}
         </View>
         {item.data ? (
           <Text style={styles.logData} numberOfLines={2}>
@@ -201,7 +75,7 @@ export function Content(props: ContentProps) {
             {item.message}
           </Text>
         ) : null}
-      </TouchableOpacity>
+      </View>
     );
   };
 
@@ -210,323 +84,31 @@ export function Content(props: ContentProps) {
       <StatusBar barStyle="light-content" />
 
       <View style={styles.header}>
-        <View>
-          <Text style={styles.brandTitle}>
-            Nitro <Text style={{ color: COLORS.primary }}>SSE</Text>
-          </Text>
-          <View style={styles.statusRow}>
-            <View
-              style={[
-                styles.statusDot,
-                {
-                  backgroundColor: isConnected
-                    ? COLORS.success
-                    : isConnecting
-                    ? COLORS.warning
-                    : COLORS.error,
-                },
-              ]}
-            />
-            <Text style={styles.statusText}>
-              {isConnected
-                ? 'LIVE'
-                : isConnecting
-                ? 'CONNECTING...'
-                : 'DISCONNECTED'}
-            </Text>
-          </View>
-        </View>
-        <TouchableOpacity style={styles.settingsButton} onPress={toggleConfig}>
-          <Text style={styles.settingsIcon}>⚙️</Text>
-        </TouchableOpacity>
-      </View>
-
-      <View style={styles.statsContainer}>
-        <View style={styles.statCard}>
-          <Text style={styles.statLabel}>DATA RECEIVED</Text>
-          <Text style={styles.statValue}>
-            {(stats.totalBytesReceived / 1024).toFixed(2)}{' '}
-            <Text style={styles.statUnit}>KB</Text>
-          </Text>
-        </View>
-        <View style={styles.statCard}>
-          <Text style={styles.statLabel}>RECONNECTS</Text>
-          <Text style={styles.statValue}>{stats.reconnectCount}</Text>
-        </View>
-      </View>
-
-      {showConfig && (
-        <View style={styles.configSheet}>
-          <Text style={styles.configTitle}>Connection Settings</Text>
-
-          <Text style={styles.inputLabel}>ENDPOINT URL</Text>
-          <TextInput
-            style={styles.input}
-            value={url}
-            onChangeText={setUrl}
-            placeholder="http://..."
-            placeholderTextColor={COLORS.textDim}
+        <Text style={styles.brandTitle}>
+          Nitro <Text style={{ color: COLORS.primary }}>SSE</Text>
+        </Text>
+        <View style={styles.statusRow}>
+          <View
+            style={[
+              styles.statusDot,
+              {
+                backgroundColor: isConnected
+                  ? COLORS.success
+                  : isConnecting
+                  ? COLORS.warning
+                  : COLORS.error,
+              },
+            ]}
           />
-
-          <View style={styles.inputRow}>
-            <View style={styles.flex1}>
-              <Text style={styles.inputLabel}>BATCHING (MS)</Text>
-              <TextInput
-                style={styles.input}
-                value={batching}
-                onChangeText={setBatching}
-                keyboardType="numeric"
-                placeholder="0 = off"
-                placeholderTextColor={COLORS.textDim}
-              />
-            </View>
-            <View style={styles.flex1}>
-              <Text style={styles.inputLabel}>METHOD</Text>
-              <View style={styles.methodRow}>
-                {['get', 'post'].map((m) => (
-                  <TouchableOpacity
-                    key={m}
-                    style={[
-                      styles.methodButton,
-                      method === m && styles.methodButtonActive,
-                    ]}
-                    onPress={() => setMethod(m as any)}
-                  >
-                    <Text
-                      style={[
-                        styles.methodButtonText,
-                        method === m && styles.methodButtonTextActive,
-                      ]}
-                    >
-                      {m.toUpperCase()}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-          </View>
-
-          {method === 'post' && (
-            <>
-              <Text style={styles.inputLabel}>POST BODY</Text>
-              <TextInput
-                style={[styles.input, styles.multilineInput]}
-                value={body}
-                onChangeText={setBody}
-                multiline
-                placeholder='{"key": "value"}'
-                placeholderTextColor={COLORS.textDim}
-              />
-            </>
-          )}
-
-          <View style={styles.inputRow}>
-            <View style={styles.flex1}>
-              <Text style={styles.inputLabel}>CONN TIMEOUT (MS)</Text>
-              <TextInput
-                style={styles.input}
-                value={connectionTimeout}
-                onChangeText={setConnectionTimeout}
-                keyboardType="numeric"
-                placeholder="15000"
-                placeholderTextColor={COLORS.textDim}
-              />
-            </View>
-            <View style={styles.flex1}>
-              <Text style={styles.inputLabel}>READ TIMEOUT (MS)</Text>
-              <TextInput
-                style={styles.input}
-                value={readTimeout}
-                onChangeText={setReadTimeout}
-                keyboardType="numeric"
-                placeholder="300000"
-                placeholderTextColor={COLORS.textDim}
-              />
-            </View>
-          </View>
-
-          <View style={styles.inputRow}>
-            <View style={styles.flex1}>
-              <Text style={styles.inputLabel}>RETRY INT. (MS)</Text>
-              <TextInput
-                style={styles.input}
-                value={retryInterval}
-                onChangeText={setRetryInterval}
-                keyboardType="numeric"
-                placeholder="1000"
-                placeholderTextColor={COLORS.textDim}
-              />
-            </View>
-            <View style={styles.flex1}>
-              <Text style={styles.inputLabel}>MAX RETRY (MS)</Text>
-              <TextInput
-                style={styles.input}
-                value={maxRetryInterval}
-                onChangeText={setMaxRetryInterval}
-                keyboardType="numeric"
-                placeholder="30000"
-                placeholderTextColor={COLORS.textDim}
-              />
-            </View>
-          </View>
-
-          <View style={styles.inputRow}>
-            <View style={styles.flex1}>
-              <Text style={styles.inputLabel}>JITTER (0-1)</Text>
-              <TextInput
-                style={styles.input}
-                value={jitter}
-                onChangeText={setJitter}
-                keyboardType="numeric"
-                placeholder="0.5"
-                placeholderTextColor={COLORS.textDim}
-              />
-            </View>
-            <View style={styles.flex1}>
-              <Text style={styles.inputLabel}>MAX ATTEMPTS</Text>
-              <TextInput
-                style={styles.input}
-                value={reconnectAttempts}
-                onChangeText={setReconnectAttempts}
-                keyboardType="numeric"
-                placeholder="-1 = inf"
-                placeholderTextColor={COLORS.textDim}
-              />
-            </View>
-          </View>
-
-          <View style={styles.inputRow}>
-            <View style={styles.flex1}>
-              <Text style={styles.inputLabel}>AUTO PARSE JSON</Text>
-              <TouchableOpacity
-                style={[
-                  styles.miniToggle,
-                  autoParseJSON && { backgroundColor: COLORS.success },
-                ]}
-                onPress={() => setAutoParseJSON(!autoParseJSON)}
-              >
-                <Text style={styles.miniToggleText}>
-                  {autoParseJSON ? 'ENABLED' : 'DISABLED'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          <View style={styles.divider} />
-
-          <Text style={styles.inputLabel}>CUSTOM HEADERS (JSON)</Text>
-          <View style={styles.inputWithAction}>
-            <TextInput
-              style={styles.inputFlex}
-              value={headersJson}
-              onChangeText={setHeadersJson}
-              placeholder='{"Key": "Value"}'
-              placeholderTextColor={COLORS.textDim}
-            />
-            <TouchableOpacity
-              style={styles.inlineActionButton}
-              onPress={applyCustomHeaders}
-              disabled={!isConnected}
-            >
-              <Text style={styles.inlineActionText}>SET</Text>
-            </TouchableOpacity>
-          </View>
-
-          <Text style={styles.inputLabelMargin}>MANUAL LAST-EVENT-ID</Text>
-          <View style={styles.inputWithAction}>
-            <TextInput
-              style={styles.inputFlex}
-              value={manualId}
-              onChangeText={setManualId}
-              placeholder="id..."
-              placeholderTextColor={COLORS.textDim}
-            />
-            <TouchableOpacity
-              style={styles.inlineActionButton}
-              onPress={applyManualId}
-              disabled={!isConnected}
-            >
-              <Text style={styles.inlineActionText}>SET</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.divider} />
-          <View style={styles.toggleRow}>
-            <Text style={styles.configTitle}>Interceptor / Middleware</Text>
-            <TouchableOpacity
-              style={[
-                styles.miniToggle,
-                useInterceptor && { backgroundColor: COLORS.primary },
-              ]}
-              onPress={() => setUseInterceptor(!useInterceptor)}
-            >
-              <Text style={styles.miniToggleText}>
-                {useInterceptor ? 'ON' : 'OFF'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-          <Text style={styles.logMessage}>
-            Checks 'Authorization' header in server. Requires interceptor to
-            provide it.
+          <Text style={styles.statusText}>
+            {isConnected
+              ? 'LIVE'
+              : isConnecting
+              ? 'CONNECTING...'
+              : 'DISCONNECTED'}
           </Text>
-
-          <View style={styles.divider} />
-          <View style={styles.toggleRow}>
-            <Text style={styles.configTitle}>Mock Data Generator</Text>
-            <TouchableOpacity
-              style={[
-                styles.miniToggle,
-                useMock && { backgroundColor: COLORS.success },
-              ]}
-              onPress={() => setUseMock(!useMock)}
-            >
-              <Text style={styles.miniToggleText}>
-                {useMock ? 'ON' : 'OFF'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-          <Text style={styles.logMessage}>
-            Simulate or inject streaming data locally for testing and debugging.
-          </Text>
-
-          {useMock && (
-            <View style={{ marginTop: 10 }}>
-              <Text style={styles.inputLabel}>MOCK MODE</Text>
-              <View style={[styles.methodRow, { marginBottom: 12 }]}>
-                {['replace', 'inject'].map((m) => (
-                  <TouchableOpacity
-                    key={m}
-                    style={[
-                      styles.methodButton,
-                      mockMode === m && styles.methodButtonActive,
-                    ]}
-                    onPress={() => setMockMode(m as any)}
-                  >
-                    <Text
-                      style={[
-                        styles.methodButtonText,
-                        mockMode === m && styles.methodButtonTextActive,
-                      ]}
-                    >
-                      {m.toUpperCase()}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={styles.inputLabel}>EVENTS PER SECOND (1 - 1000)</Text>
-              <TextInput
-                style={styles.input}
-                value={mockSpeed}
-                onChangeText={setMockSpeed}
-                keyboardType="numeric"
-                placeholder="e.g., 10"
-                placeholderTextColor={COLORS.textDim}
-              />
-            </View>
-          )}
         </View>
-      )}
+      </View>
 
       <View style={styles.mainControls}>
         {!isConnected && !isConnecting ? (
@@ -534,31 +116,17 @@ export function Content(props: ContentProps) {
             style={[styles.primaryButton, { backgroundColor: COLORS.primary }]}
             onPress={startConnection}
           >
-            <Text style={styles.buttonText}>ESTABLISH CONNECTION</Text>
+            <Text style={styles.buttonText}>CONNECT</Text>
           </TouchableOpacity>
         ) : (
-          <View style={styles.actionRow}>
-            <TouchableOpacity style={styles.actionButton} onPress={manualFlush}>
-              <Text style={styles.actionButtonText}>FLUSH</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.actionButton}
-              onPress={manualRestart}
-            >
-              <Text style={styles.actionButtonText}>RESTART</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.actionButton,
-                { backgroundColor: COLORS.error + '20' },
-              ]}
-              onPress={stopConnection}
-            >
-              <Text style={[styles.actionButtonText, { color: COLORS.error }]}>
-                STOP
-              </Text>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            style={[styles.actionButton, { backgroundColor: COLORS.error + '20' }]}
+            onPress={stopConnection}
+          >
+            <Text style={[styles.actionButtonText, { color: COLORS.error }]}>
+              STOP
+            </Text>
+          </TouchableOpacity>
         )}
       </View>
 
@@ -571,7 +139,6 @@ export function Content(props: ContentProps) {
         </View>
 
         <ScrollView
-          ref={scrollViewRef}
           style={styles.scroll}
           contentContainerStyle={styles.scrollContent}
           indicatorStyle="white"
@@ -600,9 +167,6 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
   },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     paddingHorizontal: 20,
     paddingVertical: 15,
   },
@@ -629,84 +193,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     letterSpacing: 0.5,
   },
-  settingsButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: COLORS.card,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  settingsIcon: {
-    fontSize: 18,
-  },
-  statsContainer: {
-    flexDirection: 'row',
-    paddingHorizontal: 15,
-    gap: 10,
-    marginBottom: 15,
-  },
-  statCard: {
-    flex: 1,
-    backgroundColor: COLORS.card,
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  statLabel: {
-    color: COLORS.textDim,
-    fontSize: 9,
-    fontWeight: 'bold',
-    letterSpacing: 0.5,
-    marginBottom: 4,
-  },
-  statValue: {
-    color: COLORS.text,
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
-  statUnit: {
-    fontSize: 10,
-    color: COLORS.textDim,
-  },
-  configSheet: {
-    backgroundColor: COLORS.card,
-    marginHorizontal: 15,
-    borderRadius: 12,
-    padding: 15,
-    marginBottom: 15,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  configTitle: {
-    color: COLORS.text,
-    fontSize: 14,
-    fontWeight: 'bold',
-    marginBottom: 15,
-  },
-  inputLabel: {
-    color: COLORS.primary,
-    fontSize: 9,
-    fontWeight: 'bold',
-    marginBottom: 6,
-  },
-  input: {
-    backgroundColor: COLORS.background,
-    borderRadius: 8,
-    padding: 10,
-    color: COLORS.text,
-    fontSize: 13,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  inputRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
   mainControls: {
     paddingHorizontal: 15,
     marginBottom: 20,
@@ -716,11 +202,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: COLORS.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
   },
   buttonText: {
     color: '#fff',
@@ -728,14 +209,8 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     letterSpacing: 1,
   },
-  actionRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
   actionButton: {
-    flex: 1,
     height: 45,
-    backgroundColor: COLORS.card,
     borderRadius: 10,
     justifyContent: 'center',
     alignItems: 'center',
@@ -743,7 +218,6 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
   },
   actionButtonText: {
-    color: COLORS.text,
     fontSize: 11,
     fontWeight: 'bold',
   },
@@ -831,108 +305,5 @@ const styles = StyleSheet.create({
   emptyText: {
     color: COLORS.textDim,
     fontSize: 12,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: COLORS.border,
-    marginVertical: 15,
-  },
-  inputWithAction: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  inlineActionButton: {
-    backgroundColor: COLORS.primary + '20',
-    paddingHorizontal: 12,
-    height: 40,
-    borderRadius: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.primary + '40',
-  },
-  inlineActionText: {
-    color: COLORS.primary,
-    fontSize: 10,
-    fontWeight: 'bold',
-  },
-  inputFlex: {
-    backgroundColor: COLORS.background,
-    borderRadius: 8,
-    padding: 10,
-    color: COLORS.text,
-    fontSize: 13,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    flex: 1,
-    marginBottom: 0,
-  },
-  miniToggle: {
-    backgroundColor: COLORS.card,
-    borderRadius: 8,
-    height: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingHorizontal: 12,
-  },
-  miniToggleText: {
-    color: COLORS.text,
-    fontSize: 10,
-    fontWeight: 'bold',
-  },
-  inputLabelMargin: {
-    color: COLORS.primary,
-    fontSize: 9,
-    fontWeight: 'bold',
-    marginBottom: 6,
-    marginTop: 12,
-  },
-  flex1: {
-    flex: 1,
-  },
-  logStatus: {
-    color: COLORS.textDim,
-    fontSize: 9,
-    fontWeight: '600',
-    marginLeft: 8,
-  },
-  methodRow: {
-    flexDirection: 'row',
-    backgroundColor: COLORS.background,
-    borderRadius: 8,
-    padding: 2,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  methodButton: {
-    flex: 1,
-    height: 34,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderRadius: 6,
-  },
-  methodButtonActive: {
-    backgroundColor: COLORS.primary,
-  },
-  methodButtonText: {
-    fontSize: 10,
-    fontWeight: 'bold',
-    color: COLORS.textDim,
-  },
-  methodButtonTextActive: {
-    color: '#fff',
-  },
-  multilineInput: {
-    height: 60,
-    textAlignVertical: 'top',
-  },
-  toggleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 5,
   },
 });
