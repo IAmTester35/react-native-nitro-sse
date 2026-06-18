@@ -92,7 +92,7 @@ sse.start();
 | `maxReconnectAttempts`| `number` | `-1` | Limit reconnections. `-1` = infinite. `0` = disabled. |
 | `autoParseJSON` | `boolean` | `false` | Parses event `data` on native thread; outputs to `parsedData`. |
 | `monitorNetwork` | `boolean` | `true` | Pauses/resumes connection on WiFi <-> Cell or link changes. |
-| `onBeforeRequest` | `() => Promise<Headers>`| — | Async hook running immediately before every request. |
+| `onBeforeRequest` | `() => Promise<Record<string, string>>` | — | Async hook running immediately before every request. |
 | `mock` | `SseMockConfig` | — | Injected mock stream settings (Dev environment only). |
 
 ---
