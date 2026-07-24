@@ -1,4 +1,5 @@
 import Foundation
+import ObjectiveC
 import NitroModules
 import LDSwiftEventSource
 import Network
@@ -37,6 +38,7 @@ class NitroSse: HybridNitroSseSpec {
     private var config: SseConfig?
     private var onEventsCallback: ((_ events: [SseEvent]) -> Void)?
     private var isRunning: Bool = false
+    private var isDispatcherDestroyed: Bool = false
     private var consecutiveAuthErrors: Int = 0
     private let maxAuthRetries: Int = 3
     private var requestId: String? = nil   
@@ -68,6 +70,8 @@ class NitroSse: HybridNitroSseSpec {
     private var pathMonitor: NWPathMonitor?
     private var lastPathInterface: NWInterface.InterfaceType?
     private var wasRunningBeforeNetworkLoss: Bool = false
+
+
 
     /**
      * Set up the NitroSse instance with configuration and an event callback.
@@ -359,12 +363,12 @@ class NitroSse: HybridNitroSseSpec {
         let startBody = {
             guard !self.isRunning else { return }
             
-            // Critical check: Ensure config is available before starting
             guard self.config != nil else {
                 throw RuntimeError("NitroSse not configured. Call setup() first.")
             }
             
             self.isRunning = true
+            self.isDispatcherDestroyed = false
             self.consecutiveAuthErrors = 0 
             self.backoffCounter = 0
             self.connectionAttemptVersion += 1
@@ -398,6 +402,8 @@ class NitroSse: HybridNitroSseSpec {
             let flag = CompletionFlag()
             let timeoutMs = capturedConfig.connectionTimeoutMs ?? 15000.0
             
+            // Concurrency Safeguard: If the JS async interceptor does not resolve
+            // within connectionTimeoutMs, throw a timeout error and recover.
             sseQueue.asyncAfter(deadline: .now() + (timeoutMs / 1000.0)) { [weak self] in
                 guard let self = self else { return }
                 self.sseQueue.async { [weak self] in
@@ -410,37 +416,47 @@ class NitroSse: HybridNitroSseSpec {
                 }
             }
 
-            interceptor().then { [weak self] promise2 in
-                promise2.then { [weak self] newHeaders in
-                    self?.sseQueue.async { [weak self] in
-                        guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
-                        if !flag.isCompleted {
-                            flag.isCompleted = true
-                            let currentConfig = self.config ?? capturedConfig
-                            var mergedHeaders = currentConfig.headers ?? [:]
-                            for (k, v) in newHeaders {
-                                mergedHeaders[k] = v
+            do {
+                try interceptor().then { [weak self] promise2 in
+                    promise2.then { [weak self] newHeaders in
+                        self?.sseQueue.async { [weak self] in
+                            guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+                            if !flag.isCompleted {
+                                flag.isCompleted = true
+                                let currentConfig = self.config ?? capturedConfig
+                                var mergedHeaders = currentConfig.headers ?? [:]
+                                for (k, v) in newHeaders {
+                                    mergedHeaders[k] = v
+                                }
+                                self.config = SseConfig(
+                                    url: currentConfig.url,
+                                    method: currentConfig.method,
+                                    headers: mergedHeaders,
+                                    body: currentConfig.body,
+                                    backgroundExecution: currentConfig.backgroundExecution,
+                                    batchingIntervalMs: currentConfig.batchingIntervalMs,
+                                    maxBufferSize: currentConfig.maxBufferSize,
+                                    connectionTimeoutMs: currentConfig.connectionTimeoutMs,
+                                    readTimeoutMs: currentConfig.readTimeoutMs,
+                                    retryIntervalMs: currentConfig.retryIntervalMs,
+                                    maxRetryIntervalMs: currentConfig.maxRetryIntervalMs,
+                                    jitterFactor: currentConfig.jitterFactor,
+                                    maxReconnectAttempts: currentConfig.maxReconnectAttempts,
+                                    autoParseJSON: currentConfig.autoParseJSON,
+                                    monitorNetwork: currentConfig.monitorNetwork,
+                                    onBeforeRequest: currentConfig.onBeforeRequest,
+                                    mock: currentConfig.mock
+                                )
+                                self.performEstablishConnection(attemptVersion: attemptVersion)
                             }
-                            self.config = SseConfig(
-                                url: currentConfig.url,
-                                method: currentConfig.method,
-                                headers: mergedHeaders,
-                                body: currentConfig.body,
-                                backgroundExecution: currentConfig.backgroundExecution,
-                                batchingIntervalMs: currentConfig.batchingIntervalMs,
-                                maxBufferSize: currentConfig.maxBufferSize,
-                                connectionTimeoutMs: currentConfig.connectionTimeoutMs,
-                                readTimeoutMs: currentConfig.readTimeoutMs,
-                                retryIntervalMs: currentConfig.retryIntervalMs,
-                                maxRetryIntervalMs: currentConfig.maxRetryIntervalMs,
-                                jitterFactor: currentConfig.jitterFactor,
-                                maxReconnectAttempts: currentConfig.maxReconnectAttempts,
-                                autoParseJSON: currentConfig.autoParseJSON,
-                                monitorNetwork: currentConfig.monitorNetwork,
-                                onBeforeRequest: currentConfig.onBeforeRequest,
-                                mock: currentConfig.mock
-                            )
-                            self.performEstablishConnection(attemptVersion: attemptVersion)
+                        }
+                    }.catch { [weak self] error in
+                        self?.sseQueue.async { [weak self] in
+                            guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+                            if !flag.isCompleted {
+                                flag.isCompleted = true
+                                self.handleInterceptorError(error, attemptVersion: attemptVersion)
+                            }
                         }
                     }
                 }.catch { [weak self] error in
@@ -452,13 +468,10 @@ class NitroSse: HybridNitroSseSpec {
                         }
                     }
                 }
-            }.catch { [weak self] error in
-                self?.sseQueue.async { [weak self] in
-                    guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
-                    if !flag.isCompleted {
-                        flag.isCompleted = true
-                        self.handleInterceptorError(error, attemptVersion: attemptVersion)
-                    }
+            } catch {
+                if !flag.isCompleted {
+                    flag.isCompleted = true
+                    self.handleInterceptorError(error, attemptVersion: attemptVersion)
                 }
             }
         } else {
@@ -469,9 +482,18 @@ class NitroSse: HybridNitroSseSpec {
     private func handleInterceptorError(_ error: Error, attemptVersion: Int) {
         dispatchPrecondition(condition: .onQueue(sseQueue))
         guard self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
-        print("[NitroSse] Interceptor failed: \(error.localizedDescription)")
+        let desc = error.localizedDescription
+        // Note: We use string matching here because react-native-nitro-modules (as of 0.36.1)
+        // throws a generic std::runtime_error from C++ when the Dispatcher is destroyed.
+        // It does not provide a specific Exception class (like DispatcherDestroyedException) 
+        // that we can catch, so checking the message is currently the only workaround.
+        if desc.contains("Dispatcher has already been destroyed") {
+            print("[NitroSse] JS Dispatcher destroyed. Stopping SSE stream.")
+            self.isDispatcherDestroyed = true
+            self.stopInternal()
+            return
+        }
         self.pushEventToBuffer(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Interceptor Error: \(error.localizedDescription)", statusCode: -1, retry: nil))
-        // Reconnect after delay
         self.scheduleAutomaticReconnect(isError: true, attemptVersion: attemptVersion)
     }
 
@@ -488,6 +510,8 @@ class NitroSse: HybridNitroSseSpec {
         let readTimeout = (config.readTimeoutMs ?? 300000.0) / 1000.0
         sessionConfig.timeoutIntervalForRequest = readTimeout
         sessionConfig.timeoutIntervalForResource = readTimeout
+        
+
 
         let handler = SseHandler(parent: self, attemptVersion: attemptVersion)
         var esConfig = EventSource.Config(handler: handler, url: url)
@@ -525,6 +549,10 @@ class NitroSse: HybridNitroSseSpec {
     private func stopInternal() {
         dispatchPrecondition(condition: .onQueue(sseQueue))
         self.isRunning = false
+        if isDispatcherDestroyed {
+            eventBuffer.removeAll()
+            isFlushPending = false
+        }
         self.wasRunningBeforeNetworkLoss = false
         self.wasRunningBeforeHibernation = false
         self.eventSource?.stop()
@@ -713,6 +741,9 @@ class NitroSse: HybridNitroSseSpec {
             }
         }
         
+        // LDSwiftEventSource natively parses SSE stream comments (lines beginning with ':')
+        // and triggers onComment. Unlike Android (which requires manual byte scanning),
+        // on iOS we simply convert comment packets directly into heartbeat events.
         func onComment(comment: String) {
             guard let parent = self.parent, source === parent.eventSource else { return }
             parent.sseQueue.async { [weak parent] in

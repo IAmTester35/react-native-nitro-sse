@@ -4,13 +4,19 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import com.facebook.proguard.annotations.DoNotStrip
-import okhttp3.*
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.Interceptor
+import okhttp3.ResponseBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSources
 import okhttp3.sse.EventSourceListener
-import okio.*
+import okio.Buffer
+import okio.ForwardingSource
+import okio.buffer
 import com.margelo.nitro.core.AnyMap
 import org.json.JSONObject
 import org.json.JSONArray
@@ -54,6 +60,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     @Volatile private var onEventsCallback: ((events: Array<SseEvent>) -> Unit)? = null
     
     private val isRunning = AtomicBoolean(false)
+    @Volatile private var isDispatcherDestroyed = false
     private var wasRunningBeforePaused = false
     private val consecutiveAuthErrors = AtomicInteger(0)
     private val maxAuthRetries = 3
@@ -89,7 +96,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             val keys = jsonObject.keys()
             while (keys.hasNext()) {
                 val key = keys.next()
-                var value = jsonObject.get(key)
+                var value: Any? = jsonObject.get(key)
                 if (value is JSONObject) {
                     value = jsonObjectToMap(value)
                 } else if (value is JSONArray) {
@@ -105,7 +112,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         internal fun jsonArrayToList(jsonArray: JSONArray): List<Any?> {
             val list = mutableListOf<Any?>()
             for (i in 0 until jsonArray.length()) {
-                var value = jsonArray.get(i)
+                var value: Any? = jsonArray.get(i)
                 if (value is JSONObject) {
                     value = jsonObjectToMap(value)
                 } else if (value is JSONArray) {
@@ -131,13 +138,15 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         this.onEventsCallback = onEvent
         
         if (this.client == null) {
-            this.client = OkHttpClient.Builder()
+            val builder = OkHttpClient.Builder()
                 .connectTimeout((config.connectionTimeoutMs ?: 15000.0).toLong(), TimeUnit.MILLISECONDS)
                 .readTimeout((config.readTimeoutMs ?: 300000.0).toLong(), TimeUnit.MILLISECONDS)
                 .addNetworkInterceptor(HeartbeatNetworkInterceptor(totalBytesReceived) {
                     pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, null, "keep-alive", null, null))
                 })
-                .build()
+
+
+            this.client = builder.build()
         }
             
         if (sseHandlerThread == null) {
@@ -405,6 +414,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         if (!isRunning.compareAndSet(false, true)) return
         
         consecutiveAuthErrors.set(0)
+        isDispatcherDestroyed = false
         val version = connectionAttemptVersion.incrementAndGet()
         sseHandler?.post { 
             backoffCounter = 0
@@ -414,6 +424,7 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     }
 
     private fun performConnection(version: Int) {
+        // Guard: connection attempt is discarded if client is stopped or a newer attempt is in progress
         if (!isRunning.get() || version != connectionAttemptVersion.get()) return
         
         val currentConfig = synchronized(this) { config } ?: return
@@ -423,23 +434,31 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             val interceptorCompleted = AtomicBoolean(false)
             val timeoutMs = (currentConfig.connectionTimeoutMs ?: 15000.0).toLong()
 
+            // Concurrency Safeguard: Prevents JS from hanging the native state machine indefinitely.
+            // If the JS interceptor promise does not resolve within connectionTimeoutMs, we fail safely.
             sseHandler?.postDelayed({
                 if (interceptorCompleted.compareAndSet(false, true)) {
                     handleInterceptorError(Exception("onBeforeRequest interceptor timed out after $timeoutMs ms"), version)
                 }
             }, timeoutMs)
 
-            interceptor.invoke().then { promise2 ->
-                promise2.then { newHeaders ->
-                    sseHandler?.post {
-                        if (!isRunning.get() || version != connectionAttemptVersion.get()) return@post
-                        if (interceptorCompleted.compareAndSet(false, true)) {
-                            synchronized(this) {
-                                val mergedHeaders = (config?.headers ?: emptyMap()).toMutableMap()
-                                newHeaders.forEach { (k, v) -> mergedHeaders[k] = v }
-                                config = config?.copy(headers = mergedHeaders)
+            try {
+                interceptor.invoke().then { promise2 ->
+                    promise2.then { newHeaders ->
+                        sseHandler?.post {
+                            if (!isRunning.get() || version != connectionAttemptVersion.get()) return@post
+                            if (interceptorCompleted.compareAndSet(false, true)) {
+                                synchronized(this) {
+                                    val mergedHeaders = (config?.headers ?: emptyMap()).toMutableMap()
+                                    newHeaders.forEach { (k, v) -> mergedHeaders[k] = v }
+                                    config = config?.copy(headers = mergedHeaders)
+                                }
+                                executeConnection(version)
                             }
-                            executeConnection(version)
+                        }
+                    }.catch { error ->
+                        if (interceptorCompleted.compareAndSet(false, true)) {
+                            handleInterceptorError(error, version)
                         }
                     }
                 }.catch { error ->
@@ -447,9 +466,9 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                         handleInterceptorError(error, version)
                     }
                 }
-            }.catch { error ->
+            } catch (e: Throwable) {
                 if (interceptorCompleted.compareAndSet(false, true)) {
-                    handleInterceptorError(error, version)
+                    handleInterceptorError(e, version)
                 }
             }
         } else {
@@ -471,8 +490,23 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         sseHandler?.post {
             if (!isRunning.get() || version != connectionAttemptVersion.get()) return@post
             Log.e(TAG, "Request Interceptor Error: ${t?.message}")
+
+            // Note: We use string matching here because react-native-nitro-modules (as of 0.36.1)
+            // throws a generic std::runtime_error from C++ when the Dispatcher is destroyed.
+            // It does not provide a specific Exception class (like DispatcherDestroyedException) 
+            // that we can catch, so checking the message is currently the only workaround.
+            val isDispatcherDestroyedMsg = t?.message?.contains("Dispatcher has already been destroyed", ignoreCase = true) == true
+            if (isDispatcherDestroyedMsg) {
+                Log.w(TAG, "JS Dispatcher destroyed. Stopping SSE stream.")
+                this@NitroSse.isDispatcherDestroyed = true
+                isRunning.set(false)
+                connectionAttemptVersion.incrementAndGet()
+                performInternalCleanup()
+                return@post
+            }
+
             pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Interceptor Error: ${t?.message}", -1.0, null))
-            
+
             // Reconnect with delay
             val currentJitterFactor = config?.jitterFactor ?: 0.5
             val currentRetryInterval = (config?.retryIntervalMs ?: 1000.0).toLong()
@@ -496,7 +530,6 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             this.requestId = null
         }
         
-        // Cancel existing event source if any before starting new one
         eventSource?.cancel()
         eventSource = null
         
@@ -782,8 +815,12 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
     }
 
     private fun performInternalCleanup() {
-        // Runs on sseHandler thread
-        flushBufferToJs()
+        if (!isDispatcherDestroyed) {
+            flushBufferToJs()
+        } else {
+            synchronized(eventBuffer) { eventBuffer.clear() }
+            isFlushPending.set(false)
+        }
         sseHandler?.removeCallbacks(flushRunnable)
         backoffCounter = 0 
         eventSource?.cancel()
@@ -867,6 +904,8 @@ internal class HeartbeatNetworkInterceptor(
                         if (bytesRead != -1L) {
                             totalBytesReceived.addAndGet(bytesRead)
                             try {
+                                // Raw stream sniffing: SSE comments/heartbeats (lines starting with ':') are discarded
+                                // by OkHttp SSE parser. We scan raw bytes before parsing to trigger keep-alive watchdogs.
                                 for (i in 0 until bytesRead) {
                                     val b = sink.get(bufferOffset + i)
                                     if (isAtStartOfLine && b == ':'.code.toByte()) {
@@ -875,7 +914,7 @@ internal class HeartbeatNetworkInterceptor(
                                     isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
                                 }
                             } catch (e: Exception) {
-                                // Silent
+                                // Silent fallback to prevent crashing the stream reader on random parse bugs
                             }
                         }
                         return bytesRead

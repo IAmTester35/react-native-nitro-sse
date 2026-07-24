@@ -4,7 +4,7 @@ PODS:
     - hermes-engine/Pre-built (= 250829098.0.10)
   - hermes-engine/Pre-built (250829098.0.10)
   - LDSwiftEventSource (3.3.0)
-  - NitroModules (0.35.9):
+  - NitroModules (0.36.1):
     - hermes-engine
     - RCTRequired
     - RCTTypeSafety
@@ -27,7 +27,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
-  - NitroSse (2.3.1):
+  - NitroSse (2.3.2):
     - hermes-engine
     - LDSwiftEventSource
     - NitroModules
@@ -52,7 +52,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
-  - NitroSse/Tests (2.3.1):
+  - NitroSse/Tests (2.3.2):
     - hermes-engine
     - LDSwiftEventSource
     - NitroModules
@@ -2106,8 +2106,8 @@ SPEC CHECKSUMS:
   FBLazyVector: 24e62c765683b8d89006a88a2c8f5cf019f0074d
   hermes-engine: 576c9b40094cee47debbc36067b05270c1fe47eb
   LDSwiftEventSource: b0826ca826ca890609a9833a05cae1f357fd3b99
-  NitroModules: 16bc17a076b12304d608f7c915b9d321f56dfc19
-  NitroSse: 531bf7269ab3b94c888b83de4fd4e9ef049c479f
+  NitroModules: b4174dd303728e16ad1afb79f64c1a5c69a3b373
+  NitroSse: 95435c787cd340383a5307136aa7744ea41d6669
   RCTDeprecation: a4c521821fab57cbb125b36effe84d897d0dfa12
   RCTRequired: 9f3a7e5645d4bc3f551593de7550bb66ab6e42bc
   RCTSwiftUI: 239ed2eb9e73de5a6f518810630f0c95e01c8702
