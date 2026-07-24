@@ -235,4 +235,24 @@ class NitroSseLogicTest {
         val newTotal = totalBytes + comment.toByteArray(Charsets.UTF_8).size
         assertEquals(105L, newTotal)
     }
+
+    @Test
+    fun testDestroyedDispatcherHandling() {
+        var isRunning = true
+        var cleanupPerformed = false
+        val throwable: Throwable = RuntimeException("Failed to call AsyncJSCallback - the Dispatcher has already been destroyed!")
+
+        fun handleInterceptorError(t: Throwable?) {
+            val isDispatcherDestroyed = t?.message?.contains("Dispatcher has already been destroyed", ignoreCase = true) == true
+            if (isDispatcherDestroyed) {
+                isRunning = false
+                cleanupPerformed = true
+                return
+            }
+        }
+
+        handleInterceptorError(throwable)
+        assertFalse(isRunning)
+        assertTrue(cleanupPerformed)
+    }
 }
