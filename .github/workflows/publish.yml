@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   release:
@@ -71,11 +72,11 @@ jobs:
         if: steps.check.outputs.changed == 'true'
         run: |
           if [[ "${{ steps.check.outputs.version }}" == *"beta"* ]]; then
-            npm publish --access public --tag beta
+            npm publish --access public --tag beta --provenance
           elif [[ "${{ steps.check.outputs.version }}" == *"alpha"* ]]; then
-            npm publish --access public --tag alpha
+            npm publish --access public --tag alpha --provenance
           else
-            npm publish --access public
+            npm publish --access public --provenance
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
