@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.3.2 (2026-07-24)
+
+### Fixes
+
+- **Android**: Fixed a `FATAL EXCEPTION: NitroSseThread` crash that occurred when background reconnects attempted to invoke JS callbacks after the JS runtime/Dispatcher was invalidated (e.g., during Fast Refresh or component unmount). The client now safely catches the `Dispatcher has already been destroyed!` error and gracefully stops the stream.
+- **Core (Android & iOS)**: Optimized connection teardown logic to prevent flushing buffered events to a dead JS runtime, reducing unnecessary bridge overhead.
+- **Android**: Hardened error boundaries by catching `Throwable` instead of `Exception` in the interceptor block to safely handle generic JNI errors.
+
 ## 2.3.1 (2026-06-16)
 
 ### Improvements
