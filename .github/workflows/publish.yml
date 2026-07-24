@@ -77,10 +77,10 @@ jobs:
         if: steps.check.outputs.changed == 'true'
         run: |
           if [[ "${{ steps.check.outputs.version }}" == *"beta"* ]]; then
-            npm publish --access public --tag beta --provenance --loglevel verbose
+            npm publish --access public --tag beta --provenance
           elif [[ "${{ steps.check.outputs.version }}" == *"alpha"* ]]; then
-            npm publish --access public --tag alpha --provenance --loglevel verbose
+            npm publish --access public --tag alpha --provenance
           else
-            npm publish --access public --provenance --loglevel verbose
+            npm publish --access public --provenance
           fi
         shell: bash
