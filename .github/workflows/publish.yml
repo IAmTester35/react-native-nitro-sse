@@ -71,7 +71,7 @@ jobs:
 
       - name: Upgrade npm CLI for Trusted Publishing
         if: steps.check.outputs.changed == 'true'
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       - name: Publish to npm
         if: steps.check.outputs.changed == 'true'
