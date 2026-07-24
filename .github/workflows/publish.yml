@@ -23,6 +23,8 @@ jobs:
 
       - name: Setup
         uses: ./.github/actions/setup
+        with:
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Check if version changed
         id: check
@@ -67,14 +69,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Upgrade npm CLI for Trusted Publishing
+        if: steps.check.outputs.changed == 'true'
+        run: npm install -g npm@11
+
       - name: Publish to npm
         if: steps.check.outputs.changed == 'true'
         run: |
           if [[ "${{ steps.check.outputs.version }}" == *"beta"* ]]; then
-            npm publish --access public --tag beta --provenance --loglevel verbose
+            npm publish --access public --tag beta --provenance
           elif [[ "${{ steps.check.outputs.version }}" == *"alpha"* ]]; then
-            npm publish --access public --tag alpha --provenance --loglevel verbose
+            npm publish --access public --tag alpha --provenance
           else
-            npm publish --access public --provenance --loglevel verbose
+            npm publish --access public --provenance
           fi
         shell: bash
