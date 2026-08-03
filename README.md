@@ -9,7 +9,7 @@ High-performance Server-Sent Events (SSE) client for React Native, built on top 
 Traditional EventSource libraries run on the JS thread or use the legacy React Native Bridge. NitroSSE moves the entire control logic down to the native layer:
 
 *   **Zero-Latency JSI**: Instantaneous JS-Native communication bypassing the async bridge.
-*   **Advanced Backpressure**: Batches high-frequency events and employs tail-drop strategies to keep UI thread fluid under extreme load.
+*   **Advanced Backpressure**: Batches high-frequency events and automatically flushes when the buffer is full to prevent memory pressure, keeping the UI thread fluid under extreme load.
 *   **Intelligent Reconnect**: Automatic recovery using **Exponential Backoff** and **Jitter** to prevent server stampedes.
 *   **Lifecycles**: Auto-hibernates connections in background and resumes on foreground to preserve battery.
 *   **Heartbeat Watchdog**: Native detection of keep-alive/ping comments to auto-reconnect dead sockets.
