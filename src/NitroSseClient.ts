@@ -5,6 +5,7 @@ import type {
   SseEvent,
   SseListener,
   SseStats,
+  SseState,
 } from './SseInterface';
 
 declare const __DEV__: boolean | undefined;
@@ -101,6 +102,7 @@ export class NitroSseClient implements SseClient {
       message: rawMock.message,
       statusCode: rawMock.statusCode ?? 200,
       retry: rawMock.retry,
+      state: rawMock.state,
     };
   }
 
@@ -276,6 +278,13 @@ export class NitroSseClient implements SseClient {
       };
     }
     return this._native.getStats();
+  }
+
+  getState(): SseState {
+    if (this._config?.mock?.mode === 'replace') {
+      return this._mockIntervalId ? 'open' : 'idle';
+    }
+    return this._native.getState();
   }
 
   updateHeaders(headers: Record<string, string>): void {

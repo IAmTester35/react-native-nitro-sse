@@ -1,5 +1,5 @@
 import type { HybridObject } from 'react-native-nitro-modules';
-import type { SseConfig, SseEvent, SseStats } from './SseInterface';
+import type { SseConfig, SseEvent, SseStats, SseState } from './SseInterface';
 
 export interface NitroSse
   extends HybridObject<{ ios: 'swift'; android: 'kotlin' }> {
@@ -50,4 +50,9 @@ export interface NitroSse
    * Check if the connection is currently active.
    */
   isConnected(): boolean;
+
+  /**
+   * Get the current state of the connection.
+   */
+  getState(): SseState;
 }
