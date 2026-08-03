@@ -9,6 +9,7 @@ import {
   StatusBar,
   ActivityIndicator,
 } from 'react-native';
+import type { SseState } from 'react-native-nitro-sse';
 
 export const COLORS = {
   background: '#0F172A',
@@ -32,8 +33,7 @@ export interface LogEntry {
 
 export interface ContentProps {
   logs: LogEntry[];
-  isConnected: boolean;
-  isConnecting: boolean;
+  connectionState: SseState;
   setLogs: (logs: LogEntry[]) => void;
   startConnection: () => void;
   stopConnection: () => void;
@@ -42,8 +42,7 @@ export interface ContentProps {
 export function Content(props: ContentProps) {
   const {
     logs,
-    isConnected,
-    isConnecting,
+    connectionState,
     setLogs,
     startConnection,
     stopConnection,
@@ -92,26 +91,22 @@ export function Content(props: ContentProps) {
             style={[
               styles.statusDot,
               {
-                backgroundColor: isConnected
+                backgroundColor: connectionState === 'open'
                   ? COLORS.success
-                  : isConnecting
+                  : ['connecting', 'reconnecting', 'stale'].includes(connectionState)
                   ? COLORS.warning
                   : COLORS.error,
               },
             ]}
           />
           <Text style={styles.statusText}>
-            {isConnected
-              ? 'LIVE'
-              : isConnecting
-              ? 'CONNECTING...'
-              : 'DISCONNECTED'}
+            {connectionState.toUpperCase()}
           </Text>
         </View>
       </View>
 
       <View style={styles.mainControls}>
-        {!isConnected && !isConnecting ? (
+        {['idle', 'closed', 'failed'].includes(connectionState) ? (
           <TouchableOpacity
             style={[styles.primaryButton, { backgroundColor: COLORS.primary }]}
             onPress={startConnection}
@@ -145,7 +140,7 @@ export function Content(props: ContentProps) {
         >
           {logs.length === 0 ? (
             <View style={styles.emptyState}>
-              {isConnecting ? (
+              {['connecting', 'reconnecting'].includes(connectionState) ? (
                 <ActivityIndicator color={COLORS.primary} />
               ) : (
                 <Text style={styles.emptyText}>No activity recorded yet.</Text>

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.4.0-beta.1 (2026-08-03)
+
+### Features
+
+- **Connection State Machine & API**: Introduced `SseState` (`idle`, `connecting`, `open`, `stale`, `reconnecting`, `pause`, `close`, `fail`) and added `getState()` method to inspect active connection state.
+- **State Change Event**: Added `'state'` to `SseEventType` and `state` property to `SseEvent`, enabling event listeners to subscribe directly to connection state transitions.
+
+### Improvements
+
+- **iOS**: Refactored `NitroSse.swift` into smaller, maintainable modules (Buffer, Reconnect, Network, Lifecycle).
+- **Android**: Refactored `NitroSse.kt` into smaller, maintainable modules (Buffer, Reconnect, Network, Lifecycle).
+- **Testing**: Expanded Native Unit Tests for both iOS and Android covering connection state transitions and edge cases.
+- **Example**: Updated example app UI to display real-time connection states.
+
 ## 2.3.2 (2026-07-24)
 
 ### Fixes
