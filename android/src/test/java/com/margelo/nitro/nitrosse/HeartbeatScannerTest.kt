@@ -19,6 +19,10 @@ class HeartbeatScanner {
     }
 }
 
+/**
+ * Unit tests verifying raw byte stream scanning logic for SSE keep-alive comments (`:`).
+ * Tests parsing behavior across arbitrary TCP packet boundaries and chunked transfer encodings.
+ */
 class HeartbeatScannerTest {
 
     @Test
@@ -41,11 +45,11 @@ class HeartbeatScannerTest {
     fun testSplitPacketHeartbeat() {
         val scanner = HeartbeatScanner()
         
-        // Packet 1 ends right before heartbeat
+        // Packet 1 ends on newline boundary immediately prior to heartbeat line
         val p1 = "data: hello\n".toByteArray()
         scanner.scan(p1, p1.size)
         
-        // Packet 2 starts with heartbeat
+        // Packet 2 begins with SSE comment colon prefix
         val p2 = ":heartbeat\n".toByteArray()
         scanner.scan(p2, p2.size)
         
@@ -56,16 +60,16 @@ class HeartbeatScannerTest {
     fun testHeartbeatSplitAcrossPackets() {
         val scanner = HeartbeatScanner()
         
-        // Packet 1 ends with newline
+        // Packet 1 ends on newline boundary
         val p1 = "data: hello\n".toByteArray()
         scanner.scan(p1, p1.size)
         
-        // Packet 2 starts with ':' but no more
+        // Packet 2 receives colon character on initial byte
         val p2 = ":".toByteArray()
         scanner.scan(p2, p2.size)
         assertEquals(1, scanner.heartbeatCount)
         
-        // Packet 3 contains the rest of comment
+        // Packet 3 receives remainder of comment body and newline without double-counting
         val p3 = "heartbeat\n".toByteArray()
         scanner.scan(p3, p3.size)
         

@@ -6,8 +6,11 @@ import okhttp3.Response
 import java.util.UUID
 
 /**
- * A utility to report network events to the React Native DevTools Network Tab.
- * It uses reflection to access the internal InspectorNetworkReporter class in RN.
+ * Reports SSE connection events to the React Native DevTools Network inspector.
+ *
+ * Uses Java reflection to dynamically access React Native's internal `InspectorNetworkReporter`.
+ * This prevents compilation failure or runtime link errors when running in production builds
+ * or environments where network inspection modules are stripped.
  */
 object NetworkInspector {
     private const val TAG = "NitroSseNetworkInspector"
@@ -46,7 +49,7 @@ object NetworkInspector {
                 Long::class.javaPrimitiveType
             )
             val headers = request.headers.toMap()
-            // We send an empty body string as SSE setup usually doesn't have a large body
+            // SSE connection requests do not send request bodies; passing empty body minimizes DevTools memory overhead
             val body = "" 
             method?.invoke(null, requestId, request.url.toString(), request.method, headers, body, 0L)
         } catch (e: Exception) {
