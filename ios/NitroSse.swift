@@ -1,11 +1,7 @@
 import Foundation
-import ObjectiveC
 import NitroModules
 import LDSwiftEventSource
 import Network
-#if os(iOS)
-import UIKit
-#endif
 
 /// NitroSse implements a high-performance SSE client for iOS using LDSwiftEventSource.
 ///
