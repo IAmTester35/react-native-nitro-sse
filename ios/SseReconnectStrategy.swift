@@ -18,10 +18,33 @@ class SseReconnectStrategy {
         jitterFactor: Double?,
         maxReconnectAttempts: Double?
     ) {
-        self.retryInterval = (retryIntervalMs ?? 1000.0) / 1000.0
-        self.maxRetryInterval = (maxRetryIntervalMs ?? 30000.0) / 1000.0
-        self.jitterFactor = jitterFactor ?? 0.5
-        self.maxReconnectAttempts = Int(maxReconnectAttempts ?? -1.0)
+        if let retry = retryIntervalMs, retry.isFinite, retry >= 0 {
+            self.retryInterval = retry / 1000.0
+        } else {
+            self.retryInterval = 1.0
+        }
+        
+        if let maxRetry = maxRetryIntervalMs, maxRetry.isFinite, maxRetry >= 0 {
+            self.maxRetryInterval = maxRetry / 1000.0
+        } else {
+            self.maxRetryInterval = 30.0
+        }
+        
+        if let jitter = jitterFactor, jitter.isFinite {
+            self.jitterFactor = min(max(0.0, jitter), 1.0)
+        } else {
+            self.jitterFactor = 0.5
+        }
+        
+        if let maxAttempts = maxReconnectAttempts, maxAttempts.isFinite, maxAttempts >= 0 {
+            if maxAttempts >= Double(Int.max) {
+                self.maxReconnectAttempts = Int.max
+            } else {
+                self.maxReconnectAttempts = Int(maxAttempts)
+            }
+        } else {
+            self.maxReconnectAttempts = -1
+        }
     }
     
     /// Checks if maximum reconnection attempts threshold has been reached.

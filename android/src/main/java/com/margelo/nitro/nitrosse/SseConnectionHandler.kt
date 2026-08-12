@@ -76,30 +76,36 @@ internal class HeartbeatNetworkInterceptor(
             val countingBody = object : ResponseBody() {
                 override fun contentType() = responseBody.contentType()
                 override fun contentLength() = responseBody.contentLength()
-                override fun source() = (object : ForwardingSource(responseBody.source()) {
-                    private var isAtStartOfLine = true
 
-                    override fun read(sink: Buffer, byteCount: Long): Long {
-                        val bufferOffset = sink.size
-                        val bytesRead = super.read(sink, byteCount)
-                        if (bytesRead != -1L) {
-                            totalBytesReceived.addAndGet(bytesRead)
-                            try {
-                                // Scan raw byte buffer for leading ':' character to trigger heartbeat events before OkHttp discards comments
-                                for (i in 0 until bytesRead) {
-                                    val b = sink.get(bufferOffset + i)
-                                    if (isAtStartOfLine && b == ':'.code.toByte()) {
-                                        onHeartbeat()
+                private val bufferedSource by lazy {
+                    (object : ForwardingSource(responseBody.source()) {
+                        private var isAtStartOfLine = true
+
+                        override fun read(sink: Buffer, byteCount: Long): Long {
+                            val scratch = Buffer()
+                            val bytesRead = super.read(scratch, byteCount)
+                            if (bytesRead != -1L) {
+                                totalBytesReceived.addAndGet(bytesRead)
+                                try {
+                                    // Scan raw byte buffer for leading ':' character to trigger heartbeat events before OkHttp discards comments
+                                    val bytes = scratch.snapshot().toByteArray()
+                                    for (b in bytes) {
+                                        if (isAtStartOfLine && b == ':'.code.toByte()) {
+                                            onHeartbeat()
+                                        }
+                                        isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
                                     }
-                                    isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
+                                } catch (e: Exception) {
+                                    // Swallow byte scanning errors to prevent stream reader failure if buffer inspection fails
                                 }
-                            } catch (e: Exception) {
-                                // Swallow byte scanning errors to prevent stream reader failure if buffer inspection fails
+                                sink.write(scratch, bytesRead)
                             }
+                            return bytesRead
                         }
-                        return bytesRead
-                    }
-                }).buffer()
+                    }).buffer()
+                }
+
+                override fun source() = bufferedSource
             }
             return response.newBuilder().body(countingBody).build()
         }

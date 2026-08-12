@@ -25,8 +25,9 @@ enum SseConnectionHandler {
     ) -> EventSource {
         let sessionConfig = URLSessionConfiguration.default
         let readTimeout = (config.readTimeoutMs ?? 300000.0) / 1000.0
+        let connectionTimeout = (config.connectionTimeoutMs ?? 15000.0) / 1000.0
         sessionConfig.timeoutIntervalForRequest = readTimeout
-        sessionConfig.timeoutIntervalForResource = readTimeout
+        sessionConfig.timeoutIntervalForResource = connectionTimeout
         
         let handler = SseHandler(delegate: delegate, attemptVersion: attemptVersion, dispatcher: dispatcher)
         var esConfig = EventSource.Config(handler: handler, url: url)

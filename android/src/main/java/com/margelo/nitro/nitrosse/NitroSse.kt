@@ -232,7 +232,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
 
     private fun updateState(newState: SseState) {
         val oldState = currentState.getAndSet(newState)
-        if (oldState != newState) {
+        if (oldState != newState && ::eventBuffer.isInitialized) {
             eventBuffer.push(SseEvent(SseEventType.STATE, null, null, null, null, null, null, null, newState))
         }
     }
@@ -505,7 +505,9 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     }
 
     override fun restart() {
-        stop()
+        synchronized(this) { config } ?: return
+        stopInternal()
+        updateState(SseState.RECONNECTING)
         start()
     }
 

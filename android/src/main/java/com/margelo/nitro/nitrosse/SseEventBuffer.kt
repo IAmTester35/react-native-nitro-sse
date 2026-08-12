@@ -13,10 +13,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  * streaming, while ensuring events are delivered on the main UI thread via [mainDispatcher].
  */
 class SseEventBuffer(
-    private var onFlush: (Array<SseEvent>) -> Unit,
+    onFlush: (Array<SseEvent>) -> Unit,
     private val dispatcher: SseDispatcher?,
     private val mainDispatcher: SseDispatcher? = null
 ) {
+    @Volatile
+    private var onFlush: (Array<SseEvent>) -> Unit = onFlush
+
     private val eventBuffer = mutableListOf<SseEvent>()
     private val isFlushPending = AtomicBoolean(false)
     

@@ -198,11 +198,12 @@ class NitroSse: HybridNitroSseSpec {
     /// Teardown existing connection and initiate a new request attempt.
     func restart() {
         dispatcher.async {
-            self.stopInternal()
+            guard self.config != nil else { return }
+            self.stopInternal(emitClosed: false)
             self.isRunning = true
             self.requestId = nil
             self.connectionAttemptVersion += 1
-            self.updateState(.connecting)
+            self.updateState(.reconnecting)
             self.establishConnection(attemptVersion: self.connectionAttemptVersion)
         }
     }
@@ -340,29 +341,19 @@ class NitroSse: HybridNitroSseSpec {
                 }
             }
 
-            do {
-                try interceptor().then { [weak self] promise2 in
-                    promise2.then { [weak self] newHeaders in
-                        self?.dispatcher.async { [weak self] in
-                            guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
-                            if !flag.isCompleted {
-                                flag.isCompleted = true
-                                let currentConfig = self.config ?? capturedConfig
-                                var mergedHeaders = currentConfig.headers ?? [:]
-                                for (k, v) in newHeaders {
-                                    mergedHeaders[k] = v
-                                }
-                                self.config = currentConfig.copyWith(headers: mergedHeaders)
-                                self.performEstablishConnection(attemptVersion: attemptVersion)
+            interceptor().then { [weak self] promise2 in
+                promise2.then { [weak self] newHeaders in
+                    self?.dispatcher.async { [weak self] in
+                        guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+                        if !flag.isCompleted {
+                            flag.isCompleted = true
+                            let currentConfig = self.config ?? capturedConfig
+                            var mergedHeaders = currentConfig.headers ?? [:]
+                            for (k, v) in newHeaders {
+                                mergedHeaders[k] = v
                             }
-                        }
-                    }.catch { [weak self] error in
-                        self?.dispatcher.async { [weak self] in
-                            guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
-                            if !flag.isCompleted {
-                                flag.isCompleted = true
-                                self.handleInterceptorError(error, attemptVersion: attemptVersion)
-                            }
+                            self.config = currentConfig.copyWith(headers: mergedHeaders)
+                            self.performEstablishConnection(attemptVersion: attemptVersion)
                         }
                     }
                 }.catch { [weak self] error in
@@ -374,10 +365,13 @@ class NitroSse: HybridNitroSseSpec {
                         }
                     }
                 }
-            } catch {
-                if !flag.isCompleted {
-                    flag.isCompleted = true
-                    self.handleInterceptorError(error, attemptVersion: attemptVersion)
+            }.catch { [weak self] error in
+                self?.dispatcher.async { [weak self] in
+                    guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+                    if !flag.isCompleted {
+                        flag.isCompleted = true
+                        self.handleInterceptorError(error, attemptVersion: attemptVersion)
+                    }
                 }
             }
         } else {
@@ -405,6 +399,8 @@ class NitroSse: HybridNitroSseSpec {
         dispatcher.assertOnQueue()
         guard isRunning, let config = config, let url = URL(string: config.url), attemptVersion == self.connectionAttemptVersion else { return }
         
+        self.updateState(.connecting)
+        
         if let rid = self.requestId {
             NitroSseNetworkInspector.reportResponseEnd(rid, encodedDataLength: Int(self.totalBytesReceived))
             self.requestId = nil
@@ -426,10 +422,10 @@ class NitroSse: HybridNitroSseSpec {
 
     // MARK: - Stop / Reconnect
 
-    private func stopInternal() {
+    private func stopInternal(emitClosed: Bool = true) {
         dispatcher.assertOnQueue()
         self.isRunning = false
-        if !isDispatcherDestroyed && self.currentState != .failed {
+        if emitClosed && !isDispatcherDestroyed && self.currentState != .failed {
             self.updateState(.closed)
         }
         if isDispatcherDestroyed {

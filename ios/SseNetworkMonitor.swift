@@ -12,6 +12,7 @@ class SseNetworkMonitor {
     
     private var pathMonitor: NWPathMonitor?
     private var lastPathInterface: NWInterface.InterfaceType?
+    private var monitorGeneration = 0
     private let dispatcher: SseDispatcher
     private let queue: DispatchQueue
     private let onChange: NetworkChangeHandler
@@ -27,10 +28,13 @@ class SseNetworkMonitor {
     func start() {
         guard pathMonitor == nil else { return }
         
+        monitorGeneration += 1
+        let generation = monitorGeneration
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
-            self?.dispatcher.async {
-                self?.handlePathUpdate(path)
+            self?.dispatcher.async { [weak self] in
+                guard let self = self, self.monitorGeneration == generation else { return }
+                self.handlePathUpdate(path)
             }
         }
         self.pathMonitor = monitor
@@ -39,6 +43,7 @@ class SseNetworkMonitor {
     
     /// Cancels active path monitoring and releases resources.
     func stop() {
+        monitorGeneration += 1
         pathMonitor?.cancel()
         pathMonitor = nil
         lastPathInterface = nil
