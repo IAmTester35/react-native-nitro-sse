@@ -144,6 +144,35 @@ class NitroSseLogicTest {
     }
 
     @Test
+    fun testInputHardeningAndValidation() {
+        val strategy = SseReconnectStrategy()
+        strategy.configure(
+            retryIntervalMs = Double.NaN,
+            maxRetryIntervalMs = Double.POSITIVE_INFINITY,
+            jitterFactor = 2.5,
+            maxReconnectAttempts = -50
+        )
+        val delay = strategy.nextDelay(isError = true)
+        assertTrue("Delay $delay should fall back to finite default >= 500", delay >= 500)
+        assertFalse("Max attempts should fallback to -1 for invalid negative count", strategy.hasReachedMaxAttempts())
+
+        strategy.configure(
+            retryIntervalMs = 1000.0,
+            maxRetryIntervalMs = 30000.0,
+            jitterFactor = -0.5,
+            maxReconnectAttempts = -1
+        )
+        assertTrue("Explicit maxReconnectAttempts = -1 should be preserved", !strategy.hasReachedMaxAttempts())
+
+        val dispatcher = TestSseDispatcher()
+        val buffer = SseEventBuffer(onFlush = {}, dispatcher = dispatcher, mainDispatcher = dispatcher)
+        buffer.configure(batchingIntervalMs = Double.NaN, maxBufferSize = -10)
+        val mockEvent = SseEvent(SseEventType.MESSAGE, "test", null, "1", "message", null, 200.0, null, null)
+        buffer.push(mockEvent)
+        dispatcher.executePending()
+    }
+
+    @Test
     fun testRetryAfterInvalidDate() {
         fun createResponse(headerValue: String): Response {
             val request = Request.Builder().url("https://example.com").build()

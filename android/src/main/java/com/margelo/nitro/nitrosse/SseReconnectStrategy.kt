@@ -30,10 +30,10 @@ class SseReconnectStrategy {
         jitterFactor: Double,
         maxReconnectAttempts: Int
     ) {
-        this.retryIntervalMs = retryIntervalMs
-        this.maxRetryIntervalMs = maxRetryIntervalMs
-        this.jitterFactor = jitterFactor
-        this.maxReconnectAttempts = maxReconnectAttempts
+        this.retryIntervalMs = if (!retryIntervalMs.isNaN() && !retryIntervalMs.isInfinite() && retryIntervalMs >= 0) retryIntervalMs else 1000.0
+        this.maxRetryIntervalMs = if (!maxRetryIntervalMs.isNaN() && !maxRetryIntervalMs.isInfinite() && maxRetryIntervalMs >= 0) maxRetryIntervalMs else 30000.0
+        this.jitterFactor = if (!jitterFactor.isNaN() && !jitterFactor.isInfinite()) jitterFactor.coerceIn(0.0, 1.0) else 0.5
+        this.maxReconnectAttempts = if (maxReconnectAttempts == -1 || maxReconnectAttempts >= 0) maxReconnectAttempts else -1
     }
 
     fun nextDelay(isError: Boolean): Long {

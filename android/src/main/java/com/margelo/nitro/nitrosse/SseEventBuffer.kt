@@ -29,8 +29,8 @@ class SseEventBuffer(
     private val flushRunnable = Runnable { flush() }
 
     fun configure(batchingIntervalMs: Double, maxBufferSize: Int) {
-        this.batchingIntervalMs = batchingIntervalMs
-        this.maxBufferSize = maxBufferSize
+        this.batchingIntervalMs = if (!batchingIntervalMs.isNaN() && !batchingIntervalMs.isInfinite() && batchingIntervalMs >= 0) batchingIntervalMs else 0.0
+        this.maxBufferSize = if (maxBufferSize > 0) maxBufferSize else 1000
     }
 
     fun setCallback(newCallback: (Array<SseEvent>) -> Unit) {

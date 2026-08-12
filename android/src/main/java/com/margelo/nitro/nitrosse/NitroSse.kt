@@ -432,7 +432,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
 
             val retryAfterMillis = SseReconnectStrategy.extractRetryAfterMillis(response)
             if ((statusCode == 429 || statusCode == 503) && retryAfterMillis != null) {
-                val jitter = (500 + Random.nextInt(1500)).toLong()
+                val jitter = (500 + Random.nextInt(1001)).toLong()
                 val totalDelay = retryAfterMillis + jitter
                 eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Retry-After received: ${totalDelay/1000}s", statusCode.toDouble(), totalDelay.toDouble(), null))
                 val currentAttemptVersion = connectionAttemptVersion.get()
