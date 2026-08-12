@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.4.0 (2026-08-12)
+
+### Features
+
+- **Connection State Machine & API**: Introduced `SseState` (`idle`, `connecting`, `open`, `stale`, `reconnecting`, `paused`, `closed`, `failed`), `getState()`, and `'state'` event emitter.
+- **Mock State Transitions**: Added dynamic `SseState` lifecycle events and status tracking to JS mock engine (`replace` mode).
+
+### Improvements
+
+- **Native Config Hardening**: Added fallback defaults for invalid (`NaN`, infinity, negative) config parameters across iOS and Android.
+- **Network Monitor Safety**: Added generation tracking to `SseNetworkMonitor` on iOS/Android to discard stale callbacks on restart/teardown.
+- **Architecture Refactoring**: Modularized native core (`NitroSse.swift` / `NitroSse.kt`) into dedicated components (Buffer, Reconnect, Network, Lifecycle).
+- **Testing & Example**: Expanded JS, iOS (XCTest), and Android (JUnit) test coverage and updated example app dashboard.
+
 ## 2.4.0-beta.1 (2026-08-03)
 
 ### Features
