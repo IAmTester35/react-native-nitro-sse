@@ -8,7 +8,7 @@ This document explains the technical architecture of `react-native-nitro-sse`, i
 
 Unlike legacy EventSource libraries running over the asynchronous React Native Bridge (JSON stringification overhead), `react-native-nitro-sse` uses **Nitro Modules (JSI)**:
 
-```
+```text
 [ JS Engine (QuickJS/Hermes) ]
               │ (Zero-latency direct C++ JSI call)
               ▼
@@ -46,7 +46,7 @@ To eliminate race conditions from continuous socket streaming and prevent crashe
 
 Under high-frequency SSE streams (e.g., AI streaming tokens at 100+ chunks/second), delivering each event individually to the JS thread would overload the JSI bridge and drop UI frame rates.
 
-```
+```text
 Incoming SSE Chunks (Native Thread)
        │
        ▼

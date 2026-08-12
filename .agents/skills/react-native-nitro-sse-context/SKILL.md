@@ -27,7 +27,7 @@ This file serves as the main entry point for the **react-native-nitro-sse** Cust
 
 ## 3. Directory Map
 
-```
+```text
 react-native-nitro-sse/
 ├── src/                          # TypeScript Source
 │   ├── NitroSse.nitro.ts         # JSI Spec interface definition for Nitrogen
@@ -72,9 +72,9 @@ react-native-nitro-sse/
 
 | Document | When to Read |
 |---|---|
-| [`references/architecture.md`](file:///Users/nammaithanh/Desktop/Samset/react-native-nitro-sse/.agents/skills/react-native-nitro-sse-context/references/architecture.md) | Understanding JSI bindings, Threading Dispatchers, Backpressure buffer, Lifecycle & DevTools inspector. |
-| [`references/conventions.md`](file:///Users/nammaithanh/Desktop/Samset/react-native-nitro-sse/.agents/skills/react-native-nitro-sse-context/references/conventions.md) | Adding or modifying code in TS, Kotlin, or Swift. Covers thread-safety & error handling conventions. |
-| [`references/native-implementations.md`](file:///Users/nammaithanh/Desktop/Samset/react-native-nitro-sse/.agents/skills/react-native-nitro-sse-context/references/native-implementations.md) | Working deeply with iOS native components (LDSwiftEventSource/GCD) or Android native components (OkHttp/HandlerThread). |
-| [`references/testing-guide.md`](file:///Users/nammaithanh/Desktop/Samset/react-native-nitro-sse/.agents/skills/react-native-nitro-sse-context/references/testing-guide.md) | Writing new unit tests for Jest, JUnit (Android), or XCTest (iOS) and running test suites. |
-| [`references/workflows.md`](file:///Users/nammaithanh/Desktop/Samset/react-native-nitro-sse/.agents/skills/react-native-nitro-sse-context/references/workflows.md) | Running codegen (`nitrogen`), starting the example app, running CI checks, or releasing packages. |
-| [`references/troubleshooting.md`](file:///Users/nammaithanh/Desktop/Samset/react-native-nitro-sse/.agents/skills/react-native-nitro-sse-context/references/troubleshooting.md) | Resolving Nitrogen version drift, `JS Dispatcher destroyed` crashes, HandlerThread leaks, or iOS background expiration. |
+| [`references/architecture.md`](references/architecture.md) | Understanding JSI bindings, Threading Dispatchers, Backpressure buffer, Lifecycle & DevTools inspector. |
+| [`references/conventions.md`](references/conventions.md) | Adding or modifying code in TS, Kotlin, or Swift. Covers thread-safety & error handling conventions. |
+| [`references/native-implementations.md`](references/native-implementations.md) | Working deeply with iOS native components (LDSwiftEventSource/GCD) or Android native components (OkHttp/HandlerThread). |
+| [`references/testing-guide.md`](references/testing-guide.md) | Writing new unit tests for Jest, JUnit (Android), or XCTest (iOS) and running test suites. |
+| [`references/workflows.md`](references/workflows.md) | Running codegen (`nitrogen`), starting the example app, running CI checks, or releasing packages. |
+| [`references/troubleshooting.md`](references/troubleshooting.md) | Resolving Nitrogen version drift, `JS Dispatcher destroyed` crashes, HandlerThread leaks, or iOS background expiration. |

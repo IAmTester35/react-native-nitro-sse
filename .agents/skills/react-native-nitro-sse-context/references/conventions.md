@@ -30,7 +30,7 @@ The repository strictly enforces responsibility boundaries:
 - **Naming Conventions**:
   - `camelCase` for methods, parameters, and variables (`createNitroSse`, `lastProcessedId`).
   - `PascalCase` for Interfaces, Types, and Classes (`SseConfig`, `SseEvent`, `NitroSseClient`).
-  - `kebab-case` for TypeScript file names (`NitroSseClient.ts`, `SseInterface.ts`).
+  - `PascalCase` for TypeScript file names (`NitroSseClient.ts`, `SseInterface.ts`), with Nitrogen specification files using the `.nitro.ts` suffix (`NitroSse.nitro.ts`).
 - **Exports**: Expose public APIs through `src/index.ts`. External projects must not import internal implementation files directly.
 
 ---

@@ -91,8 +91,10 @@ yarn ci
 *(Executes: `yarn lint` -> `yarn typecheck` -> `yarn test` -> `yarn prepare` -> `yarn test:native` -> `yarn turbo run build:android build:ios`).*
 
 ### Package Release Workflow
-Uses `release-it` to automate version bumping (SemVer), Git tag creation, Changelog generation, and npm publishing:
+Uses `release-it` to automate local version bumping (SemVer), Git tag creation, and Changelog generation:
 
 ```bash
 yarn release
 ```
+
+*Note: Automated npm publishing and GitHub Release generation are authoritatively handled by GitHub Actions (`.github/workflows/publish.yml`) upon pushing the release commit and tag.*

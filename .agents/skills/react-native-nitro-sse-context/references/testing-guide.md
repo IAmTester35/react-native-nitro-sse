@@ -8,7 +8,7 @@ This document details the multi-layered testing strategy (JavaScript/Jest, Andro
 
 Because the library interfaces directly with OS-level networking and hardware lifecycle events, testing is divided into 3 distinct layers:
 
-```
+```text
                   ┌──────────────────────────────┐
                   │ Layer 1: JS/TS API (Jest)    │
                   │ src/__tests__/index.test.tsx │
