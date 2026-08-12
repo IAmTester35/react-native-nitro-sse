@@ -89,4 +89,16 @@ class NitroSseJsonTest {
         val map = JsonUtils.jsonObjectToMap(jsonObject)
         assertTrue(map.isEmpty())
     }
+
+    @Test
+    fun testDeeplyNestedJsonReturnsNull() {
+        val depth = 600
+        val sb = StringBuilder()
+        for (i in 0 until depth) sb.append("""{"a":""")
+        sb.append("1")
+        for (i in 0 until depth) sb.append("}")
+
+        val result = JsonUtils.parseJsonToAnyMap(sb.toString())
+        assertNull(result)
+    }
 }

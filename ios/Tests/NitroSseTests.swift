@@ -69,6 +69,27 @@ class NitroSseTests: XCTestCase {
         XCTAssertFalse(strategy.hasReachedMaxAttempts(), "Should reset after reset()")
     }
 
+    func testReconnectStrategyValidation() {
+        let strategy = SseReconnectStrategy()
+        strategy.configure(
+            retryIntervalMs: .nan,
+            maxRetryIntervalMs: -100.0,
+            jitterFactor: 2.5,
+            maxReconnectAttempts: .infinity
+        )
+        
+        let mirror = Mirror(reflecting: strategy)
+        let retryInterval = mirror.children.first { $0.label == "retryInterval" }?.value as? TimeInterval
+        let maxRetryInterval = mirror.children.first { $0.label == "maxRetryInterval" }?.value as? TimeInterval
+        let jitterFactor = mirror.children.first { $0.label == "jitterFactor" }?.value as? Double
+        let maxReconnectAttempts = mirror.children.first { $0.label == "maxReconnectAttempts" }?.value as? Int
+        
+        XCTAssertEqual(retryInterval, 1.0)
+        XCTAssertEqual(maxRetryInterval, 30.0)
+        XCTAssertEqual(jitterFactor, 1.0)
+        XCTAssertEqual(maxReconnectAttempts, -1)
+    }
+
     func testRetryAfterDateParsing() {
         func createError(withRetryAfter headerValue: String?) -> Error {
             let url = URL(string: "https://example.com")!
@@ -86,6 +107,7 @@ class NitroSseTests: XCTestCase {
         // Verifies RFC 1123 HTTP-date string parsing converts to remaining time interval in seconds.
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss z"
         let futureDate = formatter.string(from: Date().addingTimeInterval(3600))
         let err2 = createError(withRetryAfter: futureDate)
@@ -184,6 +206,27 @@ class NitroSseTests: XCTestCase {
         dispatcher.executeAllPendingBlocks()
         
         XCTAssertEqual(flushedEvents.count, 0)
+    }
+
+    func testEventBufferMaxBufferSizeValidation() {
+        let dispatcher = MockSseDispatcher()
+        let buffer = SseEventBuffer()
+
+        buffer.configure(batchingIntervalMs: 0, maxBufferSize: 50, dispatcher: dispatcher) { _ in }
+        let maxBufferSizeField = Mirror(reflecting: buffer).children.first { $0.label == "maxBufferSize" }?.value as? Int
+        XCTAssertEqual(maxBufferSizeField, 50)
+
+        buffer.configure(batchingIntervalMs: 0, maxBufferSize: .nan, dispatcher: dispatcher) { _ in }
+        let nanMaxBuffer = Mirror(reflecting: buffer).children.first { $0.label == "maxBufferSize" }?.value as? Int
+        XCTAssertEqual(nanMaxBuffer, 1000)
+
+        buffer.configure(batchingIntervalMs: 0, maxBufferSize: -10, dispatcher: dispatcher) { _ in }
+        let negMaxBuffer = Mirror(reflecting: buffer).children.first { $0.label == "maxBufferSize" }?.value as? Int
+        XCTAssertEqual(negMaxBuffer, 1000)
+
+        buffer.configure(batchingIntervalMs: 0, maxBufferSize: .infinity, dispatcher: dispatcher) { _ in }
+        let infMaxBuffer = Mirror(reflecting: buffer).children.first { $0.label == "maxBufferSize" }?.value as? Int
+        XCTAssertEqual(infMaxBuffer, 1000)
     }
 
     func testJsonParsingLogic() {

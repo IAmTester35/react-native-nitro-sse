@@ -9,8 +9,10 @@ import java.util.PriorityQueue
  * without relying on Android framework Handler threads or system timers.
  */
 class TestSseDispatcher : SseDispatcher {
+    private val lock = Any()
     private val pendingTasks = PriorityQueue<ScheduledTask>()
     private var currentTimeMillis: Long = 0
+    private var sequenceNumber: Long = 0
 
     private data class ScheduledTask(
         val executeAt: Long,
@@ -24,41 +26,52 @@ class TestSseDispatcher : SseDispatcher {
         }
     }
 
-    private var sequenceNumber: Long = 0
-
     override fun post(runnable: Runnable) {
-        println("TestSseDispatcher: posting task seq=$sequenceNumber")
-        pendingTasks.add(ScheduledTask(currentTimeMillis, runnable, sequenceNumber++))
+        synchronized(lock) {
+            pendingTasks.add(ScheduledTask(currentTimeMillis, runnable, sequenceNumber++))
+        }
     }
 
     override fun postDelayed(runnable: Runnable, delayMillis: Long) {
-        pendingTasks.add(ScheduledTask(currentTimeMillis + delayMillis, runnable, sequenceNumber++))
+        synchronized(lock) {
+            pendingTasks.add(ScheduledTask(currentTimeMillis + delayMillis, runnable, sequenceNumber++))
+        }
     }
 
     override fun removeCallbacks(runnable: Runnable) {
-        val iterator = pendingTasks.iterator()
-        while (iterator.hasNext()) {
-            if (iterator.next().runnable == runnable) {
-                iterator.remove()
+        synchronized(lock) {
+            val iterator = pendingTasks.iterator()
+            while (iterator.hasNext()) {
+                if (iterator.next().runnable == runnable) {
+                    iterator.remove()
+                }
             }
         }
     }
 
     override fun removeCallbacksAndMessages(token: Any?) {
-        pendingTasks.clear()
+        synchronized(lock) {
+            pendingTasks.clear()
+        }
     }
 
     fun advanceTimeBy(millis: Long) {
-        currentTimeMillis += millis
+        synchronized(lock) {
+            currentTimeMillis += millis
+        }
         executePending()
     }
     
     fun executePending() {
-        println("TestSseDispatcher: executePending with ${pendingTasks.size} tasks")
-        while (pendingTasks.isNotEmpty() && pendingTasks.peek()!!.executeAt <= currentTimeMillis) {
-            val task = pendingTasks.poll()
-            println("TestSseDispatcher: running task seq=${task?.seq}")
-            task?.runnable?.run()
+        while (true) {
+            val task = synchronized(lock) {
+                if (pendingTasks.isNotEmpty() && pendingTasks.peek()!!.executeAt <= currentTimeMillis) {
+                    pendingTasks.poll()
+                } else {
+                    null
+                }
+            } ?: break
+            task.runnable.run()
         }
     }
 }

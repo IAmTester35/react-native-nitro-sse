@@ -1,6 +1,7 @@
 package com.margelo.nitro.nitrosse
 
 import android.os.Build
+import android.os.Looper
 import com.facebook.soloader.SoLoader
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -8,6 +9,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -66,7 +68,17 @@ class NitroSseIntegrationTest {
 
         sse.start()
 
-        val completed = latch.await(5, TimeUnit.SECONDS)
+        val startTime = System.currentTimeMillis()
+        var completed = false
+        while (System.currentTimeMillis() - startTime < 5000) {
+            shadowOf(Looper.getMainLooper()).idle()
+            if (latch.await(50, TimeUnit.MILLISECONDS)) {
+                completed = true
+                break
+            }
+        }
+        shadowOf(Looper.getMainLooper()).idle()
+
         if (completed) {
             assertTrue(receivedEvents.size > 0)
         } else {
@@ -98,7 +110,17 @@ class NitroSseIntegrationTest {
 
         sse.start()
 
-        val completed = latch.await(5, TimeUnit.SECONDS)
+        val startTime = System.currentTimeMillis()
+        var completed = false
+        while (System.currentTimeMillis() - startTime < 5000) {
+            shadowOf(Looper.getMainLooper()).idle()
+            if (latch.await(50, TimeUnit.MILLISECONDS)) {
+                completed = true
+                break
+            }
+        }
+        shadowOf(Looper.getMainLooper()).idle()
+
         if (completed) {
             assertTrue(receivedEvents.size > 0)
         } else {

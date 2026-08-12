@@ -34,9 +34,11 @@ class NitroSseIntegrationTests: XCTestCase {
         let exp = XCTestExpectation(description: "Wait for events")
         
         var receivedEvents: [SseEvent] = []
+        var didFulfill = false
         try? sse.setup(config: config) { events in
             receivedEvents.append(contentsOf: events)
-            if receivedEvents.contains(where: { $0.type == .message }) {
+            if !didFulfill && receivedEvents.contains(where: { $0.type == .message }) {
+                didFulfill = true
                 exp.fulfill()
             }
         }
@@ -65,10 +67,12 @@ class NitroSseIntegrationTests: XCTestCase {
         let exp = XCTestExpectation(description: "Wait for Retry-After error event")
         
         var receivedEvents: [SseEvent] = []
+        var didFulfill = false
         try? sse.setup(config: config) { events in
             receivedEvents.append(contentsOf: events)
             // Verifies server HTTP 429 Retry-After response surfaces retry delay field in error event payload.
-            if receivedEvents.contains(where: { $0.type == .error && $0.retry != nil }) {
+            if !didFulfill && receivedEvents.contains(where: { $0.type == .error && $0.retry != nil }) {
+                didFulfill = true
                 exp.fulfill()
             }
         }

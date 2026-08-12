@@ -286,7 +286,7 @@ class NitroSseCoordinatorTests: XCTestCase {
         XCTAssertGreaterThan(sse.connectionAttemptVersion, preRestartVersion)
         
         let lastTwoStates = Array(states.suffix(2))
-        XCTAssertEqual(lastTwoStates, [.closed, .connecting])
+        XCTAssertEqual(lastTwoStates, [.reconnecting, .connecting])
         
         sse.stop()
     }

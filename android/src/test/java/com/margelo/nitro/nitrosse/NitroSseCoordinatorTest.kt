@@ -95,6 +95,20 @@ class NitroSseCoordinatorTest {
     }
 
     @Test
+    fun testStopAndRestartBeforeSetupDoesNotThrow() {
+        val sse = NitroSse(dispatcher)
+        assertEquals(SseState.IDLE, sse.getState())
+
+        sse.stop()
+        drainLoopers()
+        assertEquals(SseState.CLOSED, sse.getState())
+
+        sse.restart()
+        drainLoopers()
+        assertEquals(SseState.CLOSED, sse.getState())
+    }
+
+    @Test
     fun testCoordinatorStateTransitions() {
         val sse = NitroSse(dispatcher)
         val config = createMockConfig()
