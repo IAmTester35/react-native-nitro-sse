@@ -5,6 +5,7 @@ import type {
   SseEvent,
   SseListener,
   SseStats,
+  SseState,
 } from './SseInterface';
 
 declare const __DEV__: boolean | undefined;
@@ -17,13 +18,25 @@ export class NitroSseClient implements SseClient {
   private _mockIntervalId?: any;
   private _mockIndex: number = 0;
 
+  private _mockState?: SseState;
+
   constructor(native: NitroSse) {
     this._native = native;
+  }
+
+  private _setMockState(state: SseState): void {
+    if (this._mockState !== state) {
+      this._mockState = state;
+      const stateEvent: SseEvent = { type: 'state', state, statusCode: 200 };
+      this._legacyCallback?.([stateEvent]);
+      this._emit('state', stateEvent);
+    }
   }
 
   setup(config: SseConfig, onEvent?: (events: SseEvent[]) => void): void {
     this._config = { ...config };
     this._legacyCallback = onEvent;
+    this._mockState = undefined;
 
     const isDev = typeof __DEV__ !== 'undefined' ? __DEV__ === true : false;
     if (!isDev) {
@@ -101,6 +114,7 @@ export class NitroSseClient implements SseClient {
       message: rawMock.message,
       statusCode: rawMock.statusCode ?? 200,
       retry: rawMock.retry,
+      state: rawMock.state,
     };
   }
 
@@ -156,6 +170,9 @@ export class NitroSseClient implements SseClient {
               clearTimeout(this._mockIntervalId);
               this._mockIntervalId = undefined;
             }
+            if (mode === 'replace') {
+              this._setMockState('closed');
+            }
             const closeEvent: SseEvent = { type: 'close', statusCode: 200 };
             this._legacyCallback?.([closeEvent]);
             this._emit('close', closeEvent);
@@ -165,6 +182,9 @@ export class NitroSseClient implements SseClient {
 
         // Simulate connection drops
         if (validatedErrorRate && Math.random() < validatedErrorRate) {
+          if (mode === 'replace') {
+            this._setMockState('reconnecting');
+          }
           const errorEvent: SseEvent = {
             type: 'error',
             message: 'Mock Connection Drop (Simulated Error)',
@@ -202,6 +222,9 @@ export class NitroSseClient implements SseClient {
         }
 
         if (batch.length > 0) {
+          if (mode === 'replace') {
+            this._setMockState('open');
+          }
           // 1. Call legacy batch callback if provided
           this._legacyCallback?.(batch);
 
@@ -225,6 +248,9 @@ export class NitroSseClient implements SseClient {
           : intervalMs;
 
       if (mode === 'replace') {
+        this._setMockState('connecting');
+        this._setMockState('open');
+
         // Emit simulated open event
         const openEvent: SseEvent = { type: 'open', statusCode: 200 };
         this._legacyCallback?.([openEvent]);
@@ -245,6 +271,9 @@ export class NitroSseClient implements SseClient {
       clearTimeout(this._mockIntervalId);
       this._mockIntervalId = undefined;
     }
+    if (this._config?.mock?.mode === 'replace') {
+      this._setMockState('closed');
+    }
     this._native.stop();
   }
 
@@ -262,8 +291,12 @@ export class NitroSseClient implements SseClient {
   }
 
   isConnected(): boolean {
-    if (this._config?.mock?.mode === 'replace' && this._mockIntervalId) {
-      return true;
+    if (this._config?.mock?.mode === 'replace') {
+      return (
+        this._mockState === 'open' ||
+        this._mockState === 'connecting' ||
+        this._mockState === 'reconnecting'
+      );
     }
     return this._native.isConnected();
   }
@@ -276,6 +309,13 @@ export class NitroSseClient implements SseClient {
       };
     }
     return this._native.getStats();
+  }
+
+  getState(): SseState {
+    if (this._config?.mock?.mode === 'replace') {
+      return this._mockState ?? 'idle';
+    }
+    return this._native.getState();
   }
 
   updateHeaders(headers: Record<string, string>): void {

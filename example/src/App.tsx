@@ -4,6 +4,7 @@ import { Content, type LogEntry } from './Content';
 import {
   createNitroSse,
   type SseClient,
+  type SseState,
 } from 'react-native-nitro-sse';
 
 const DEFAULT_URL = Platform.select({
@@ -14,8 +15,7 @@ const DEFAULT_URL = Platform.select({
 
 export default function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [isConnected, setIsConnected] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
+  const [connectionState, setConnectionState] = useState<SseState>('idle');
   const sseRef = useRef<SseClient | null>(null);
 
   const addLog = useRef((type: string, data?: string, message?: string) => {
@@ -38,15 +38,12 @@ export default function App() {
     if (sseRef.current) return;
 
     try {
-      setIsConnecting(true);
       addLog('system', undefined, 'Initializing connection...');
 
       const sse = createNitroSse();
 
       sse.addEventListener('open', () => {
         addLog('open', undefined, 'Connection established');
-        setIsConnected(true);
-        setIsConnecting(false);
       });
 
       sse.addEventListener('message', (event) => {
@@ -55,12 +52,16 @@ export default function App() {
 
       sse.addEventListener('error', (event) => {
         addLog('error', event.data, event.message);
-        setIsConnecting(false);
-        setIsConnected(false);
       });
 
       sse.addEventListener('heartbeat', () => {
         addLog('heartbeat', undefined, 'Keep-alive received');
+      });
+
+      sse.addEventListener('state', (event) => {
+        if (event.state) {
+          setConnectionState(event.state);
+        }
       });
 
       sse.setup({
@@ -71,7 +72,6 @@ export default function App() {
       sseRef.current = sse;
 
     } catch (e: any) {
-      setIsConnecting(false);
       addLog('error', undefined, e.message);
     }
   };
@@ -80,8 +80,6 @@ export default function App() {
     if (sseRef.current) {
       sseRef.current.stop();
       sseRef.current = null;
-      setIsConnected(false);
-      setIsConnecting(false);
       addLog('system', undefined, 'Connection stopped');
     }
   };
@@ -98,8 +96,7 @@ export default function App() {
   return (
     <Content
       logs={logs}
-      isConnected={isConnected}
-      isConnecting={isConnecting}
+      connectionState={connectionState}
       setLogs={setLogs}
       startConnection={startConnection}
       stopConnection={stopConnection}

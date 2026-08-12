@@ -1,275 +1,182 @@
 package com.margelo.nitro.nitrosse
 
 import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import com.facebook.proguard.annotations.DoNotStrip
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
-import okhttp3.Interceptor
-import okhttp3.ResponseBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.sse.EventSource
-import okhttp3.sse.EventSources
-import okhttp3.sse.EventSourceListener
-import okio.Buffer
-import okio.ForwardingSource
-import okio.buffer
-import com.margelo.nitro.core.AnyMap
-import org.json.JSONObject
-import org.json.JSONArray
-import androidx.lifecycle.DefaultLifecycleObserver
-import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.ProcessLifecycleOwner
+import com.margelo.nitro.NitroModules
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.UUID
 import kotlin.random.Random
-import android.content.Context
-import android.net.ConnectivityManager
-import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
-import com.margelo.nitro.NitroModules
 
 /**
- * NitroSse implements a high-performance SSE client using OkHttp.
- * 
- * ARCHITECTURE DECISIONS:
- * 1. Threading: Uses a dedicated HandlerThread (sseHandlerThread) to offload all network events 
- *    and buffer management from the Main/JS threads. This prevents UI freezes during high-frequency bursts.
- * 2. Backpressure: Implements a producer-consumer pattern with an internal buffer and batching timer.
- *    This solves the "Bridge Flooding" problem by grouping multiple events into a single JSI call.
- * 3. Reliability: Uses exponential backoff with jitter and respects 'Retry-After' headers to 
- *    prevent DoS-ing the server while ensuring resilient reconnections.
- * 4. Heartbeat: Since OkHttp-SSE obscures comments, we use a Network Interceptor to manually 
- *    detect ':' bytes, enabling JS-side watchdog timers.
- * 5. Lifecycle Management: Implements the Hibernation pattern. When the app enters the background,
- *    we stop the stream to save battery. It automatically resumes when returning to foreground.
+ * Core Android implementation of [HybridNitroSseSpec] managing Server-Sent Events (SSE).
+ *
+ * Coordinates OkHttp SSE connection state, exponential backoff retries, event buffering,
+ * network interface transitions, and Android app lifecycle hibernation. Uses a single-threaded
+ * background [SseDispatcher] to ensure thread-safe state mutations and avoid blocking the JS UI thread.
  */
 @DoNotStrip
-class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
-    @Volatile private var client: OkHttpClient? = null
-    @Volatile private var eventSource: EventSource? = null
-    @Volatile private var config: SseConfig? = null
-    @Volatile private var requestId: String? = null
-    @Volatile private var onEventsCallback: ((events: Array<SseEvent>) -> Unit)? = null
+class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDelegate {
+
+    // Secondary constructor for unit testing to inject virtual-time dispatchers without spawning HandlerThreads
+    internal constructor(dispatcher: SseDispatcher) : this() {
+        this.sseDispatcher = dispatcher
+    }
+    private var client: OkHttpClient? = null
+    private var eventSource: EventSource? = null
+    private var config: SseConfig? = null
+    private var requestId: String? = null
     
     private val isRunning = AtomicBoolean(false)
-    @Volatile private var isDispatcherDestroyed = false
+    private var isDispatcherDestroyed = false
     private var wasRunningBeforePaused = false
     private val consecutiveAuthErrors = AtomicInteger(0)
     private val maxAuthRetries = 3
-    private var sseHandlerThread: android.os.HandlerThread? = null
-    private var sseHandler: Handler? = null
     
-    private val eventBuffer = mutableListOf<SseEvent>()
-    private var isFlushPending = AtomicBoolean(false)
-    private val flushRunnable = java.lang.Runnable { flushBufferToJs() }
-    
-    private var backoffCounter = 0
-    private val isAppInBackground = AtomicBoolean(false)
-    private var currentReconnectAttempts = 0
-    @Volatile private var lastProcessedId: String? = null
+    private var sseDispatcherThread: android.os.HandlerThread? = null
+    internal var sseDispatcher: SseDispatcher? = null
     
     private val totalBytesReceived = AtomicLong(0)
     private val connectionAttemptVersion = AtomicInteger(0)
-    private var reconnectCount = 0
+    private var lastProcessedId: String? = null
+    private var currentState = java.util.concurrent.atomic.AtomicReference(SseState.IDLE)
+    private val totalReconnectCount = AtomicInteger(0)
     private var lastErrorTime: Double? = null
     private var lastErrorCode: String? = null
-    
-    private var hasSubscribedToLifecycle = false
-
-    private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var wasRunningBeforeNetworkLoss = false
     private var lastNetworkCapabilities: NetworkCapabilities? = null
 
+    private lateinit var eventBuffer: SseEventBuffer
+    private val reconnectStrategy = SseReconnectStrategy()
+    private var networkMonitor: SseNetworkMonitor? = null
+    private var lifecycleManager: SseLifecycleManager? = null
+    private val connectionHandler = SseConnectionHandler(this)
+    private val mainDispatcher = AndroidSseDispatcher(Handler(android.os.Looper.getMainLooper()))
+
     companion object {
         private const val TAG = "NitroSse"
-
-        internal fun jsonObjectToMap(jsonObject: JSONObject): Map<String, Any?> {
-            val map = mutableMapOf<String, Any?>()
-            val keys = jsonObject.keys()
-            while (keys.hasNext()) {
-                val key = keys.next()
-                var value: Any? = jsonObject.get(key)
-                if (value is JSONObject) {
-                    value = jsonObjectToMap(value)
-                } else if (value is JSONArray) {
-                    value = jsonArrayToList(value)
-                } else if (value == JSONObject.NULL) {
-                    value = null
-                }
-                map[key] = value
-            }
-            return map
-        }
-
-        internal fun jsonArrayToList(jsonArray: JSONArray): List<Any?> {
-            val list = mutableListOf<Any?>()
-            for (i in 0 until jsonArray.length()) {
-                var value: Any? = jsonArray.get(i)
-                if (value is JSONObject) {
-                    value = jsonObjectToMap(value)
-                } else if (value is JSONArray) {
-                    value = jsonArrayToList(value)
-                } else if (value == JSONObject.NULL) {
-                    value = null
-                }
-                list.add(value)
-            }
-            return list
-        }
     }
 
-    /**
-     * Set up the NitroSse instance with configuration and an event callback.
-     * This prepares the OkHttpClient and internal handler threads.
-     *
-     * @param config The SSE configuration containing URL, headers, and more.
-     * @param onEvent Callback function to receive batched SSE events.
-     */
     override fun setup(config: SseConfig, onEvent: (events: Array<SseEvent>) -> Unit) {
-        this.config = config
-        this.onEventsCallback = onEvent
-        
-        if (this.client == null) {
-            val builder = OkHttpClient.Builder()
-                .connectTimeout((config.connectionTimeoutMs ?: 15000.0).toLong(), TimeUnit.MILLISECONDS)
-                .readTimeout((config.readTimeoutMs ?: 300000.0).toLong(), TimeUnit.MILLISECONDS)
-                .addNetworkInterceptor(HeartbeatNetworkInterceptor(totalBytesReceived) {
-                    pushEventToBuffer(SseEvent(SseEventType.HEARTBEAT, null, null, null, null, "keep-alive", null, null))
-                })
-
-
-            this.client = builder.build()
-        }
+        synchronized(this) {
+            this.config = config
             
-        if (sseHandlerThread == null) {
-            sseHandlerThread = android.os.HandlerThread("NitroSseThread").apply { start() }
-            sseHandler = Handler(sseHandlerThread!!.looper)
-        }
+            if (sseDispatcher == null) {
+                sseDispatcherThread = android.os.HandlerThread("NitroSseThread").apply { start() }
+                sseDispatcher = AndroidSseDispatcher(Handler(sseDispatcherThread!!.looper))
+            }
 
-        if (!hasSubscribedToLifecycle) {
-            Handler(Looper.getMainLooper()).post {
-                ProcessLifecycleOwner.get().lifecycle.addObserver(this)
-                hasSubscribedToLifecycle = true
+            if (!::eventBuffer.isInitialized) {
+                eventBuffer = SseEventBuffer(onEvent, sseDispatcher, mainDispatcher)
+            } else {
+                eventBuffer.setCallback(onEvent)
+            }
+            eventBuffer.configure(config.batchingIntervalMs ?: 0.0, config.maxBufferSize?.toInt() ?: 1000)
+
+            reconnectStrategy.configure(
+                config.retryIntervalMs ?: 1000.0,
+                config.maxRetryIntervalMs ?: 30000.0,
+                config.jitterFactor ?: 0.5,
+                (config.maxReconnectAttempts ?: -1.0).toInt()
+            )
+
+            if (this.client == null) {
+                val builder = OkHttpClient.Builder()
+                    .connectTimeout((config.connectionTimeoutMs ?: 15000.0).toLong(), TimeUnit.MILLISECONDS)
+                    .readTimeout((config.readTimeoutMs ?: 300000.0).toLong(), TimeUnit.MILLISECONDS)
+                    .addNetworkInterceptor(HeartbeatNetworkInterceptor(totalBytesReceived) {
+                        eventBuffer.push(SseEvent(SseEventType.HEARTBEAT, null, null, null, null, "keep-alive", null, null, null))
+                    })
+                this.client = builder.build()
+            } else {
+                this.client = this.client!!.newBuilder()
+                    .connectTimeout((config.connectionTimeoutMs ?: 15000.0).toLong(), TimeUnit.MILLISECONDS)
+                    .readTimeout((config.readTimeoutMs ?: 300000.0).toLong(), TimeUnit.MILLISECONDS)
+                    .build()
+            }
+            
+            if (lifecycleManager == null) {
+                lifecycleManager = SseLifecycleManager(
+                    lifecycleProvider = { androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle },
+                    mainDispatcher = mainDispatcher,
+                    sseDispatcher = sseDispatcher!!,
+                    onBackground = { handleAppBackground() },
+                    onForeground = { handleAppForeground() }
+                )
+                lifecycleManager?.startObserving()
             }
         }
 
         if (config.monitorNetwork != false) {
-            sseHandler?.post {
+            sseDispatcher?.post {
                 startNetworkMonitoring()
             }
         } else {
-            sseHandler?.post {
-                stopNetworkMonitoring()
+            sseDispatcher?.post {
+                networkMonitor?.stop()
+                networkMonitor = null
             }
         }
     }
 
     private fun startNetworkMonitoring() {
-        if (networkCallback != null) return
-
         val context = NitroModules.applicationContext ?: return
-        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
-
-        networkCallback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                val capabilities = connectivityManager.getNetworkCapabilities(network)
-                handleNetworkChange(true, capabilities)
-            }
-
-            override fun onLost(network: Network) {
-                handleNetworkChange(false, null)
-            }
-
-            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-                handleNetworkChange(true, capabilities)
+        if (networkMonitor == null) {
+            networkMonitor = SseNetworkMonitor(context, sseDispatcher) { isAvailable, capabilities ->
+                handleNetworkChange(isAvailable, capabilities)
             }
         }
-
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-                connectivityManager.registerDefaultNetworkCallback(networkCallback!!)
-            } else {
-                val request = NetworkRequest.Builder()
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    .build()
-                connectivityManager.registerNetworkCallback(request, networkCallback!!)
-            }
-        } catch (e: SecurityException) {
-            Log.e(TAG, "Failed to register network callback. Missing ACCESS_NETWORK_STATE permission.", e)
-            networkCallback = null
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to register network callback.", e)
-            networkCallback = null
-        }
+        networkMonitor?.start()
     }
 
     private fun handleNetworkChange(isAvailable: Boolean, capabilities: NetworkCapabilities?) {
-        sseHandler?.post {
-            Log.d(TAG, "Network change: available=$isAvailable")
-            
-            if (isAvailable && capabilities != null) {
-                if (wasRunningBeforeNetworkLoss) {
-                    Log.d(TAG, "Network restored. Resuming stream.")
-                    wasRunningBeforeNetworkLoss = false
-                    if (isAppInBackground.get() && config?.backgroundExecution != true) {
-                        wasRunningBeforePaused = true
-                    } else {
-                        start()
-                    }
-                } else if (isRunning.get() && lastNetworkCapabilities != null) {
-                    // Check if interface changed (e.g. WiFi -> Cellular)
-                    val isWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                    val isCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
-                    
-                    val lastWifi = lastNetworkCapabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ?: false
-                    val lastCellular = lastNetworkCapabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ?: false
-                    
-                    if ((isWifi && !lastWifi) || (isCellular && !lastCellular)) {
-                        Log.d(TAG, "Network interface changed. Restarting stream.")
-                        restart()
-                    }
+        Log.d(TAG, "Network change: available=$isAvailable")
+        if (isAvailable && capabilities != null) {
+            if (wasRunningBeforeNetworkLoss) {
+                Log.d(TAG, "Network restored. Resuming stream.")
+                wasRunningBeforeNetworkLoss = false
+                if (lifecycleManager?.isAppInBackground == true && config?.backgroundExecution != true) {
+                    wasRunningBeforePaused = true
+                } else {
+                    start()
                 }
-                lastNetworkCapabilities = capabilities
-            } else if (!isAvailable) {
-                if (isRunning.get()) {
-                    Log.d(TAG, "Network lost. Hibernating.")
-                    wasRunningBeforeNetworkLoss = true
-                    isRunning.set(false)
-                    connectionAttemptVersion.incrementAndGet()
-                    performInternalCleanup()
+            } else if (isRunning.get() && lastNetworkCapabilities != null) {
+                val isWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                val isCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                
+                val lastWifi = lastNetworkCapabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ?: false
+                val lastCellular = lastNetworkCapabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ?: false
+                
+                if ((isWifi && !lastWifi) || (isCellular && !lastCellular)) {
+                    Log.d(TAG, "Network interface changed. Restarting stream.")
+                    restart()
                 }
-                lastNetworkCapabilities = null
             }
+            lastNetworkCapabilities = capabilities
+        } else if (!isAvailable) {
+            if (isRunning.get()) {
+                Log.d(TAG, "Network lost. Hibernating.")
+                wasRunningBeforeNetworkLoss = true
+                updateState(SseState.PAUSED)
+                isRunning.set(false)
+                connectionAttemptVersion.incrementAndGet()
+                performInternalCleanup()
+            }
+            lastNetworkCapabilities = null
         }
     }
 
-    private fun stopNetworkMonitoring() {
-        val callback = networkCallback ?: return
-        try {
-            val context = NitroModules.applicationContext
-            val connectivityManager = context?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            connectivityManager?.unregisterNetworkCallback(callback)
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to unregister network callback: ${e.message}")
-        }
-        networkCallback = null
-        lastNetworkCapabilities = null
-    }
-
-    /**
-     * Called when the app enters the foreground.
-     * Automatically resumes the stream if it was hibernated.
-     */
-    override fun onStart(owner: LifecycleOwner) {
-        isAppInBackground.set(false)
+    private fun handleAppForeground() {
         if (wasRunningBeforePaused) {
             Log.d(TAG, "App foregrounded. Resuming NitroSse stream.")
             wasRunningBeforePaused = false
@@ -277,154 +184,76 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         }
     }
 
-    /**
-     * Called when the app enters the background.
-     * Hibernates the connection to save battery and resources.
-     */
-    override fun onStop(owner: LifecycleOwner) {
-        isAppInBackground.set(true)
+    private fun handleAppBackground() {
         if (isRunning.get()) {
             if (config?.backgroundExecution == true) {
-                Log.d(TAG, "App backgrounded. backgroundExecution is true, keeping NitroSse connection alive.")
+                Log.d(TAG, "App backgrounded. keeping connection alive.")
                 return
             }
-            Log.d(TAG, "App backgrounded. Hibernating NitroSse connection.")
+            Log.d(TAG, "App backgrounded. Hibernating.")
             wasRunningBeforePaused = true
+            updateState(SseState.PAUSED)
             isRunning.set(false)
             connectionAttemptVersion.incrementAndGet()
-            sseHandler?.post {
+            sseDispatcher?.post {
                 performInternalCleanup()
             }
         }
     }
 
-    private fun pushEventToBuffer(event: SseEvent) {
-        val batchInterval = config?.batchingIntervalMs ?: 0.0
-        val bufferCapacity = config?.maxBufferSize?.toInt() ?: 1000
-
-        var shouldFlush = false
-        synchronized(eventBuffer) {
-            eventBuffer.add(event)
-            if (eventBuffer.size >= bufferCapacity) {
-                shouldFlush = true
-            }
-        }
-
-        sseHandler?.post {
-            if (batchInterval <= 0 || shouldFlush) {
-                sseHandler?.removeCallbacks(flushRunnable)
-                flushBufferToJs()
-            } else if (!isFlushPending.getAndSet(true)) {
-                sseHandler?.postDelayed(flushRunnable, batchInterval.toLong())
-            }
-        }
-    }
-
-    private fun flushBufferToJs() {
-        val eventsToEmit: Array<SseEvent>
-        synchronized(eventBuffer) {
-            if (eventBuffer.isEmpty()) {
-                isFlushPending.set(false)
-                return
-            }
-            eventsToEmit = eventBuffer.toTypedArray()
-            eventBuffer.clear()
-        }
-        isFlushPending.set(false)
-
-        onEventsCallback?.let { callback ->
-            Handler(Looper.getMainLooper()).post {
-                try {
-                    callback.invoke(eventsToEmit)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error invoking onEventsCallback: ${e.message}")
-                }
-            }
-        }
-    }
-
-    private fun parseJsonToAnyMap(data: String): AnyMap? {
-        return try {
-            val trimmed = data.trim()
-            if (trimmed.startsWith("{")) {
-                val jsonObject = JSONObject(trimmed)
-                val map = jsonObjectToMap(jsonObject)
-                AnyMap.fromMap(map, true)
-            } else {
-                // AnyMap represents a JS Object (Map). 
-                // If it's a JSON array or primitive, we currently don't support auto-parsing into AnyMap.
-                null
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to parse JSON: ${e.message}")
-            null
-        }
-    }
-
-    /**
-     * Manually set the last seen event ID. 
-     * This will be used as the 'Last-Event-ID' header on the next connection attempt.
-     */
     override fun setLastProcessedId(id: String) {
-        this.lastProcessedId = id
+        synchronized(this) {
+            this.lastProcessedId = id
+        }
     }
 
-    /**
-     * Dynamically update the headers for subsequent connection attempts.
-     */
     override fun updateHeaders(headers: Map<String, String>) {
         synchronized(this) {
             this.config?.let {
                 this.config = it.copy(headers = headers)
-                Log.d(TAG, "Headers updated manually")
             }
         }
     }
 
-    /**
-     * Provide current runtime statistics for the SSE connection.
-     *
-     * @return An SseStats snapshot with:
-     *  - the total bytes received (as Double),
-     *  - the total number of reconnects (as Double),
-     *  - the timestamp of the last error in milliseconds since epoch (nullable),
-     *  - the last error code or identifier (nullable).
-     */
     override fun getStats(): SseStats {
-        // getStats is called from JS thread, so we should sync with sseHandler thread
-        // or coordinate carefully. Since we need to return immediately, 
-        // using the state as-is is okay IF all updates happen on a single thread 
-        // and we use synchronized or @Volatile.
         synchronized(this) {
             return SseStats(
                 totalBytesReceived.get().toDouble(),
-                reconnectCount.toDouble(),
+                totalReconnectCount.get().toDouble(),
                 lastErrorTime,
                 lastErrorCode
             )
         }
     }
 
-    /**
-     * Start the SSE connection.
-     * This triggers the initial request and handles subsequent reconnections.
-     */
+    override fun getState(): SseState {
+        return currentState.get()
+    }
+
+    private fun updateState(newState: SseState) {
+        val oldState = currentState.getAndSet(newState)
+        if (oldState != newState && ::eventBuffer.isInitialized) {
+            eventBuffer.push(SseEvent(SseEventType.STATE, null, null, null, null, null, null, null, newState))
+        }
+    }
+
     override fun start() {
-        if (config == null) return
+        val currentConfig = synchronized(this) { config } ?: return
         if (!isRunning.compareAndSet(false, true)) return
         
         consecutiveAuthErrors.set(0)
         isDispatcherDestroyed = false
         val version = connectionAttemptVersion.incrementAndGet()
-        sseHandler?.post { 
-            backoffCounter = 0
+        updateState(SseState.CONNECTING)
+        sseDispatcher?.post { 
+            reconnectStrategy.reset()
             requestId = null
             performConnection(version) 
         }
     }
 
     private fun performConnection(version: Int) {
-        // Guard: connection attempt is discarded if client is stopped or a newer attempt is in progress
+        // Discard attempt if state has changed or a newer connection cycle was initiated
         if (!isRunning.get() || version != connectionAttemptVersion.get()) return
         
         val currentConfig = synchronized(this) { config } ?: return
@@ -434,18 +263,17 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
             val interceptorCompleted = AtomicBoolean(false)
             val timeoutMs = (currentConfig.connectionTimeoutMs ?: 15000.0).toLong()
 
-            // Concurrency Safeguard: Prevents JS from hanging the native state machine indefinitely.
-            // If the JS interceptor promise does not resolve within connectionTimeoutMs, we fail safely.
-            sseHandler?.postDelayed({
+            // Enforce timeout guard on JS onBeforeRequest promise to prevent connection hangs
+            sseDispatcher?.postDelayed({
                 if (interceptorCompleted.compareAndSet(false, true)) {
-                    handleInterceptorError(Exception("onBeforeRequest interceptor timed out after $timeoutMs ms"), version)
+                    handleInterceptorError(Exception("onBeforeRequest timed out"), version)
                 }
             }, timeoutMs)
 
             try {
                 interceptor.invoke().then { promise2 ->
                     promise2.then { newHeaders ->
-                        sseHandler?.post {
+                        sseDispatcher?.post {
                             if (!isRunning.get() || version != connectionAttemptVersion.get()) return@post
                             if (interceptorCompleted.compareAndSet(false, true)) {
                                 synchronized(this) {
@@ -457,84 +285,56 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
                             }
                         }
                     }.catch { error ->
-                        if (interceptorCompleted.compareAndSet(false, true)) {
-                            handleInterceptorError(error, version)
-                        }
+                        if (interceptorCompleted.compareAndSet(false, true)) handleInterceptorError(error, version)
                     }
                 }.catch { error ->
-                    if (interceptorCompleted.compareAndSet(false, true)) {
-                        handleInterceptorError(error, version)
-                    }
+                    if (interceptorCompleted.compareAndSet(false, true)) handleInterceptorError(error, version)
                 }
             } catch (e: Throwable) {
-                if (interceptorCompleted.compareAndSet(false, true)) {
-                    handleInterceptorError(e, version)
-                }
+                if (interceptorCompleted.compareAndSet(false, true)) handleInterceptorError(e, version)
             }
         } else {
             executeConnection(version)
         }
     }
 
-    /**
-     * Handles a failure from the request-level interceptor by emitting an ERROR event and scheduling a reconnect.
-     *
-     * Posts work onto the SSE handler that (if the connection attempt version is still current and streaming is running)
-     * pushes an ERROR SseEvent describing the interceptor failure and schedules performConnection(...) after a
-     * jittered retry delay derived from the current configuration.
-     *
-     * @param t The throwable from the interceptor failure, or null if unavailable.
-     * @param version Snapshot of connectionAttemptVersion used to ignore stale work. 
-     */
     private fun handleInterceptorError(t: Throwable?, version: Int) {
-        sseHandler?.post {
+        sseDispatcher?.post {
             if (!isRunning.get() || version != connectionAttemptVersion.get()) return@post
-            Log.e(TAG, "Request Interceptor Error: ${t?.message}")
-
-            // Note: We use string matching here because react-native-nitro-modules (as of 0.36.1)
-            // throws a generic std::runtime_error from C++ when the Dispatcher is destroyed.
-            // It does not provide a specific Exception class (like DispatcherDestroyedException) 
-            // that we can catch, so checking the message is currently the only workaround.
+            
             val isDispatcherDestroyedMsg = t?.message?.contains("Dispatcher has already been destroyed", ignoreCase = true) == true
             if (isDispatcherDestroyedMsg) {
                 Log.w(TAG, "JS Dispatcher destroyed. Stopping SSE stream.")
                 this@NitroSse.isDispatcherDestroyed = true
-                isRunning.set(false)
-                connectionAttemptVersion.incrementAndGet()
-                performInternalCleanup()
+                stopInternal()
                 return@post
             }
 
-            pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Interceptor Error: ${t?.message}", -1.0, null))
+            eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Interceptor Error: ${t?.message}", -1.0, null, null))
 
-            // Reconnect with delay
-            val currentJitterFactor = config?.jitterFactor ?: 0.5
-            val currentRetryInterval = (config?.retryIntervalMs ?: 1000.0).toLong()
-            val delay = (currentRetryInterval * (1.0 - currentJitterFactor + Random.nextDouble() * 2 * currentJitterFactor)).toLong()
-            sseHandler?.postDelayed({ if (isRunning.get()) performConnection(version) }, delay)
+            scheduleReconnect(true, version)
         }
     }
 
     private fun executeConnection(version: Int) {
         val currentConfig: SseConfig
         val currentLastId: String?
+        val oldRequestId: String?
+        val newRequestId = UUID.randomUUID().toString()
+        
         synchronized(this) {
             if (!isRunning.get() || config == null || version != connectionAttemptVersion.get()) return
             currentConfig = config!!
             currentLastId = lastProcessedId
+            
+            oldRequestId = requestId
+            requestId = newRequestId
+            
+            eventSource?.cancel()
+            eventSource = null
         }
         
-        // Report end for previous request if it was running
-        requestId?.let { 
-            NetworkInspector.reportResponseEnd(it, totalBytesReceived.get())
-            this.requestId = null
-        }
-        
-        eventSource?.cancel()
-        eventSource = null
-        
-        val newRequestId = UUID.randomUUID().toString()
-        this.requestId = newRequestId
+        oldRequestId?.let { NetworkInspector.reportResponseEnd(it, totalBytesReceived.get()) }
         
         val requestBuilder = Request.Builder()
             .url(currentConfig.url)
@@ -556,373 +356,226 @@ class NitroSse : HybridNitroSseSpec(), DefaultLifecycleObserver {
         val request = requestBuilder.build()
         NetworkInspector.reportRequestStart(newRequestId, request)
         
-        eventSource = EventSources.createFactory(client!!).newEventSource(request, sseListener)
+        val newEventSource = connectionHandler.createEventSource(client!!, request, newRequestId)
+        synchronized(this) { eventSource = newEventSource }
     }
 
-    private fun extractRetryAfterMillis(response: Response?): Long? {
-        val header = response?.header("Retry-After") ?: return null
-        return try {
-            header.toLong() * 1000L
-        } catch (e: NumberFormatException) {
-            response.headers.getDate("Retry-After")?.let {
-                val diff = it.time - System.currentTimeMillis()
-                if (diff > 0) diff else null
-            }
+    override fun connectionDidOpen(response: Response, reqId: String) {
+        sseDispatcher?.post {
+            if (reqId != requestId) return@post
+            consecutiveAuthErrors.set(0)
+            reconnectStrategy.reset()
+            updateState(SseState.OPEN)
+            eventBuffer.push(SseEvent(SseEventType.OPEN, null, null, null, null, null, response.code.toDouble(), null, null))
         }
     }
 
-    private val sseListener = object : EventSourceListener() {
-        /**
-         * Handles a successful SSE connection open by resetting reconnection/auth counters and emitting an OPEN event to the JS bridge.
-         *
-         * Synchronizes access when pushing the event and includes the HTTP response code in the emitted `SseEvent`.
-         *
-         * @param eventSource The EventSource instance that was opened.
-         * @param response The HTTP response received when the SSE connection was established; its status code is included in the emitted OPEN event.
-         */
-        override fun onOpen(eventSource: EventSource, response: Response) {
-            sseHandler?.post {
-                if (eventSource != this@NitroSse.eventSource) return@post
-                consecutiveAuthErrors.set(0)
-                backoffCounter = 0
-                currentReconnectAttempts = 0
-                synchronized(this@NitroSse) {
-                    pushEventToBuffer(SseEvent(SseEventType.OPEN, null, null, null, null, null, response.code.toDouble(), null))
-                }
-            }
-        }
-
-        /**
-         * Handles an incoming SSE message by validating the active stream, updating the last processed event id when present,
-         * and buffering a `MESSAGE` SseEvent for delivery to the JS bridge.
-         *
-         * @param eventSource The source that produced the event; ignored if it is not the currently active stream.
-         * @param id The event id; when non-empty it is stored as the last processed id.
-         * @param type Optional event type.
-         * @param data The event payload.
-         */
-        override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
-            sseHandler?.post {
-                if (eventSource != this@NitroSse.eventSource) return@post
+    override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, reqId: String) {
+        sseDispatcher?.post {
+            if (reqId != requestId) return@post
+            val currentConfig: SseConfig?
+            synchronized(this@NitroSse) {
                 if (!id.isNullOrEmpty()) {
                     this@NitroSse.lastProcessedId = id
                 }
-
-                val parsedData = if (config?.autoParseJSON == true) parseJsonToAnyMap(data) else null
-
-                synchronized(this@NitroSse) {
-                    pushEventToBuffer(SseEvent(SseEventType.MESSAGE, data, parsedData, id, type, null, 200.0, null))
-                }
+                currentConfig = this@NitroSse.config
             }
-        }
-
-        /**
-         * Handles an SSE connection failure: records error stats, reports the network failure, emits an appropriate ERROR event, and decides whether to stop or schedule a reconnect.
-         *
-         * Behavior by status code:
-         * - 401/403: if no `onBeforeRequest` interceptor is configured, emits an auth error and stops; otherwise increments an auth-retry counter, stops when the max is reached, or schedules a reconnect to allow token refresh.
-         * - 400 or 204: emits a fatal error and stops.
-         * - 429 or 503 with a valid `Retry-After`: emits an error describing the computed delay and retries after the server-specified delay plus jitter.
-         * - 429 without `Retry-After`: emits an error and stops.
-         * - Other or unknown codes: emits an error and schedules a reconnect using the configured backoff and jitter.
-         *
-         * Side effects: updates reconnect/last-error statistics, reports request failure to NetworkInspector, clears the active request id, pushes events into the internal buffer, may call `stop()` or schedule `performConnection(...)`.
-         *
-         * @param eventSource The EventSource instance that reported the failure.
-         * @param t The throwable that caused the failure, if any.
-         * @param response The HTTP response associated with the failure, if any.
-         */
-        override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
-            sseHandler?.post {
-                if (eventSource != this@NitroSse.eventSource) return@post
-                Log.e(TAG, "SSE Failure: ${t?.message}, Code: ${response?.code}")
-                if (!isRunning.get()) return@post
-                
-                val statusCode = response?.code ?: -1
-                
-                synchronized(this@NitroSse) {
-                    reconnectCount++
-                    lastErrorTime = System.currentTimeMillis().toDouble()
-                    lastErrorCode = t?.javaClass?.simpleName ?: statusCode.toString()
-                }
-                
-                requestId?.let { 
-                    NetworkInspector.reportRequestFailed(it, false)
-                    this@NitroSse.requestId = null
-                }
-
-                if (statusCode == 401 || statusCode == 403) {
-                    val currentConfig = synchronized(this@NitroSse) { config }
-                    if (currentConfig?.onBeforeRequest == null) {
-                        pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Auth Error ($statusCode) - No interceptor provided. Stopping.", statusCode.toDouble(), null))
-                        isRunning.set(false)
-                        connectionAttemptVersion.incrementAndGet()
-                        performInternalCleanup()
-                        return@post
-                    }
-
-                    val retries = consecutiveAuthErrors.incrementAndGet()
-                    if (retries >= maxAuthRetries) {
-                        pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Auth Error ($statusCode) - Retry limit reached ($maxAuthRetries). Stopping.", statusCode.toDouble(), null))
-                        isRunning.set(false)
-                        connectionAttemptVersion.incrementAndGet()
-                        performInternalCleanup()
-                        return@post
-                    }
-                    
-                    pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Auth Error ($statusCode) - Retry $retries/$maxAuthRetries. Refreshing token...", statusCode.toDouble(), null))
-                    scheduleReconnect(true)
-                    return@post
-                }
-
-                if (statusCode == 400) {
-                    pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Fatal Error ($statusCode). Stopping.", statusCode.toDouble(), null))
-                    isRunning.set(false)
-                    connectionAttemptVersion.incrementAndGet()
-                    performInternalCleanup()
-                    return@post
-                }
-
-                val retryAfterMillis = extractRetryAfterMillis(response)
-                if ((statusCode == 429 || statusCode == 503) && retryAfterMillis != null) {
-                    val jitter = (500 + Random.nextInt(1500)).toLong()
-                    val totalDelay = retryAfterMillis + jitter
-                    pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Retry-After received: ${totalDelay/1000}s", statusCode.toDouble(), totalDelay.toDouble()))
-                    sseHandler?.postDelayed({ 
-                        if (isRunning.get() && eventSource == this@NitroSse.eventSource) performConnection(connectionAttemptVersion.get()) 
-                    }, totalDelay)
-                    return@post
-                }
-
-                if (statusCode == 429) {
-                    pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Rate Limited (429) without Retry-After. Stopping.", 429.0, null))
-                    isRunning.set(false)
-                    connectionAttemptVersion.incrementAndGet()
-                    performInternalCleanup()
-                    return@post
-                }
-
-                if (statusCode == 204) {
-                    pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "No Content (204). Stopping.", 204.0, null))
-                    isRunning.set(false)
-                    connectionAttemptVersion.incrementAndGet()
-                    performInternalCleanup()
-                    return@post
-                }
-
-                pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, t?.message ?: "Link lost ($statusCode)", if (statusCode != -1) statusCode.toDouble() else null, null))
-                scheduleReconnect(true)
-            }
-        }
-
-        /**
-         * Handles the SSE stream being closed by the server.
-         *
-         * When the closed `eventSource` is the currently active stream and streaming is running,
-         * reports the response end to the network inspector with the total bytes received,
-         * clears the stored `requestId`, and schedules a reconnect that is treated as a normal (non-error) reconnect.
-         *
-         * @param eventSource The EventSource instance that was closed.
-         */
-        override fun onClosed(eventSource: EventSource) {
-            sseHandler?.post {
-                if (eventSource != this@NitroSse.eventSource) return@post
-                if (isRunning.get()) {
-                    requestId?.let { 
-                        NetworkInspector.reportResponseEnd(it, totalBytesReceived.get())
-                        this@NitroSse.requestId = null
-                    }
-                    scheduleReconnect(false)
-                }
-            }
-        }
-
-        /**
-         * Schedule a future reconnect attempt using configurable backoff, jitter, and attempt limits.
-         *
-         * If the configured maximum reconnect attempts is reached, emits an ERROR event and stops the stream.
-         * Otherwise computes a delay (exponential backoff when `isError` is true, simple retry interval when false),
-         * applies jitter, enforces a minimum delay of 1000 ms, increments reconnect counters, and posts a
-         * connection retry task to the SSE handler.
-         *
-         * @param isError True when the reconnect is triggered by an error; false for a normal/non-error reconnect.
-         */
-        private fun scheduleReconnect(isError: Boolean) {
-            val currentConfig = synchronized(this@NitroSse) { config } ?: return
-            val currentJitterFactor = currentConfig.jitterFactor ?: 0.5
-            val currentRetryInterval = (currentConfig.retryIntervalMs ?: 1000.0).toLong()
-            val currentMaxRetryInterval = (currentConfig.maxRetryIntervalMs ?: 30000.0).toLong()
-
-            val maxAttempts = (currentConfig.maxReconnectAttempts ?: -1.0).toInt()
-            if (maxAttempts != -1 && currentReconnectAttempts >= maxAttempts) {
-                Log.d(TAG, "Max reconnection attempts reached ($maxAttempts). Stopping.")
-                pushEventToBuffer(SseEvent(SseEventType.ERROR, null, null, null, null, "Max reconnection attempts reached ($maxAttempts).", null, null))
-                isRunning.set(false)
-                connectionAttemptVersion.incrementAndGet()
-                performInternalCleanup()
-                return
-            }
-
-            val reconnectDelay = if (isError) {
-                val base = Math.min(currentRetryInterval * (1 shl backoffCounter), currentMaxRetryInterval)
-                backoffCounter++
-                (base * (1.0 - currentJitterFactor + Random.nextDouble() * 2 * currentJitterFactor)).toLong()
-            } else {
-                (currentRetryInterval * (1.0 - currentJitterFactor + Random.nextDouble() * 2 * currentJitterFactor)).toLong()
-            }
-
-            currentReconnectAttempts++
-            val safeReconnectDelay = Math.max(reconnectDelay, 1000L)
-            sseHandler?.postDelayed({ 
-                if (isRunning.get()) performConnection(connectionAttemptVersion.get()) 
-            }, safeReconnectDelay)
+            val parsedData = if (currentConfig?.autoParseJSON == true) JsonUtils.parseJsonToAnyMap(data) else null
+            eventBuffer.push(SseEvent(SseEventType.MESSAGE, data, parsedData, id, type, null, 200.0, null, null))
         }
     }
 
-    /**
-     * Immediately emit any pending buffered events to the JS bridge.
-     */
+    override fun connectionDidFail(t: Throwable?, response: Response?, reqId: String) {
+        sseDispatcher?.post {
+            if (reqId != requestId || !isRunning.get()) return@post
+            val statusCode = response?.code ?: -1
+            
+            totalReconnectCount.incrementAndGet()
+            synchronized(this@NitroSse) {
+                lastErrorTime = System.currentTimeMillis().toDouble()
+                lastErrorCode = t?.javaClass?.simpleName ?: statusCode.toString()
+            }
+            
+            val currentRequestId = synchronized(this@NitroSse) {
+                val id = requestId
+                requestId = null
+                id
+            }
+            currentRequestId?.let { NetworkInspector.reportRequestFailed(it, false) }
+
+            if (statusCode == 401 || statusCode == 403) {
+                val currentConfig = synchronized(this@NitroSse) { config }
+                if (currentConfig?.onBeforeRequest == null) {
+                    eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Auth Error ($statusCode) - No interceptor provided. Stopping.", statusCode.toDouble(), null, null))
+                    updateState(SseState.FAILED)
+                    stopInternal()
+                    return@post
+                }
+                val retries = consecutiveAuthErrors.incrementAndGet()
+                if (retries >= maxAuthRetries) {
+                    eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Auth Error ($statusCode) - Retry limit reached ($maxAuthRetries). Stopping.", statusCode.toDouble(), null, null))
+                    updateState(SseState.FAILED)
+                    stopInternal()
+                    return@post
+                }
+                eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Auth Error ($statusCode) - Retry $retries/$maxAuthRetries. Refreshing token...", statusCode.toDouble(), null, null))
+                scheduleReconnect(true, connectionAttemptVersion.get())
+                return@post
+            }
+            
+            if (statusCode == 400) {
+                eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Fatal Error ($statusCode). Stopping.", statusCode.toDouble(), null, null))
+                updateState(SseState.FAILED)
+                stopInternal()
+                return@post
+            }
+
+            val retryAfterMillis = SseReconnectStrategy.extractRetryAfterMillis(response)
+            if ((statusCode == 429 || statusCode == 503) && retryAfterMillis != null) {
+                val jitter = (500 + Random.nextInt(1001)).toLong()
+                val totalDelay = retryAfterMillis + jitter
+                eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Retry-After received: ${totalDelay/1000}s", statusCode.toDouble(), totalDelay.toDouble(), null))
+                val currentAttemptVersion = connectionAttemptVersion.get()
+                updateState(SseState.RECONNECTING)
+                sseDispatcher?.postDelayed({ if (isRunning.get()) performConnection(currentAttemptVersion) }, totalDelay)
+                return@post
+            }
+
+            if (statusCode == 429) {
+                eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Rate Limited (429) without Retry-After. Stopping.", 429.0, null, null))
+                updateState(SseState.FAILED)
+                stopInternal()
+                return@post
+            }
+
+            if (statusCode == 204) {
+                eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "No Content (204). Stopping.", 204.0, null, null))
+                updateState(SseState.FAILED)
+                stopInternal()
+                return@post
+            }
+
+            val isTimeout = t is java.net.SocketTimeoutException || t is java.io.InterruptedIOException || t?.message?.contains("timeout", ignoreCase = true) == true
+            if (isTimeout) {
+                updateState(SseState.STALE)
+            }
+
+            eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, t?.message ?: "Link lost ($statusCode)", if (statusCode != -1) statusCode.toDouble() else null, null, null))
+            scheduleReconnect(true, connectionAttemptVersion.get())
+        }
+    }
+
+    override fun connectionDidClose(reqId: String) {
+        sseDispatcher?.post {
+            if (reqId != requestId || !isRunning.get()) return@post
+            val currentRequestId = synchronized(this@NitroSse) {
+                val id = requestId
+                requestId = null
+                id
+            }
+            currentRequestId?.let { NetworkInspector.reportResponseEnd(it, totalBytesReceived.get()) }
+            scheduleReconnect(false, connectionAttemptVersion.get())
+        }
+    }
+
+    private fun scheduleReconnect(isError: Boolean, attemptVersion: Int) {
+        if (reconnectStrategy.hasReachedMaxAttempts()) {
+            val maxAttempts = reconnectStrategy.currentReconnectAttempts
+            Log.d(TAG, "Max reconnection attempts reached ($maxAttempts). Stopping.")
+            eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Max reconnection attempts reached ($maxAttempts).", null, null, null))
+            updateState(SseState.FAILED)
+            stopInternal()
+            return
+        }
+        val safeReconnectDelay = reconnectStrategy.nextDelay(isError)
+        updateState(SseState.RECONNECTING)
+        sseDispatcher?.postDelayed({ if (isRunning.get()) performConnection(attemptVersion) }, safeReconnectDelay)
+    }
+
+    private fun stopInternal() {
+        isRunning.set(false)
+        connectionAttemptVersion.incrementAndGet()
+        performInternalCleanup()
+    }
+
     override fun flush() {
-        flushBufferToJs()
+        if (::eventBuffer.isInitialized) {
+            eventBuffer.flush()
+        }
     }
 
-    /**
-     * Restart the SSE connection by stopping and starting again.
-     */
     override fun restart() {
-        stop()
+        synchronized(this) { config } ?: return
+        stopInternal()
+        updateState(SseState.RECONNECTING)
         start()
     }
 
-    /**
-     * Indicates if the SSE connection is currently active or trying to connect.
-     */
     override fun isConnected(): Boolean {
         return isRunning.get()
     }
 
-    /**
-     * Stop the SSE connection and clear any pending reconnect timers.
-     */
     override fun stop() {
         isRunning.set(false)
         wasRunningBeforeNetworkLoss = false
         wasRunningBeforePaused = false
-        val version = connectionAttemptVersion.incrementAndGet() 
-        sseHandler?.post {
+        if (currentState.get() != SseState.FAILED) {
+            updateState(SseState.CLOSED)
+        }
+        connectionAttemptVersion.incrementAndGet() 
+        sseDispatcher?.post {
             performInternalCleanup()
         }
     }
 
     private fun performInternalCleanup() {
+        reconnectStrategy.reset()
         if (!isDispatcherDestroyed) {
-            flushBufferToJs()
+            if (::eventBuffer.isInitialized) eventBuffer.flush()
         } else {
-            synchronized(eventBuffer) { eventBuffer.clear() }
-            isFlushPending.set(false)
+            if (::eventBuffer.isInitialized) eventBuffer.clear()
         }
-        sseHandler?.removeCallbacks(flushRunnable)
-        backoffCounter = 0 
-        eventSource?.cancel()
-        eventSource = null
-        requestId?.let { 
-            NetworkInspector.reportResponseEnd(it, totalBytesReceived.get())
+        val currentRequestId = synchronized(this) {
+            eventSource?.cancel()
+            eventSource = null
+            val id = requestId
             requestId = null
+            id
         }
-        isFlushPending.set(false)
+        currentRequestId?.let { NetworkInspector.reportResponseEnd(it, totalBytesReceived.get()) }
     }
 
-    /**
-     * Clean up all resources, including background threads and lifecycle observers.
-     * This is called by Nitro when the HybridObject is being garbage collected or JS reloads.
-     */
     override fun dispose() {
         Log.d(TAG, "Disposing NitroSse instance and cleaning up resources...")
- 
+        
+        if (::eventBuffer.isInitialized) {
+            eventBuffer.clearCallback()
+        }
+        
         isRunning.set(false)
         connectionAttemptVersion.incrementAndGet()
         
-        stopNetworkMonitoring()
-
+        networkMonitor?.stop()
+        lifecycleManager?.stopObserving()
+        
         try {
-            eventSource?.cancel()
-            eventSource = null
-            requestId?.let { 
-                NetworkInspector.reportRequestFailed(it, true) 
+            val currentRequestId = synchronized(this) {
+                eventSource?.cancel()
+                eventSource = null
+                val id = requestId
                 requestId = null
+                id
             }
+            currentRequestId?.let { NetworkInspector.reportRequestFailed(it, true) }
         } catch (e: Exception) {
             Log.e(TAG, "Error during synchronous dispose: ${e.message}")
         }
-
-        if (hasSubscribedToLifecycle) {
-            Handler(Looper.getMainLooper()).post {
-                ProcessLifecycleOwner.get().lifecycle.removeObserver(this@NitroSse)
-            }
-            hasSubscribedToLifecycle = false
-        }
         
-        sseHandler?.removeCallbacksAndMessages(null)
-        sseHandlerThread?.quitSafely()
-        sseHandlerThread = null
-        sseHandler = null
+        sseDispatcher?.removeCallbacksAndMessages(null)
+        sseDispatcherThread?.quitSafely()
+        sseDispatcherThread = null
+        sseDispatcher = null
         
-        onEventsCallback = null
         super.dispose()
-    }
-}
-
-/**
- * Separates the network interception logic (counting bytes, intercepting SSE heartbeats) 
- * from the main NitroSse connection manager.
- */
-internal class HeartbeatNetworkInterceptor(
-    private val totalBytesReceived: AtomicLong,
-    private val onHeartbeat: () -> Unit
-) : Interceptor {
-    override fun intercept(chain: Interceptor.Chain): Response {
-        val request = chain.request()
-        val rid = request.tag(String::class.java)
-
-        val response = chain.proceed(request)
-
-        rid?.let {
-            NetworkInspector.reportResponseStart(it, request, response)
-        }
-
-        val responseBody = response.body
-        if (responseBody != null) {
-            val countingBody = object : ResponseBody() {
-                override fun contentType() = responseBody.contentType()
-                override fun contentLength() = responseBody.contentLength()
-                override fun source() = (object : okio.ForwardingSource(responseBody.source()) {
-                    private var isAtStartOfLine = true
-
-                    override fun read(sink: okio.Buffer, byteCount: Long): Long {
-                        val bufferOffset = sink.size
-                        val bytesRead = super.read(sink, byteCount)
-                        if (bytesRead != -1L) {
-                            totalBytesReceived.addAndGet(bytesRead)
-                            try {
-                                // Raw stream sniffing: SSE comments/heartbeats (lines starting with ':') are discarded
-                                // by OkHttp SSE parser. We scan raw bytes before parsing to trigger keep-alive watchdogs.
-                                for (i in 0 until bytesRead) {
-                                    val b = sink.get(bufferOffset + i)
-                                    if (isAtStartOfLine && b == ':'.code.toByte()) {
-                                        onHeartbeat()
-                                    }
-                                    isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
-                                }
-                            } catch (e: Exception) {
-                                // Silent fallback to prevent crashing the stream reader on random parse bugs
-                            }
-                        }
-                        return bytesRead
-                    }
-                }).buffer()
-            }
-            return response.newBuilder().body(countingBody).build()
-        }
-        return response
     }
 }

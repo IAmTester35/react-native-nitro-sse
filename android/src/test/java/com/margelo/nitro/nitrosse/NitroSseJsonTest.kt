@@ -5,12 +5,16 @@ import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 
+/**
+ * Unit tests verifying [JsonUtils] conversion logic between org.json structures
+ * and nested Kotlin primitives, maps, and arrays compatible with Nitro AnyMap.
+ */
 class NitroSseJsonTest {
     @Test
     fun testSimpleJsonObject() {
         val json = """{"name": "Nitro", "version": 2.5, "active": true, "nullVal": null}"""
         val jsonObject = JSONObject(json)
-        val map = NitroSse.jsonObjectToMap(jsonObject)
+        val map = JsonUtils.jsonObjectToMap(jsonObject)
 
         assertEquals("Nitro", map["name"])
         assertEquals(2.5, (map["version"] as Number).toDouble(), 0.0)
@@ -29,7 +33,7 @@ class NitroSseJsonTest {
             }
         }"""
         val jsonObject = JSONObject(json)
-        val map = NitroSse.jsonObjectToMap(jsonObject)
+        val map = JsonUtils.jsonObjectToMap(jsonObject)
 
         val user = map["user"] as Map<*, *>
         assertEquals(123.0, (user["id"] as Number).toDouble(), 0.0)
@@ -45,7 +49,7 @@ class NitroSseJsonTest {
             "scores": [1, 2, 3]
         }"""
         val jsonObject = JSONObject(json)
-        val map = NitroSse.jsonObjectToMap(jsonObject)
+        val map = JsonUtils.jsonObjectToMap(jsonObject)
 
         val tags = map["tags"] as List<*>
         assertEquals(3, tags.size)
@@ -67,7 +71,7 @@ class NitroSseJsonTest {
             }
         }"""
         val jsonObject = JSONObject(json)
-        val map = NitroSse.jsonObjectToMap(jsonObject)
+        val map = JsonUtils.jsonObjectToMap(jsonObject)
 
         val data = map["data"] as List<*>
         val firstItem = data[0] as Map<*, *>
@@ -82,7 +86,19 @@ class NitroSseJsonTest {
     fun testEmptyJson() {
         val json = "{}"
         val jsonObject = JSONObject(json)
-        val map = NitroSse.jsonObjectToMap(jsonObject)
+        val map = JsonUtils.jsonObjectToMap(jsonObject)
         assertTrue(map.isEmpty())
+    }
+
+    @Test
+    fun testDeeplyNestedJsonReturnsNull() {
+        val depth = 600
+        val sb = StringBuilder()
+        for (i in 0 until depth) sb.append("""{"a":""")
+        sb.append("1")
+        for (i in 0 until depth) sb.append("}")
+
+        val result = JsonUtils.parseJsonToAnyMap(sb.toString())
+        assertNull(result)
     }
 }

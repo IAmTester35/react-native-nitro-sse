@@ -11,8 +11,28 @@ export type HttpMethod = 'get' | 'post';
  * - `error`: Connection error or other failure.
  * - `close`: Connection closed (not typical for SSE, but used for cleanup).
  * - `heartbeat`: Ping/Keep-alive signal.
+ * - `state`: Connection state change.
  */
-export type SseEventType = 'open' | 'message' | 'error' | 'close' | 'heartbeat';
+export type SseEventType =
+  | 'open'
+  | 'message'
+  | 'error'
+  | 'close'
+  | 'heartbeat'
+  | 'state';
+
+/**
+ * State of the SSE connection.
+ */
+export type SseState =
+  | 'idle'
+  | 'connecting'
+  | 'open'
+  | 'stale'
+  | 'reconnecting'
+  | 'paused'
+  | 'closed'
+  | 'failed';
 
 /**
  * Configuration for the SSE connection.
@@ -184,6 +204,8 @@ export interface SseEvent {
   statusCode?: number;
   /** Server-requested retry delay in milliseconds. */
   retry?: number;
+  /** The current connection state (only available if type is 'state'). */
+  state?: SseState;
 }
 
 /**
@@ -245,4 +267,6 @@ export interface SseClient {
   setLastProcessedId(id: string): void;
   /** Manually inject a mock event into the stream (for testing/debugging). */
   injectMockEvent(event: Partial<SseEvent>): void;
+  /** Get current connection state. */
+  getState(): SseState;
 }
