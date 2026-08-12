@@ -23,6 +23,7 @@ describe('NitroSseModule Unit Tests', () => {
       setLastProcessedId: jest.fn(),
       getStats: jest.fn(),
       isConnected: jest.fn(),
+      getState: jest.fn().mockReturnValue('idle'),
       flush: jest.fn(),
       restart: jest.fn(),
     };
@@ -630,6 +631,41 @@ describe('NitroSseModule Unit Tests', () => {
         // 4. Stop mock -> should be disconnected
         NitroSseModule.stop();
         expect(NitroSseModule.isConnected()).toBe(false);
+      });
+    });
+
+    it('should track getState() and emit state events in replace mock mode', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const stateListener = jest.fn();
+
+        NitroSseModule.addEventListener('state', stateListener);
+        expect(NitroSseModule.getState()).toBe('idle');
+
+        NitroSseModule.setup({
+          url: 'http://localhost',
+          mock: {
+            mode: 'replace',
+            data: [{ type: 'message', data: 'hello' }],
+            eventsPerSecond: 100,
+          },
+        });
+
+        NitroSseModule.start();
+        expect(NitroSseModule.getState()).toBe('open');
+        expect(stateListener).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'state', state: 'connecting' })
+        );
+        expect(stateListener).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'state', state: 'open' })
+        );
+
+        jest.advanceTimersByTime(20);
+        expect(NitroSseModule.getState()).toBe('closed');
+        expect(stateListener).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'state', state: 'closed' })
+        );
       });
     });
 
