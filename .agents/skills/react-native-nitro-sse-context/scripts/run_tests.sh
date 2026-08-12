@@ -8,7 +8,7 @@ echo "🧪 Running react-native-nitro-sse Test Suite"
 echo "=================================================="
 
 # Move to workspace root
-cd "$(dirname "$0")/../../.."
+cd "$(dirname "$0")/../../../.."
 
 echo -e "\n1. Checking TypeScript Types..."
 yarn typecheck
