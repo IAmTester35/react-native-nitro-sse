@@ -28,6 +28,7 @@ export class NitroSseClient implements SseClient {
     if (this._mockState !== state) {
       this._mockState = state;
       const stateEvent: SseEvent = { type: 'state', state, statusCode: 200 };
+      this._legacyCallback?.([stateEvent]);
       this._emit('state', stateEvent);
     }
   }
@@ -221,6 +222,9 @@ export class NitroSseClient implements SseClient {
         }
 
         if (batch.length > 0) {
+          if (mode === 'replace') {
+            this._setMockState('open');
+          }
           // 1. Call legacy batch callback if provided
           this._legacyCallback?.(batch);
 

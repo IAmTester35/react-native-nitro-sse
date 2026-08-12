@@ -405,7 +405,7 @@ describe('NitroSseModule Unit Tests', () => {
         expect(openListener).toHaveBeenCalledWith(
           expect.objectContaining({ type: 'open', statusCode: 200 })
         );
-        expect(legacyCallback).toHaveBeenNthCalledWith(1, [
+        expect(legacyCallback).toHaveBeenCalledWith([
           expect.objectContaining({ type: 'open', statusCode: 200 }),
         ]);
 
