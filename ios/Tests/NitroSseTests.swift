@@ -361,11 +361,16 @@ class NitroSseTests: XCTestCase {
     class MockSseConnectionDelegate: SseConnectionDelegate {
         var didOpen = false
         var didClose = false
+        var failureCount = 0
+        var onFailure: ((Int) -> Void)?
         func connectionDidOpen(attemptVersion: Int) { didOpen = true }
         func connectionDidClose(attemptVersion: Int) { didClose = true }
         func connectionDidReceiveMessage(eventType: String, data: String, lastEventId: String, attemptVersion: Int) {}
         func connectionDidReceiveComment(_ comment: String, attemptVersion: Int) {}
-        func connectionDidFail(error: Error, attemptVersion: Int) {}
+        func connectionDidFail(error: Error, attemptVersion: Int) {
+            failureCount += 1
+            onFailure?(failureCount)
+        }
     }
 
     func testConnectionHandlerCreation() {
@@ -405,5 +410,52 @@ class NitroSseTests: XCTestCase {
         
         XCTAssertNotNil(eventSource)
         eventSource.stop()
+    }
+
+    func testConnectionHandlerDoesNotRunIndependentReconnectLoop() {
+        let config = SseConfig(
+            url: "http://127.0.0.1:1/events",
+            method: .get,
+            headers: [:],
+            body: nil,
+            backgroundExecution: false,
+            batchingIntervalMs: 0,
+            maxBufferSize: 1000,
+            connectionTimeoutMs: 500,
+            readTimeoutMs: 500,
+            retryIntervalMs: 1000,
+            maxRetryIntervalMs: 30000,
+            jitterFactor: 0.5,
+            maxReconnectAttempts: nil,
+            autoParseJSON: false,
+            monitorNetwork: false,
+            onBeforeRequest: nil,
+            mock: nil
+        )
+        let delegate = MockSseConnectionDelegate()
+        let firstFailure = expectation(description: "Initial connection failure is forwarded")
+        let duplicateFailure = expectation(description: "LDSwiftEventSource does not reconnect independently")
+        duplicateFailure.isInverted = true
+        delegate.onFailure = { count in
+            if count == 1 {
+                firstFailure.fulfill()
+            } else {
+                duplicateFailure.fulfill()
+            }
+        }
+
+        let eventSource = SseConnectionHandler.createEventSource(
+            url: URL(string: config.url)!,
+            config: config,
+            lastProcessedId: nil,
+            delegate: delegate,
+            attemptVersion: 1,
+            dispatcher: MockSseDispatcher()
+        )
+        defer { eventSource.stop() }
+
+        wait(for: [firstFailure], timeout: 1.0)
+        wait(for: [duplicateFailure], timeout: 2.5)
+        XCTAssertEqual(delegate.failureCount, 1)
     }
 }
