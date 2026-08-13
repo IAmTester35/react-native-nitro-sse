@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.4.1 (2026-08-13)
+
+### Fixes
+
+- **iOS**: Prevented duplicate reconnect loops by making Nitro SSE the sole retry owner while forwarding LDSwiftEventSource failures through the existing reconnect strategy.
+
 ## 2.4.0 (2026-08-12)
 
 ### Features
