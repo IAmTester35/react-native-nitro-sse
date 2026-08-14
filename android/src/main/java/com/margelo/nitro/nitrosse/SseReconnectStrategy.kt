@@ -59,6 +59,10 @@ class SseReconnectStrategy {
         return _currentReconnectAttempts.get() >= maxReconnectAttempts
     }
 
+    fun recordAttempt(): Int {
+        return _currentReconnectAttempts.incrementAndGet()
+    }
+
     fun reset() {
         backoffCounter = 0
         _currentReconnectAttempts.set(0)

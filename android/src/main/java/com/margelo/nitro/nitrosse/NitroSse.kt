@@ -343,10 +343,6 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         val requestBuilder = Request.Builder()
             .url(currentConfig.url)
             .header("Accept", "text/event-stream")
-            // Explicitly set identity encoding to prevent OkHttp from requesting gzip.
-            // If gzipped, HeartbeatNetworkInterceptor intercepts raw compressed bytes before decompression,
-            // corrupting byte-level comment scanning for keep-alive events (':').
-            .header("Accept-Encoding", "identity")
             .header("Cache-Control", "no-cache")
         
         currentLastId?.let { 
@@ -354,6 +350,11 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         }
 
         currentConfig.headers?.forEach { (k, v) -> requestBuilder.header(k, v) }
+
+        // Explicitly set identity encoding after custom headers to prevent OkHttp from requesting gzip.
+        // If gzipped, HeartbeatNetworkInterceptor intercepts raw compressed bytes before decompression,
+        // corrupting byte-level comment scanning for keep-alive events (':').
+        requestBuilder.header("Accept-Encoding", "identity")
 
         if (currentConfig.method == HttpMethod.POST) {
             val body = currentConfig.body?.toRequestBody("application/json".toMediaType()) ?: "".toRequestBody()
@@ -434,6 +435,13 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
 
             val retryAfterMillis = SseReconnectStrategy.extractRetryAfterMillis(response)
             if ((statusCode == 429 || statusCode == 503) && retryAfterMillis != null) {
+                if (reconnectStrategy.hasReachedMaxAttempts()) {
+                    val maxAttempts = reconnectStrategy.currentReconnectAttempts
+                    Log.d(TAG, "Max reconnection attempts reached ($maxAttempts). Stopping.")
+                    failAndStop("Max reconnection attempts reached ($maxAttempts).")
+                    return@post
+                }
+                reconnectStrategy.recordAttempt()
                 val jitter = (500 + Random.nextInt(1001)).toLong()
                 val totalDelay = retryAfterMillis + jitter
                 eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Retry-After received: ${totalDelay/1000}s", statusCode.toDouble(), totalDelay.toDouble(), null))

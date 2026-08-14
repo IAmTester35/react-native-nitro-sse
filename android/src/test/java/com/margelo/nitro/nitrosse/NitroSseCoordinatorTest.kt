@@ -261,22 +261,75 @@ class NitroSseCoordinatorTest {
         sse.start()
         drainLoopers()
         
-        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
-        reqIdField.isAccessible = true
-        val actualReqId = reqIdField.get(sse) as String
+        val clientField = NitroSse::class.java.getDeclaredField("client")
+        clientField.isAccessible = true
+        val client = clientField.get(sse) as okhttp3.OkHttpClient
+        val interceptor = client.networkInterceptors.filterIsInstance<HeartbeatNetworkInterceptor>().first()
         
-        val eventBufferField = NitroSse::class.java.getDeclaredField("eventBuffer")
-        eventBufferField.isAccessible = true
-        val buffer = eventBufferField.get(sse) as SseEventBuffer
-        
+        val onHeartbeatField = HeartbeatNetworkInterceptor::class.java.getDeclaredField("onHeartbeat")
+        onHeartbeatField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val onHeartbeat = onHeartbeatField.get(interceptor) as (String?) -> Unit
+
         // Simulates stale RID mismatch: heartbeat should not be pushed
         val staleRid = "stale-rid-999"
-        if (staleRid == actualReqId) {
-            buffer.push(SseEvent(SseEventType.HEARTBEAT, null, null, null, null, "keep-alive", null, null, null))
-        }
+        onHeartbeat(staleRid)
         sse.flush()
         drainLoopers()
         
         assertFalse(emittedEvents.any { it.type == SseEventType.HEARTBEAT })
+    }
+
+    @Test
+    fun testRetryAfterReconnectionStopsAtMaxAttempts() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig().copy(maxReconnectAttempts = 1.0)
+        
+        val emittedEvents = mutableListOf<SseEvent>()
+        sse.setup(config) { events ->
+            emittedEvents.addAll(events)
+        }
+        drainLoopers()
+        
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        
+        // Attempt 1: 429 with Retry-After (1 second) -> schedules 1st reconnect
+        var currentReqId = reqIdField.get(sse) as String
+        val response1 = Response.Builder()
+            .request(Request.Builder().url(config.url).build())
+            .protocol(Protocol.HTTP_1_1)
+            .code(429)
+            .message("Too Many Requests")
+            .header("Retry-After", "1")
+            .body("".toResponseBody(null))
+            .build()
+        sse.connectionDidFail(Exception("Rate Limited"), response1, currentReqId)
+        drainLoopers()
+        assertEquals(SseState.RECONNECTING, sse.getState())
+        
+        // Advance time to execute delayed reconnect (Retry-After 1000ms + jitter)
+        dispatcher.advanceTimeBy(3000)
+        drainLoopers()
+        
+        // Attempt 2: 429 with Retry-After (reaches maxReconnectAttempts = 1) -> stops
+        currentReqId = reqIdField.get(sse) as String
+        val response2 = Response.Builder()
+            .request(Request.Builder().url(config.url).build())
+            .protocol(Protocol.HTTP_1_1)
+            .code(429)
+            .message("Too Many Requests")
+            .header("Retry-After", "1")
+            .body("".toResponseBody(null))
+            .build()
+        sse.connectionDidFail(Exception("Rate Limited"), response2, currentReqId)
+        drainLoopers()
+        
+        // Max reconnection attempts (1) reached, stops scheduling and transitions to FAILED
+        assertFalse(sse.isConnected())
+        assertEquals(SseState.FAILED, sse.getState())
     }
 }
