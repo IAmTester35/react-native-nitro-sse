@@ -59,7 +59,7 @@ class SseConnectionHandler(private val delegate: SseConnectionDelegate) {
  */
 internal class HeartbeatNetworkInterceptor(
     private val totalBytesReceived: AtomicLong,
-    private val onHeartbeat: () -> Unit
+    private val onHeartbeat: (requestId: String?) -> Unit
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
@@ -91,7 +91,7 @@ internal class HeartbeatNetworkInterceptor(
                                     val bytes = scratch.snapshot().toByteArray()
                                     for (b in bytes) {
                                         if (isAtStartOfLine && b == ':'.code.toByte()) {
-                                            onHeartbeat()
+                                            onHeartbeat(rid)
                                         }
                                         isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
                                     }

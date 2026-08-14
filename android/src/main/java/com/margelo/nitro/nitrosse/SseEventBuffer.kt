@@ -1,9 +1,6 @@
 package com.margelo.nitro.nitrosse
 
 import android.util.Log
-import com.margelo.nitro.core.AnyMap
-import org.json.JSONArray
-import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**

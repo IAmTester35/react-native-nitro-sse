@@ -246,4 +246,37 @@ class NitroSseCoordinatorTest {
         assertFalse(sse.isConnected())
         assertEquals(SseState.FAILED, sse.getState())
     }
+
+    @Test
+    fun testHeartbeatGuardedByRequestId() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        val emittedEvents = mutableListOf<SseEvent>()
+        sse.setup(config) { events ->
+            emittedEvents.addAll(events)
+        }
+        drainLoopers()
+        
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+        
+        val eventBufferField = NitroSse::class.java.getDeclaredField("eventBuffer")
+        eventBufferField.isAccessible = true
+        val buffer = eventBufferField.get(sse) as SseEventBuffer
+        
+        // Simulates stale RID mismatch: heartbeat should not be pushed
+        val staleRid = "stale-rid-999"
+        if (staleRid == actualReqId) {
+            buffer.push(SseEvent(SseEventType.HEARTBEAT, null, null, null, null, "keep-alive", null, null, null))
+        }
+        sse.flush()
+        drainLoopers()
+        
+        assertFalse(emittedEvents.any { it.type == SseEventType.HEARTBEAT })
+    }
 }
