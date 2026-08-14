@@ -14,6 +14,7 @@
 
 ### Improvements
 
+- **TypeScript**: Refactored mock streaming engine into modular `SseDriver` strategies (`NativeDriver`, `MockReplaceDriver`, `MockInjectDriver`) and added support for the optional `state` property in `SseMockEvent`.
 - Cleaned up dead code, unused imports, and deduplicated logic across TypeScript, iOS, and Android.
 - Fixed source entrypoint and cleaned up published files in `package.json`.
 
