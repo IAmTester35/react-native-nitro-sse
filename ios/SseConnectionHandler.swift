@@ -1,6 +1,5 @@
 import Foundation
 import LDSwiftEventSource
-import NitroModules
 
 /// Delegate protocol for receiving lifecycle and stream events from `SseConnectionHandler`.
 protocol SseConnectionDelegate: AnyObject {
@@ -25,9 +24,9 @@ enum SseConnectionHandler {
     ) -> EventSource {
         let sessionConfig = URLSessionConfiguration.default
         let readTimeout = (config.readTimeoutMs ?? 300000.0) / 1000.0
-        let connectionTimeout = (config.connectionTimeoutMs ?? 15000.0) / 1000.0
+        // Use timeoutIntervalForRequest (resets on incoming chunks) rather than timeoutIntervalForResource.
+        // Setting timeoutIntervalForResource would hard-cap the total lifetime of persistent SSE streams.
         sessionConfig.timeoutIntervalForRequest = readTimeout
-        sessionConfig.timeoutIntervalForResource = connectionTimeout
         
         let handler = SseHandler(delegate: delegate, attemptVersion: attemptVersion, dispatcher: dispatcher)
         var esConfig = EventSource.Config(handler: handler, url: url)

@@ -181,6 +181,37 @@ class NitroSseCoordinatorTests: XCTestCase {
         sse.stop()
         dispatcher.executeAllPendingBlocks()
     }
+
+    func testCoordinatorHandlesRateLimit429WithoutRetryAfter() {
+        let dispatcher = MockSseDispatcher()
+        dispatcher.executeImmediately = false
+        
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        
+        var emittedEvents: [SseEvent] = []
+        try! sse.setup(config: config) { events in
+            emittedEvents.append(contentsOf: events)
+        }
+        dispatcher.executeAllPendingBlocks()
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+        
+        let error = NSError(domain: "NSURLErrorDomain", code: 429, userInfo: nil)
+        dispatcher.pendingDelayedBlocks.removeAll()
+        sse.connectionDidFail(error: error, attemptVersion: sse.connectionAttemptVersion)
+        sse.flush()
+        dispatcher.executeAllPendingBlocks()
+        
+        // HTTP 429 without Retry-After should fallback to exponential backoff retry rather than failing.
+        XCTAssertEqual(try! sse.getState(), .reconnecting)
+        let retryBlock = dispatcher.pendingDelayedBlocks.first(where: { $0.delay > 0 })
+        XCTAssertNotNil(retryBlock, "Should have scheduled an automatic reconnect with exponential backoff for 429")
+        XCTAssertTrue(emittedEvents.contains { $0.type == .error && $0.message?.contains("Rate Limited (429)") == true })
+        
+        sse.stop()
+        dispatcher.executeAllPendingBlocks()
+    }
     
     func testCoordinatorParsesMessage() {
         let dispatcher = MockSseDispatcher()
