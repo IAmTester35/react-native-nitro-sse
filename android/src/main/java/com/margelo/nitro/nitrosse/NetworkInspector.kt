@@ -3,7 +3,6 @@ package com.margelo.nitro.nitrosse
 import android.util.Log
 import okhttp3.Request
 import okhttp3.Response
-import java.util.UUID
 
 /**
  * Reports SSE connection events to the React Native DevTools Network inspector.
@@ -15,7 +14,6 @@ import java.util.UUID
 object NetworkInspector {
     private const val TAG = "NitroSseNetworkInspector"
     private var reporterClass: Class<*>? = null
-    private var isEnabledCached: Boolean = false
 
     init {
         try {

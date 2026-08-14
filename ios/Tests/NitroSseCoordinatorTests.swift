@@ -4,7 +4,7 @@ import NitroModules
 
 class NitroSseCoordinatorTests: XCTestCase {
     
-    private func createMockConfig() -> SseConfig {
+    private func createMockConfig(maxReconnectAttempts: Double = 2) -> SseConfig {
         return SseConfig(
             url: "http://localhost:9999/dummy",
             method: .get,
@@ -18,7 +18,7 @@ class NitroSseCoordinatorTests: XCTestCase {
             retryIntervalMs: 100,
             maxRetryIntervalMs: 30000,
             jitterFactor: 0.0,
-            maxReconnectAttempts: 2,
+            maxReconnectAttempts: maxReconnectAttempts,
             autoParseJSON: false,
             monitorNetwork: false,
             onBeforeRequest: nil,
@@ -181,6 +181,37 @@ class NitroSseCoordinatorTests: XCTestCase {
         sse.stop()
         dispatcher.executeAllPendingBlocks()
     }
+
+    func testCoordinatorHandlesRateLimit429WithoutRetryAfter() {
+        let dispatcher = MockSseDispatcher()
+        dispatcher.executeImmediately = false
+        
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        
+        var emittedEvents: [SseEvent] = []
+        try! sse.setup(config: config) { events in
+            emittedEvents.append(contentsOf: events)
+        }
+        dispatcher.executeAllPendingBlocks()
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+        
+        let error = NSError(domain: "NSURLErrorDomain", code: 429, userInfo: nil)
+        dispatcher.pendingDelayedBlocks.removeAll()
+        sse.connectionDidFail(error: error, attemptVersion: sse.connectionAttemptVersion)
+        sse.flush()
+        dispatcher.executeAllPendingBlocks()
+        
+        // HTTP 429 without Retry-After should fallback to exponential backoff retry rather than failing.
+        XCTAssertEqual(try! sse.getState(), .reconnecting)
+        let retryBlock = dispatcher.pendingDelayedBlocks.first(where: { $0.delay > 0 })
+        XCTAssertNotNil(retryBlock, "Should have scheduled an automatic reconnect with exponential backoff for 429")
+        XCTAssertTrue(emittedEvents.contains { $0.type == .error && $0.message?.contains("Rate Limited (429)") == true })
+        
+        sse.stop()
+        dispatcher.executeAllPendingBlocks()
+    }
     
     func testCoordinatorParsesMessage() {
         let dispatcher = MockSseDispatcher()
@@ -314,5 +345,46 @@ class NitroSseCoordinatorTests: XCTestCase {
         XCTAssertEqual(messages.count, 1, "Stale event should be ignored")
         
         sse.stop()
+    }
+
+    func testRetryAfterReconnectionStopsAtMaxAttempts() {
+        let dispatcher = MockSseDispatcher()
+        dispatcher.executeImmediately = false
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig(maxReconnectAttempts: 1.0)
+        
+        var emittedEvents: [SseEvent] = []
+        try! sse.setup(config: config) { events in
+            emittedEvents.append(contentsOf: events)
+        }
+        dispatcher.executeAllPendingBlocks()
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+        
+        let response1 = HTTPURLResponse(
+            url: URL(string: config.url)!,
+            statusCode: 429,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Retry-After": "1"]
+        )!
+        let error1 = NSError(domain: "NSURLErrorDomain", code: 429, userInfo: ["response": response1])
+        
+        // Attempt 1: 429 Retry-After -> schedules 1st reconnect
+        let version1 = sse.connectionAttemptVersion
+        sse.connectionDidFail(error: error1, attemptVersion: version1)
+        dispatcher.executeAllPendingBlocks()
+        XCTAssertEqual(try! sse.getState(), .reconnecting)
+        
+        // Execute delayed reconnect
+        dispatcher.executeDelayedBlocks()
+        dispatcher.executeAllPendingBlocks()
+        
+        // Attempt 2: 429 Retry-After (reaches maxReconnectAttempts = 1) -> stops
+        let version2 = sse.connectionAttemptVersion
+        sse.connectionDidFail(error: error1, attemptVersion: version2)
+        dispatcher.executeAllPendingBlocks()
+        
+        XCTAssertFalse(sse.isConnected())
+        XCTAssertEqual(try! sse.getState(), .failed)
     }
 }

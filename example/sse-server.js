@@ -13,6 +13,30 @@ const PORT = 33333;
  */
 let lastSeenAuthKey = null;
 
+function getValidRetryAfter(rawRetry) {
+  if (rawRetry === undefined) {
+    return { valid: true, value: '5' };
+  }
+  if (typeof rawRetry !== 'string' || Array.isArray(rawRetry)) {
+    return { valid: false };
+  }
+  if (/[\r\n\0\x00-\x1F\x7F]/.test(rawRetry)) {
+    return { valid: false };
+  }
+  const trimmed = rawRetry.trim();
+  if (!trimmed) {
+    return { valid: false };
+  }
+  if (/^\d+$/.test(trimmed)) {
+    return { valid: true, value: trimmed };
+  }
+  const parsedDate = Date.parse(trimmed);
+  if (!isNaN(parsedDate)) {
+    return { valid: true, value: trimmed };
+  }
+  return { valid: false };
+}
+
 const server = http.createServer((req, res) => {
   const parsedUrl = url.parse(req.url, true);
   const query = parsedUrl.query;
@@ -22,6 +46,26 @@ const server = http.createServer((req, res) => {
       parsedUrl.pathname
     }`
   );
+
+  if (parsedUrl.pathname === '/retry-after') {
+    const retryValidation = getValidRetryAfter(query.retry);
+    if (!retryValidation.valid) {
+      console.log('Invalid Retry-After query parameter. Sending 400 Bad Request.');
+      res.writeHead(400, {
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end('Bad Request: Invalid retry parameter');
+      return;
+    }
+    const retryAfter = retryValidation.value;
+    console.log(`Sending 429 with Retry-After: ${retryAfter}s`);
+    res.writeHead(429, {
+      'Retry-After': retryAfter,
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end('Error 429');
+    return;
+  }
 
   if (parsedUrl.pathname === '/events') {
     // 1. Handle custom status codes from query params
@@ -57,7 +101,16 @@ const server = http.createServer((req, res) => {
     }
 
     if (requestedStatus === 429 || requestedStatus === 503) {
-      const retryAfter = query.retry || '5';
+      const retryValidation = getValidRetryAfter(query.retry);
+      if (!retryValidation.valid) {
+        console.log('Invalid Retry-After query parameter. Sending 400 Bad Request.');
+        res.writeHead(400, {
+          'Access-Control-Allow-Origin': '*',
+        });
+        res.end('Bad Request: Invalid retry parameter');
+        return;
+      }
+      const retryAfter = retryValidation.value;
       console.log(
         `Sending ${requestedStatus} with Retry-After: ${retryAfter}s`
       );

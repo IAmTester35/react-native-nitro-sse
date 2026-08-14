@@ -443,37 +443,60 @@ class NitroSse: HybridNitroSseSpec {
         self.lifecycleManager?.cleanupBackgroundTask()
     }
 
+    private func failAndStop(message: String, statusCode: Double? = nil) {
+        dispatcher.assertOnQueue()
+        self.connectionAttemptVersion += 1
+        self.eventBuffer.push(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: message, statusCode: statusCode, retry: nil, state: nil))
+        self.updateState(.failed)
+        self.stopInternal()
+    }
+
     private func scheduleAutomaticReconnect(isError: Bool, attemptVersion: Int) {
         dispatcher.assertOnQueue()
-        eventSource?.stop()
+        guard isRunning, attemptVersion == self.connectionAttemptVersion else { return }
 
         if reconnectStrategy.hasReachedMaxAttempts() {
             let maxAttempts = Int(config?.maxReconnectAttempts ?? -1.0)
             print("[NitroSse] Max reconnection attempts reached (\(maxAttempts)). Stopping.")
-            self.eventBuffer.push(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Max reconnection attempts reached (\(maxAttempts)).", statusCode: nil, retry: nil, state: nil))
-            self.updateState(.failed)
-            self.stopInternal()
+            failAndStop(message: "Max reconnection attempts reached (\(maxAttempts)).")
             return
         }
 
+        // Increment connectionAttemptVersion before stopping eventSource to invalidate any in-flight
+        // or asynchronous onError/onClosed callbacks triggered during shutdown/teardown.
+        self.connectionAttemptVersion += 1
+        let newVersion = self.connectionAttemptVersion
         let safeDelay = reconnectStrategy.nextDelay(isError: isError)
         self.updateState(.reconnecting)
         eventSource?.stop()
         eventSource = nil
         dispatcher.asyncAfter(delay: safeDelay) { [weak self] in
-            guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
-            self.establishConnection(attemptVersion: attemptVersion)
+            guard let self = self, self.isRunning, newVersion == self.connectionAttemptVersion else { return }
+            self.establishConnection(attemptVersion: newVersion)
         }
     }
 
     private func scheduleAutomaticReconnectWithFixedDelay(_ delay: TimeInterval, attemptVersion: Int) {
         dispatcher.assertOnQueue()
+        guard isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+
+        if reconnectStrategy.hasReachedMaxAttempts() {
+            let maxAttempts = Int(config?.maxReconnectAttempts ?? -1.0)
+            print("[NitroSse] Max reconnection attempts reached (\(maxAttempts)). Stopping.")
+            failAndStop(message: "Max reconnection attempts reached (\(maxAttempts)).")
+            return
+        }
+        reconnectStrategy.recordAttempt()
+
+        // Increment connectionAttemptVersion to discard stale callbacks from previous cycle
+        self.connectionAttemptVersion += 1
+        let newVersion = self.connectionAttemptVersion
         eventSource?.stop()
         eventSource = nil
         self.updateState(.reconnecting)
         dispatcher.asyncAfter(delay: delay) { [weak self] in
-            guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
-            self.establishConnection(attemptVersion: attemptVersion)
+            guard let self = self, self.isRunning, newVersion == self.connectionAttemptVersion else { return }
+            self.establishConnection(attemptVersion: newVersion)
         }
     }
 }
@@ -566,26 +589,20 @@ extension NitroSse: SseConnectionDelegate {
             
             // HTTP 204 No Content indicates the server closed the stream intentionally without error.
             if statusCode == 204 {
-                self.eventBuffer.push(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "No Content (204). Stopping.", statusCode: 204, retry: nil, state: nil))
-                self.updateState(.failed)
-                self.stopInternal()
+                self.failAndStop(message: "No Content (204). Stopping.", statusCode: 204)
                 return
             }
 
             // HTTP 401/403 Auth errors trigger token refresh via onBeforeRequest interceptor up to maxAuthRetries.
             if statusCode == 401 || statusCode == 403 {
                 if self.config?.onBeforeRequest == nil {
-                    self.eventBuffer.push(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Auth Error (\(statusCode)) - No interceptor provided. Stopping.", statusCode: Double(statusCode), retry: nil, state: nil))
-                    self.updateState(.failed)
-                    self.stopInternal()
+                    self.failAndStop(message: "Auth Error (\(statusCode)) - No interceptor provided. Stopping.", statusCode: Double(statusCode))
                     return
                 }
 
                 self.consecutiveAuthErrors += 1
                 if self.consecutiveAuthErrors >= self.maxAuthRetries {
-                    self.eventBuffer.push(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Auth Error (\(statusCode)) - Retry limit reached (\(self.maxAuthRetries)). Stopping.", statusCode: Double(statusCode), retry: nil, state: nil))
-                    self.updateState(.failed)
-                    self.stopInternal()
+                    self.failAndStop(message: "Auth Error (\(statusCode)) - Retry limit reached (\(self.maxAuthRetries)). Stopping.", statusCode: Double(statusCode))
                     return
                 }
                 
@@ -596,9 +613,7 @@ extension NitroSse: SseConnectionDelegate {
 
             let isFatal = (statusCode == 400)
             if isFatal {
-                self.eventBuffer.push(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Fatal Error (\(statusCode)). Stopping.", statusCode: Double(statusCode), retry: nil, state: nil))
-                self.updateState(.failed)
-                self.stopInternal()
+                self.failAndStop(message: "Fatal Error (\(statusCode)). Stopping.", statusCode: Double(statusCode))
                 return
             }
 
@@ -612,10 +627,11 @@ extension NitroSse: SseConnectionDelegate {
                 return
             }
 
+            // HTTP 429 without Retry-After: Fallback to exponential backoff rather than stopping permanently,
+            // as rate limits are transient and recoverable.
             if statusCode == 429 {
-                self.eventBuffer.push(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Rate Limited (429) without Retry-After. Stopping.", statusCode: 429, retry: nil, state: nil))
-                self.updateState(.failed)
-                self.stopInternal()
+                self.eventBuffer.push(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Rate Limited (429). Retrying with backoff...", statusCode: 429, retry: nil, state: nil))
+                self.scheduleAutomaticReconnect(isError: true, attemptVersion: attemptVersion)
                 return
             }
 

@@ -52,6 +52,11 @@ class SseReconnectStrategy {
         guard maxReconnectAttempts != -1 else { return false }
         return currentReconnectAttempts >= maxReconnectAttempts
     }
+
+    /// Records an explicit reconnection attempt without altering the backoff exponent.
+    func recordAttempt() {
+        currentReconnectAttempts += 1
+    }
     
     /// Calculates the next reconnection delay in seconds (enforcing a minimum 1.0s floor).
     /// Exponential backoff is applied for errors (`isError == true`), while normal disconnects use the base interval with jitter.

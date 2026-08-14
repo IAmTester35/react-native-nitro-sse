@@ -11,10 +11,10 @@ class HeartbeatScanner {
     fun scan(bytes: ByteArray, length: Int) {
         for (i in 0 until length) {
             val b = bytes[i]
-            if (isAtStartOfLine && b == ':'.toByte()) {
+            if (isAtStartOfLine && b == ':'.code.toByte()) {
                 heartbeatCount++
             }
-            isAtStartOfLine = (b == '\n'.toByte() || b == '\r'.toByte())
+            isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
         }
     }
 }
