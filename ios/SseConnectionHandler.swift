@@ -31,6 +31,10 @@ enum SseConnectionHandler {
         
         let handler = SseHandler(delegate: delegate, attemptVersion: attemptVersion, dispatcher: dispatcher)
         var esConfig = EventSource.Config(handler: handler, url: url)
+        esConfig.connectionErrorHandler = { [weak handler] error in
+            handler?.onError(error: error)
+            return .shutdown
+        }
         esConfig.urlSessionConfiguration = sessionConfig
         esConfig.headers = config.headers ?? [:]
         
