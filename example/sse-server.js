@@ -23,6 +23,17 @@ const server = http.createServer((req, res) => {
     }`
   );
 
+  if (parsedUrl.pathname === '/retry-after') {
+    const retryAfter = query.retry || '5';
+    console.log(`Sending 429 with Retry-After: ${retryAfter}s`);
+    res.writeHead(429, {
+      'Retry-After': retryAfter,
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end('Error 429');
+    return;
+  }
+
   if (parsedUrl.pathname === '/events') {
     // 1. Handle custom status codes from query params
     const requestedStatus = parseInt(query.status) || 200;

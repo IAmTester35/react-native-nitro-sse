@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.4.2 (2026-08-14)
+
+### Fixes
+
+- **iOS**: Removed `timeoutIntervalForResource` constraint causing `URLSession` to abort SSE streams.
+- **iOS**: Guarded auto-reconnect with incremented attempt versions to eliminate duplicate reconnect storms from `.shutdown`.
+- **iOS**: Fixed initial `NWPathMonitor` status check falsely triggering an immediate stream restart.
+- **iOS**: Added exponential backoff fallback on HTTP 429 rate limit instead of terminating the stream.
+- **Android**: Added `Accept-Encoding: identity` to prevent raw Gzip byte scanning in heartbeat interceptor.
+- **Android**: Guarded heartbeat events by active request ID to prevent keep-alive leaks from closed sockets.
+- **Core**: Hardened reconnect versioning across Android and iOS to discard delayed callbacks from previous cycles.
+
+### Improvements
+
+- Cleaned up dead code, unused imports, and deduplicated logic across TypeScript, iOS, and Android.
+- Fixed source entrypoint and cleaned up published files in `package.json`.
+
 ## 2.4.1 (2026-08-13)
 
 ### Fixes
