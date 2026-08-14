@@ -13,29 +13,13 @@ import type {
 export class MockSseEngine {
   private _config: SseMockConfig;
   private _emitEvents: (events: SseEvent[]) => void;
-  private _mockIntervalId?: any;
+  private _mockIntervalId?: ReturnType<typeof setTimeout>;
   private _mockIndex: number = 0;
   private _mockState?: SseState;
 
   constructor(config: SseMockConfig, emitEvents: (events: SseEvent[]) => void) {
     this._config = config;
     this._emitEvents = emitEvents;
-  }
-
-  get isReplaceMode(): boolean {
-    return this._config.mode === 'replace';
-  }
-
-  get isInjectMode(): boolean {
-    return this._config.mode === 'inject';
-  }
-
-  get mode(): string {
-    return this._config.mode;
-  }
-
-  get eventsPerSecond(): number | undefined {
-    return this._config.eventsPerSecond;
   }
 
   /**
@@ -122,9 +106,9 @@ export class MockSseEngine {
           }
           if (mode === 'replace') {
             this._setMockState('closed');
+            const closeEvent: SseEvent = { type: 'close', statusCode: 200 };
+            this._emitEvents([closeEvent]);
           }
-          const closeEvent: SseEvent = { type: 'close', statusCode: 200 };
-          this._emitEvents([closeEvent]);
           return;
         }
       }
@@ -176,8 +160,25 @@ export class MockSseEngine {
         this._emitEvents(batch);
       }
 
-      const nextDelay = hasCustomDelay ? currentItem.delayMs! : intervalMs;
-      this._mockIntervalId = setTimeout(scheduleNext, nextDelay);
+      if (this._mockIndex >= data.length) {
+        if (loop && data.length > 0) {
+          const nextItem = data[0];
+          const nextDelay =
+            nextItem && typeof nextItem.delayMs === 'number'
+              ? nextItem.delayMs
+              : intervalMs;
+          this._mockIntervalId = setTimeout(scheduleNext, nextDelay);
+        } else {
+          this._mockIntervalId = setTimeout(scheduleNext, 0);
+        }
+      } else {
+        const nextItem = data[this._mockIndex];
+        const nextDelay =
+          nextItem && typeof nextItem.delayMs === 'number'
+            ? nextItem.delayMs
+            : intervalMs;
+        this._mockIntervalId = setTimeout(scheduleNext, nextDelay);
+      }
     };
 
     const firstItem = data[0];

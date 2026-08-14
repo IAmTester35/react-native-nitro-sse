@@ -882,5 +882,80 @@ describe('NitroSseModule Unit Tests', () => {
         NitroSseModule.stop();
       });
     });
+
+    it('should not emit close event when data is exhausted in inject mode', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const closeListener = jest.fn();
+        const messageListener = jest.fn();
+
+        NitroSseModule.addEventListener('close', closeListener);
+        NitroSseModule.addEventListener('message', messageListener);
+
+        const mockEvents = [{ type: 'message', data: 'inject-event-1' }];
+
+        NitroSseModule.setup({
+          url: 'http://localhost',
+          mock: {
+            mode: 'inject',
+            data: mockEvents,
+            eventsPerSecond: 10,
+          },
+        });
+
+        NitroSseModule.start();
+
+        // Advance past all mock events
+        jest.advanceTimersByTime(500);
+
+        expect(messageListener).toHaveBeenCalledTimes(1);
+        expect(closeListener).not.toHaveBeenCalled();
+
+        NitroSseModule.stop();
+      });
+    });
+
+    it('should cancel previous driver timer when setup is called multiple times', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const messageListener = jest.fn();
+
+        NitroSseModule.addEventListener('message', messageListener);
+
+        // Setup first mock configuration
+        NitroSseModule.setup({
+          url: 'http://localhost',
+          mock: {
+            mode: 'replace',
+            data: [{ type: 'message', data: 'first-config-event' }],
+            eventsPerSecond: 1,
+          },
+        });
+        NitroSseModule.start();
+
+        // Re-setup with new configuration without waiting for first timer
+        NitroSseModule.setup({
+          url: 'http://localhost',
+          mock: {
+            mode: 'replace',
+            data: [{ type: 'message', data: 'second-config-event' }],
+            eventsPerSecond: 1,
+          },
+        });
+        NitroSseModule.start();
+
+        jest.advanceTimersByTime(2000);
+
+        // First config event should not have fired because its driver was stopped on re-setup
+        expect(messageListener).toHaveBeenCalledTimes(1);
+        expect(messageListener).toHaveBeenLastCalledWith(
+          expect.objectContaining({ data: 'second-config-event' })
+        );
+
+        NitroSseModule.stop();
+      });
+    });
   });
 });

@@ -35,6 +35,7 @@ export class NitroSseClient implements SseClient {
   }
 
   setup(config: SseConfig, onEvent?: (events: SseEvent[]) => void): void {
+    this._driver?.stop();
     this._config = { ...config };
     this._legacyCallback = onEvent;
 
@@ -69,10 +70,12 @@ export class NitroSseClient implements SseClient {
       );
     }
 
-    // Wrap the native setup to dispatch events to typed listeners
-    this._native.setup(this._config, (events) => {
-      this._dispatchEvents(events);
-    });
+    // Wrap the native setup to dispatch events to typed listeners when native streaming is active
+    if (mockConfig?.mode !== 'replace') {
+      this._native.setup(this._config, (events) => {
+        this._dispatchEvents(events);
+      });
+    }
   }
 
   addEventListener(type: string, listener: SseListener): void {
