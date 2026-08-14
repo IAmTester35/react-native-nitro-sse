@@ -1,6 +1,6 @@
 import { NitroModules } from 'react-native-nitro-modules';
-import type { NitroSse } from './NitroSse.nitro';
 import { NitroSseClient } from './NitroSseClient';
+import type { NitroSse } from './NitroSse.nitro';
 import type { SseClient } from './SseInterface';
 
 export * from './SseInterface';

@@ -151,6 +151,8 @@ export interface SseMockEvent {
   retry?: number;
   /** Custom delay in milliseconds before this event is dispatched. */
   delayMs?: number;
+  /** The connection state if this event represents a state change. */
+  state?: SseState;
 }
 
 /**
