@@ -445,6 +445,7 @@ class NitroSse: HybridNitroSseSpec {
 
     private func failAndStop(message: String, statusCode: Double? = nil) {
         dispatcher.assertOnQueue()
+        self.connectionAttemptVersion += 1
         self.eventBuffer.push(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: message, statusCode: statusCode, retry: nil, state: nil))
         self.updateState(.failed)
         self.stopInternal()
@@ -478,6 +479,15 @@ class NitroSse: HybridNitroSseSpec {
     private func scheduleAutomaticReconnectWithFixedDelay(_ delay: TimeInterval, attemptVersion: Int) {
         dispatcher.assertOnQueue()
         guard isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+
+        if reconnectStrategy.hasReachedMaxAttempts() {
+            let maxAttempts = Int(config?.maxReconnectAttempts ?? -1.0)
+            print("[NitroSse] Max reconnection attempts reached (\(maxAttempts)). Stopping.")
+            failAndStop(message: "Max reconnection attempts reached (\(maxAttempts)).")
+            return
+        }
+        reconnectStrategy.recordAttempt()
+
         // Increment connectionAttemptVersion to discard stale callbacks from previous cycle
         self.connectionAttemptVersion += 1
         let newVersion = self.connectionAttemptVersion

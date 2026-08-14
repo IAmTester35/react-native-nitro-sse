@@ -28,6 +28,7 @@ enum SseConnectionHandler {
         // Setting timeoutIntervalForResource would hard-cap the total lifetime of persistent SSE streams.
         sessionConfig.timeoutIntervalForRequest = readTimeout
         
+        let connectionTimeout = (config.connectionTimeoutMs ?? 15000.0) / 1000.0
         let handler = SseHandler(delegate: delegate, attemptVersion: attemptVersion, dispatcher: dispatcher)
         var esConfig = EventSource.Config(handler: handler, url: url)
         esConfig.connectionErrorHandler = { [weak handler] error in
@@ -47,6 +48,7 @@ enum SseConnectionHandler {
         
         let es = EventSource(config: esConfig)
         handler.source = es
+        handler.startConnectionTimer(timeout: connectionTimeout)
         es.start()
         return es
     }
@@ -61,6 +63,7 @@ private class SseHandler: EventHandler {
     weak var source: EventSource?
     let attemptVersion: Int
     let dispatcher: SseDispatcher
+    private var isConnectedOrFinished: Bool = false
     
     init(delegate: SseConnectionDelegate, attemptVersion: Int, dispatcher: SseDispatcher) {
         self.delegate = delegate
@@ -68,8 +71,23 @@ private class SseHandler: EventHandler {
         self.dispatcher = dispatcher
     }
     
+    func startConnectionTimer(timeout: TimeInterval) {
+        guard timeout > 0 else { return }
+        dispatcher.asyncAfter(delay: timeout) { [weak self] in
+            guard let self = self, !self.isConnectedOrFinished, self.source != nil else { return }
+            self.isConnectedOrFinished = true
+            self.source?.stop()
+            self.source = nil
+            self.delegate?.connectionDidFail(
+                error: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut, userInfo: [NSLocalizedDescriptionKey: "Connection timed out"]),
+                attemptVersion: self.attemptVersion
+            )
+        }
+    }
+    
     func onOpened() {
         guard source != nil else { return }
+        isConnectedOrFinished = true
         dispatcher.async { [weak self] in
             guard let self = self else { return }
             self.delegate?.connectionDidOpen(attemptVersion: self.attemptVersion)
@@ -78,6 +96,7 @@ private class SseHandler: EventHandler {
     
     func onClosed() {
         guard source != nil else { return }
+        isConnectedOrFinished = true
         dispatcher.async { [weak self] in
             guard let self = self else { return }
             self.delegate?.connectionDidClose(attemptVersion: self.attemptVersion)
@@ -109,6 +128,7 @@ private class SseHandler: EventHandler {
     
     func onError(error: Error) {
         guard source != nil else { return }
+        isConnectedOrFinished = true
         dispatcher.async { [weak self] in
             guard let self = self else { return }
             self.delegate?.connectionDidFail(error: error, attemptVersion: self.attemptVersion)
