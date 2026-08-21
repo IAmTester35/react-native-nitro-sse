@@ -5,6 +5,7 @@ import type { SseClient } from './SseInterface';
 
 export * from './SseInterface';
 export * from './NitroSse.nitro';
+export * from './useNitroSse';
 
 /**
  * Creates a high-performance SSE client that supports typed event listeners (`addEventListener`) and legacy batching.
