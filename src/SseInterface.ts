@@ -81,6 +81,7 @@ export interface SseConfig {
   /**
    * Initial delay (in ms) for reconnection attempts.
    * Subsequent attempts use exponential backoff.
+   * Note: Native applies a minimum floor of 1000ms.
    * @default 1000
    */
   retryIntervalMs?: number;
@@ -102,8 +103,14 @@ export interface SseConfig {
    */
   maxReconnectAttempts?: number;
   /**
+   * Maximum number of retries when encountering HTTP 401/403 auth errors before stopping.
+   * @default 3
+   */
+  maxAuthRetries?: number;
+  /**
    * Whether to automatically parse message data as JSON in a background native thread.
-   * If true, and parsing succeeds, the result will be available in the 'parsedData' field.
+   * If true and data is a root JSON Object ('{...}'), the parsed result is available in 'parsedData'.
+   * Returns null for JSON arrays or primitives due to Nitro AnyMap object constraints.
    * @default false
    */
   autoParseJSON?: boolean;
@@ -251,6 +258,11 @@ export interface SseClient {
    */
   removeEventListener(type: string, listener: SseListener): void;
 
+  /**
+   * Unregister all listeners, optionally filtered by event type.
+   */
+  removeAllEventListeners(type?: string): void;
+
   /** Start the connection. */
   start(): void;
   /** Stop the connection. */
@@ -259,7 +271,10 @@ export interface SseClient {
   restart(): void;
   /** Force flush buffered events to JS. */
   flush(): void;
-  /** Check if active. */
+  /**
+   * Check if the client engine is currently running ('connecting', 'open', or 'reconnecting').
+   * Use `getState() === 'open'` to check if the stream is actively open and ready.
+   */
   isConnected(): boolean;
   /** Get stats. */
   getStats(): SseStats;
@@ -271,4 +286,6 @@ export interface SseClient {
   injectMockEvent(event: Partial<SseEvent>): void;
   /** Get current connection state. */
   getState(): SseState;
+  /** Explicitly dispose instance and release native threads/observers. */
+  dispose(): void;
 }

@@ -16,6 +16,7 @@ export class MockSseEngine {
   private _mockIntervalId?: ReturnType<typeof setTimeout>;
   private _mockIndex: number = 0;
   private _mockState?: SseState;
+  private _totalBytesReceived: number = 0;
 
   constructor(config: SseMockConfig, emitEvents: (events: SseEvent[]) => void) {
     this._config = config;
@@ -67,6 +68,7 @@ export class MockSseEngine {
       errorRate = 0,
     } = this._config;
     this._mockIndex = 0;
+    this._totalBytesReceived = 0;
 
     // Validate and normalize eventsPerSecond (must be a finite positive number, default to 1)
     let validatedEventsPerSecond = Number(eventsPerSecond);
@@ -154,31 +156,27 @@ export class MockSseEngine {
       }
 
       if (batch.length > 0) {
+        for (const ev of batch) {
+          const dataLen = ev.data ? ev.data.length : 0;
+          const evLen = ev.event ? ev.event.length : 0;
+          const idLen = ev.id ? ev.id.length : 0;
+          this._totalBytesReceived += Math.max(1, dataLen + evLen + idLen);
+        }
         if (mode === 'replace') {
           this._setMockState('open');
         }
         this._emitEvents(batch);
       }
 
-      if (this._mockIndex >= data.length) {
-        if (loop && data.length > 0) {
-          const nextItem = data[0];
-          const nextDelay =
-            nextItem && typeof nextItem.delayMs === 'number'
-              ? nextItem.delayMs
-              : intervalMs;
-          this._mockIntervalId = setTimeout(scheduleNext, nextDelay);
-        } else {
-          this._mockIntervalId = setTimeout(scheduleNext, 0);
-        }
-      } else {
-        const nextItem = data[this._mockIndex];
-        const nextDelay =
-          nextItem && typeof nextItem.delayMs === 'number'
-            ? nextItem.delayMs
-            : intervalMs;
-        this._mockIntervalId = setTimeout(scheduleNext, nextDelay);
-      }
+      const nextItem =
+        this._mockIndex < data.length ? data[this._mockIndex] : data[0];
+      const nextDelay =
+        this._mockIndex >= data.length && !loop
+          ? 0
+          : typeof nextItem?.delayMs === 'number'
+          ? nextItem.delayMs
+          : intervalMs;
+      this._mockIntervalId = setTimeout(scheduleNext, nextDelay);
     };
 
     const firstItem = data[0];
@@ -230,21 +228,13 @@ export class MockSseEngine {
 
   getStats(): SseStats {
     return {
-      totalBytesReceived: this._mockIndex * 150,
+      totalBytesReceived: this._totalBytesReceived,
       reconnectCount: 0,
     };
   }
 
   getState(): SseState {
     return this._mockState ?? 'idle';
-  }
-
-  resetState(): void {
-    this._mockState = undefined;
-    if (this._mockIntervalId) {
-      clearTimeout(this._mockIntervalId);
-      this._mockIntervalId = undefined;
-    }
   }
 
   injectEvent(event: Partial<SseEvent>): void {

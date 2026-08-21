@@ -26,6 +26,7 @@ describe('NitroSseModule Unit Tests', () => {
       getState: jest.fn().mockReturnValue('idle'),
       flush: jest.fn(),
       restart: jest.fn(),
+      dispose: jest.fn(),
     };
 
     (NitroModules.createHybridObject as jest.Mock).mockReturnValue(mockNative);
@@ -955,6 +956,179 @@ describe('NitroSseModule Unit Tests', () => {
         );
 
         NitroSseModule.stop();
+      });
+    });
+
+    it('should support dispose() to cleanup listeners and call native dispose', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const messageListener = jest.fn();
+
+        NitroSseModule.addEventListener('message', messageListener);
+        NitroSseModule.setup({ url: 'http://localhost' });
+
+        NitroSseModule.dispose();
+        expect(mockNative.dispose).toHaveBeenCalled();
+      });
+    });
+
+    it('should track headers and lastProcessedId in replace mock mode', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+
+        NitroSseModule.setup({
+          url: 'http://localhost',
+          mock: {
+            mode: 'replace',
+            data: [{ type: 'message', data: 'mock-1' }],
+          },
+        });
+
+        NitroSseModule.updateHeaders({ Authorization: 'Bearer token123' });
+        NitroSseModule.setLastProcessedId('event-999');
+
+        expect(NitroSseModule.getState()).toBe('idle');
+      });
+    });
+
+    it('should route custom events to both custom listener and generic message listener', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const genericMessageListener = jest.fn();
+        const customListener = jest.fn();
+
+        NitroSseModule.addEventListener('message', genericMessageListener);
+        NitroSseModule.addEventListener('custom_notification', customListener);
+
+        let nativeCallback: any;
+        mockNative.setup.mockImplementation((_config: any, cb: any) => {
+          nativeCallback = cb;
+        });
+
+        NitroSseModule.setup({ url: 'http://localhost' });
+
+        // Trigger custom event
+        nativeCallback([
+          {
+            type: 'message',
+            event: 'custom_notification',
+            data: '{"id":1}',
+            id: 'evt-1',
+          },
+        ]);
+
+        expect(customListener).toHaveBeenCalledTimes(1);
+        expect(genericMessageListener).toHaveBeenCalledTimes(1);
+
+        // Trigger normal message event
+        nativeCallback([
+          {
+            type: 'message',
+            event: 'message',
+            data: '{"id":2}',
+            id: 'evt-2',
+          },
+        ]);
+
+        expect(customListener).toHaveBeenCalledTimes(1);
+        expect(genericMessageListener).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    it('should support removeEventListener and removeAllEventListeners', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const listenerA = jest.fn();
+        const listenerB = jest.fn();
+
+        NitroSseModule.addEventListener('message', listenerA);
+        NitroSseModule.addEventListener('message', listenerB);
+
+        let nativeCallback: any;
+        mockNative.setup.mockImplementation((_config: any, cb: any) => {
+          nativeCallback = cb;
+        });
+        NitroSseModule.setup({ url: 'http://localhost' });
+
+        NitroSseModule.removeEventListener('message', listenerA);
+        nativeCallback([{ type: 'message', data: 'hello' }]);
+
+        expect(listenerA).not.toHaveBeenCalled();
+        expect(listenerB).toHaveBeenCalledTimes(1);
+
+        NitroSseModule.removeAllEventListeners('message');
+        nativeCallback([{ type: 'message', data: 'world' }]);
+
+        expect(listenerB).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('should not dispatch events to listeners after dispose() is called', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+        const messageListener = jest.fn();
+
+        NitroSseModule.addEventListener('message', messageListener);
+
+        let nativeCallback: any;
+        mockNative.setup.mockImplementation((_config: any, cb: any) => {
+          nativeCallback = cb;
+        });
+        NitroSseModule.setup({ url: 'http://localhost' });
+
+        NitroSseModule.dispose();
+
+        if (nativeCallback) {
+          nativeCallback([{ type: 'message', data: 'late event' }]);
+        }
+
+        expect(messageListener).not.toHaveBeenCalled();
+      });
+    });
+
+    it('should accurately calculate totalBytesReceived in MockReplaceDriver', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+
+        const payload = 'test payload data';
+        NitroSseModule.setup({
+          url: 'http://localhost',
+          mock: {
+            mode: 'replace',
+            data: [{ type: 'message', data: payload, event: 'update' }],
+            eventsPerSecond: 10,
+          },
+        });
+        NitroSseModule.start();
+
+        jest.advanceTimersByTime(200);
+
+        const stats = NitroSseModule.getStats();
+        expect(stats.totalBytesReceived).toBeGreaterThanOrEqual(payload.length);
+        NitroSseModule.stop();
+      });
+    });
+
+    it('should pass maxAuthRetries parameter to native setup', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+
+        NitroSseModule.setup({
+          url: 'http://localhost',
+          maxAuthRetries: 5,
+        });
+
+        expect(mockNative.setup).toHaveBeenCalledWith(
+          expect.objectContaining({ maxAuthRetries: 5 }),
+          expect.any(Function)
+        );
       });
     });
   });

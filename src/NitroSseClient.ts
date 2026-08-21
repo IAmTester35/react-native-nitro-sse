@@ -89,6 +89,14 @@ export class NitroSseClient implements SseClient {
     this._listeners.get(type)?.delete(listener);
   }
 
+  removeAllEventListeners(type?: string): void {
+    if (type) {
+      this._listeners.delete(type);
+    } else {
+      this._listeners.clear();
+    }
+  }
+
   private _emit(type: string, event: SseEvent): void {
     const listeners = this._listeners.get(type);
     if (listeners) {
@@ -150,5 +158,11 @@ export class NitroSseClient implements SseClient {
 
   injectMockEvent(event: Partial<SseEvent>): void {
     this._driver.injectMockEvent(event);
+  }
+
+  dispose(): void {
+    this._listeners.clear();
+    this._legacyCallback = undefined;
+    this._driver?.dispose();
   }
 }
