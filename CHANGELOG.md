@@ -1,5 +1,28 @@
 # Changelog
 
+## 2.5.0 (2026-08-18)
+
+### Features
+
+- **React**: Added `useNitroSse` hook for lifecycle management and auto-cleanup.
+- **Core**: Added `dispose()`, `removeAllEventListeners(type?)`, and `maxAuthRetries` option.
+- **Android**: Included SSE comment text in heartbeat event payload.
+
+### Fixes
+
+- **Core**: Halted reconnect attempts on fatal 4xx HTTP errors (404, 405, 410, 422).
+- **Core**: Prevented redundant state dispatches during synchronous `dispose()`.
+- **iOS**: Fixed duplicate `Last-Event-ID` header injection and synchronized state transitions on dispatcher queue.
+- **Android**: Fallback to exponential backoff on HTTP 429 missing `Retry-After`.
+- **Android**: Dispatched buffer events off the UI thread to prevent jank.
+
+### Improvements
+
+- **TypeScript**: Improved byte metrics tracking in `MockSseEngine` and state handling in `MockReplaceDriver`.
+- **Native (iOS/Android)**: Hardened lifecycle observer registration and thread safety.
+- **Android**: Cached DevTools reflection lookups in `NetworkInspector`.
+- Deduplicated native helpers and reduced bundle size.
+
 ## 2.4.2 (2026-08-14)
 
 ### Fixes
