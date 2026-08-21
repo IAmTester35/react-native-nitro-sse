@@ -165,7 +165,7 @@ class NitroSseLogicTest {
         assertTrue("Explicit maxReconnectAttempts = -1 should be preserved", !strategy.hasReachedMaxAttempts())
 
         val dispatcher = TestSseDispatcher()
-        val buffer = SseEventBuffer(onFlush = {}, dispatcher = dispatcher, mainDispatcher = dispatcher)
+        val buffer = SseEventBuffer(onFlush = {}, dispatcher = dispatcher)
         buffer.configure(batchingIntervalMs = Double.NaN, maxBufferSize = -10)
         val mockEvent = SseEvent(SseEventType.MESSAGE, "test", null, "1", "message", null, 200.0, null, null)
         buffer.push(mockEvent)
@@ -197,7 +197,7 @@ class NitroSseLogicTest {
         val dispatcher = TestSseDispatcher()
         val buffer = SseEventBuffer(onFlush = { events ->
             flushedBatches.add(events)
-        }, dispatcher = dispatcher, mainDispatcher = dispatcher)
+        }, dispatcher = dispatcher)
 
         buffer.configure(batchingIntervalMs = 10000.0, maxBufferSize = 3)
 
@@ -222,7 +222,7 @@ class NitroSseLogicTest {
         
         val buffer = SseEventBuffer(onFlush = { events ->
             receivedEvents += events.size
-        }, dispatcher = dispatcher, mainDispatcher = dispatcher)
+        }, dispatcher = dispatcher)
         
         buffer.configure(batchingIntervalMs = 50.0, maxBufferSize = 10)
         
@@ -245,7 +245,7 @@ class NitroSseLogicTest {
         val dispatcher = TestSseDispatcher()
         val buffer = SseEventBuffer(onFlush = {
             didFlush = true
-        }, dispatcher = dispatcher, mainDispatcher = dispatcher)
+        }, dispatcher = dispatcher)
 
         buffer.configure(batchingIntervalMs = 10000.0, maxBufferSize = 5)
 
@@ -266,7 +266,7 @@ class NitroSseLogicTest {
         val dispatcher = TestSseDispatcher()
         val buffer = SseEventBuffer(onFlush = {
             flushedCount++
-        }, dispatcher = dispatcher, mainDispatcher = dispatcher)
+        }, dispatcher = dispatcher)
 
         buffer.configure(batchingIntervalMs = 0.0, maxBufferSize = 1000)
 
@@ -282,7 +282,7 @@ class NitroSseLogicTest {
         var flushedCount = 0
         val buffer = SseEventBuffer(onFlush = {
             flushedCount++
-        }, dispatcher = null, mainDispatcher = null)
+        }, dispatcher = null)
 
         buffer.configure(batchingIntervalMs = 1000.0, maxBufferSize = 2)
 
@@ -299,7 +299,7 @@ class NitroSseLogicTest {
         val dispatcher = TestSseDispatcher()
         val buffer = SseEventBuffer(onFlush = { events ->
             totalFlushedEvents += events.size
-        }, dispatcher = dispatcher, mainDispatcher = dispatcher)
+        }, dispatcher = dispatcher)
 
         buffer.configure(batchingIntervalMs = 0.0, maxBufferSize = 100)
 

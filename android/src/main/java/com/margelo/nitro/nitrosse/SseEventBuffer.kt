@@ -7,12 +7,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Thread-safe event buffer that accumulates incoming SSE events and flushes them in batches.
  *
  * Batching reduces cross-bridge serialization calls to the JavaScript engine during high-frequency
- * streaming, while ensuring events are delivered on the main UI thread via [mainDispatcher].
+ * streaming, executing directly on the background [dispatcher] to prevent blocking the Android Main UI thread.
  */
 class SseEventBuffer(
     onFlush: (Array<SseEvent>) -> Unit,
-    private val dispatcher: SseDispatcher?,
-    private val mainDispatcher: SseDispatcher? = null
+    private val dispatcher: SseDispatcher?
 ) {
     @Volatile
     private var onFlush: (Array<SseEvent>) -> Unit = onFlush
@@ -74,18 +73,10 @@ class SseEventBuffer(
             isFlushPending.set(false)
         }
 
-        mainDispatcher?.post {
-            try {
-                onFlush(eventsToEmit)
-            } catch (e: Exception) {
-                Log.e("SseEventBuffer", "Error invoking onFlush: ${e.message}")
-            }
-        } ?: run {
-            try {
-                onFlush(eventsToEmit)
-            } catch (e: Exception) {
-                Log.e("SseEventBuffer", "Error invoking onFlush (fallback): ${e.message}")
-            }
+        try {
+            onFlush(eventsToEmit)
+        } catch (e: Exception) {
+            Log.e("SseEventBuffer", "Error invoking onFlush: ${e.message}")
         }
     }
 

@@ -55,11 +55,11 @@ class SseConnectionHandler(private val delegate: SseConnectionDelegate) {
  *
  * Scans the raw response stream before OkHttp's EventSource parser runs, because OkHttp
  * discards SSE comment lines (`:`). Sniffing raw bytes at the network layer allows detecting
- * keep-alive signals without modifying the SSE parser interface.
+ * keep-alive signals and extracting comment payloads without modifying the SSE parser interface.
  */
 internal class HeartbeatNetworkInterceptor(
     private val totalBytesReceived: AtomicLong,
-    private val onHeartbeat: (requestId: String?) -> Unit
+    private val onHeartbeat: (requestId: String?, comment: String) -> Unit
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
@@ -80,6 +80,8 @@ internal class HeartbeatNetworkInterceptor(
                 private val bufferedSource by lazy {
                     (object : ForwardingSource(responseBody.source()) {
                         private var isAtStartOfLine = true
+                        private var isReadingComment = false
+                        private val commentBuffer = java.io.ByteArrayOutputStream()
 
                         override fun read(sink: Buffer, byteCount: Long): Long {
                             val scratch = Buffer()
@@ -87,13 +89,23 @@ internal class HeartbeatNetworkInterceptor(
                             if (bytesRead != -1L) {
                                 totalBytesReceived.addAndGet(bytesRead)
                                 try {
-                                    // Scan raw byte buffer for leading ':' character to trigger heartbeat events before OkHttp discards comments
                                     val bytes = scratch.snapshot().toByteArray()
                                     for (b in bytes) {
-                                        if (isAtStartOfLine && b == ':'.code.toByte()) {
-                                            onHeartbeat(rid)
+                                        val isNewline = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
+                                        if (isReadingComment) {
+                                            if (isNewline) {
+                                                isReadingComment = false
+                                                val commentText = commentBuffer.toString("UTF-8").trimStart()
+                                                commentBuffer.reset()
+                                                onHeartbeat(rid, commentText)
+                                            } else {
+                                                commentBuffer.write(b.toInt())
+                                            }
+                                        } else if (isAtStartOfLine && b == ':'.code.toByte()) {
+                                            isReadingComment = true
+                                            commentBuffer.reset()
                                         }
-                                        isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
+                                        isAtStartOfLine = isNewline
                                     }
                                 } catch (e: Exception) {
                                     // Swallow byte scanning errors to prevent stream reader failure if buffer inspection fails

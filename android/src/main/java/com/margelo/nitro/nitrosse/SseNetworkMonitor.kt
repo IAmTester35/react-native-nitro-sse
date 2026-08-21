@@ -38,17 +38,20 @@ class SseNetworkMonitor(
             }
 
             val callback = object : ConnectivityManager.NetworkCallback() {
+                private fun dispatchChange(isAvailable: Boolean, capabilities: NetworkCapabilities?) {
+                    dispatcher?.post { onChange(isAvailable, capabilities) } ?: onChange(isAvailable, capabilities)
+                }
+
                 override fun onAvailable(network: Network) {
-                    val capabilities = connectivityManager.getNetworkCapabilities(network)
-                    dispatcher?.post { onChange(true, capabilities) } ?: onChange(true, capabilities)
+                    dispatchChange(true, connectivityManager.getNetworkCapabilities(network))
                 }
 
                 override fun onLost(network: Network) {
-                    dispatcher?.post { onChange(false, null) } ?: onChange(false, null)
+                    dispatchChange(false, null)
                 }
 
                 override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-                    dispatcher?.post { onChange(true, capabilities) } ?: onChange(true, capabilities)
+                    dispatchChange(true, capabilities)
                 }
             }
 

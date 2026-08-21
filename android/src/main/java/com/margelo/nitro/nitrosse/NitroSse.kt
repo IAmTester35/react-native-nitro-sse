@@ -41,7 +41,6 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     private var isDispatcherDestroyed = false
     private var wasRunningBeforePaused = false
     private val consecutiveAuthErrors = AtomicInteger(0)
-    private val maxAuthRetries = 3
     
     private var sseDispatcherThread: android.os.HandlerThread? = null
     internal var sseDispatcher: SseDispatcher? = null
@@ -65,6 +64,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
 
     companion object {
         private const val TAG = "NitroSse"
+        private const val DEFAULT_MAX_AUTH_RETRIES = 3
     }
 
     override fun setup(config: SseConfig, onEvent: (events: Array<SseEvent>) -> Unit) {
@@ -77,7 +77,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             }
 
             if (!::eventBuffer.isInitialized) {
-                eventBuffer = SseEventBuffer(onEvent, sseDispatcher, mainDispatcher)
+                eventBuffer = SseEventBuffer(onEvent, sseDispatcher)
             } else {
                 eventBuffer.setCallback(onEvent)
             }
@@ -94,11 +94,11 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 val builder = OkHttpClient.Builder()
                     .connectTimeout((config.connectionTimeoutMs ?: 15000.0).toLong(), TimeUnit.MILLISECONDS)
                     .readTimeout((config.readTimeoutMs ?: 300000.0).toLong(), TimeUnit.MILLISECONDS)
-                    .addNetworkInterceptor(HeartbeatNetworkInterceptor(totalBytesReceived) { heartbeatRid ->
+                    .addNetworkInterceptor(HeartbeatNetworkInterceptor(totalBytesReceived) { heartbeatRid, comment ->
                         // Guard keep-alive signals by active request ID to ignore residual bytes from closed/closing sockets
                         val currentRid = synchronized(this@NitroSse) { requestId }
                         if (heartbeatRid == null || heartbeatRid == currentRid) {
-                            eventBuffer.push(SseEvent(SseEventType.HEARTBEAT, null, null, null, null, "keep-alive", null, null, null))
+                            eventBuffer.push(SseEvent(SseEventType.HEARTBEAT, null, null, null, null, comment, null, null, null))
                         }
                     })
                 this.client = builder.build()
@@ -199,9 +199,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             updateState(SseState.PAUSED)
             isRunning.set(false)
             connectionAttemptVersion.incrementAndGet()
-            sseDispatcher?.post {
-                performInternalCleanup()
-            }
+            performInternalCleanup()
         }
     }
 
@@ -242,7 +240,8 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     }
 
     override fun start() {
-        val currentConfig = synchronized(this) { config } ?: return
+        val currentConfig = synchronized(this) { config }
+            ?: throw IllegalStateException("NitroSse not configured. Call setup() first.")
         if (!isRunning.compareAndSet(false, true)) return
         
         consecutiveAuthErrors.set(0)
@@ -267,11 +266,15 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             val interceptorCompleted = AtomicBoolean(false)
             val timeoutMs = (currentConfig.connectionTimeoutMs ?: 15000.0).toLong()
 
+            val safeHandleError: (Throwable) -> Unit = { error ->
+                if (interceptorCompleted.compareAndSet(false, true)) {
+                    handleInterceptorError(error, version)
+                }
+            }
+
             // Enforce timeout guard on JS onBeforeRequest promise to prevent connection hangs
             sseDispatcher?.postDelayed({
-                if (interceptorCompleted.compareAndSet(false, true)) {
-                    handleInterceptorError(Exception("onBeforeRequest timed out"), version)
-                }
+                safeHandleError(Exception("onBeforeRequest timed out"))
             }, timeoutMs)
 
             try {
@@ -289,13 +292,13 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                             }
                         }
                     }.catch { error ->
-                        if (interceptorCompleted.compareAndSet(false, true)) handleInterceptorError(error, version)
+                        safeHandleError(error)
                     }
                 }.catch { error ->
-                    if (interceptorCompleted.compareAndSet(false, true)) handleInterceptorError(error, version)
+                    safeHandleError(error)
                 }
             } catch (e: Throwable) {
-                if (interceptorCompleted.compareAndSet(false, true)) handleInterceptorError(e, version)
+                safeHandleError(e)
             }
         } else {
             executeConnection(version)
@@ -369,9 +372,9 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         synchronized(this) { eventSource = newEventSource }
     }
 
-    override fun connectionDidOpen(response: Response, reqId: String) {
+    override fun connectionDidOpen(response: Response, requestId: String) {
         sseDispatcher?.post {
-            if (reqId != requestId) return@post
+            if (requestId != this@NitroSse.requestId) return@post
             consecutiveAuthErrors.set(0)
             reconnectStrategy.reset()
             updateState(SseState.OPEN)
@@ -379,9 +382,9 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         }
     }
 
-    override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, reqId: String) {
+    override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, requestId: String) {
         sseDispatcher?.post {
-            if (reqId != requestId) return@post
+            if (requestId != this@NitroSse.requestId) return@post
             val currentConfig: SseConfig?
             synchronized(this@NitroSse) {
                 if (!id.isNullOrEmpty()) {
@@ -394,9 +397,9 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         }
     }
 
-    override fun connectionDidFail(t: Throwable?, response: Response?, reqId: String) {
+    override fun connectionDidFail(t: Throwable?, response: Response?, requestId: String) {
         sseDispatcher?.post {
-            if (reqId != requestId || !isRunning.get()) return@post
+            if (requestId != this@NitroSse.requestId || !isRunning.get()) return@post
             val statusCode = response?.code ?: -1
             
             totalReconnectCount.incrementAndGet()
@@ -406,12 +409,13 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             }
             
             val currentRequestId = synchronized(this@NitroSse) {
-                val id = requestId
-                requestId = null
+                val id = this@NitroSse.requestId
+                this@NitroSse.requestId = null
                 id
             }
             currentRequestId?.let { NetworkInspector.reportRequestFailed(it, false) }
 
+            val maxRetries = synchronized(this@NitroSse) { config?.maxAuthRetries?.toInt() ?: DEFAULT_MAX_AUTH_RETRIES }
             if (statusCode == 401 || statusCode == 403) {
                 val currentConfig = synchronized(this@NitroSse) { config }
                 if (currentConfig?.onBeforeRequest == null) {
@@ -419,16 +423,17 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                     return@post
                 }
                 val retries = consecutiveAuthErrors.incrementAndGet()
-                if (retries >= maxAuthRetries) {
-                    failAndStop("Auth Error ($statusCode) - Retry limit reached ($maxAuthRetries). Stopping.", statusCode.toDouble())
+                if (retries >= maxRetries) {
+                    failAndStop("Auth Error ($statusCode) - Retry limit reached ($maxRetries). Stopping.", statusCode.toDouble())
                     return@post
                 }
-                eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Auth Error ($statusCode) - Retry $retries/$maxAuthRetries. Refreshing token...", statusCode.toDouble(), null, null))
+                eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Auth Error ($statusCode) - Retry $retries/$maxRetries. Refreshing token...", statusCode.toDouble(), null, null))
                 scheduleReconnect(true, connectionAttemptVersion.get())
                 return@post
             }
             
-            if (statusCode == 400) {
+            val isFatal = (statusCode in 400..499 && statusCode != 401 && statusCode != 403 && statusCode != 408 && statusCode != 429)
+            if (isFatal) {
                 failAndStop("Fatal Error ($statusCode). Stopping.", statusCode.toDouble())
                 return@post
             }
@@ -452,7 +457,8 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             }
 
             if (statusCode == 429) {
-                failAndStop("Rate Limited (429) without Retry-After. Stopping.", 429.0)
+                eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Rate Limited (429). Retrying with backoff...", 429.0, null, null))
+                scheduleReconnect(true, connectionAttemptVersion.get())
                 return@post
             }
 
@@ -471,15 +477,10 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         }
     }
 
-    override fun connectionDidClose(reqId: String) {
+    override fun connectionDidClose(requestId: String) {
         sseDispatcher?.post {
-            if (reqId != requestId || !isRunning.get()) return@post
-            val currentRequestId = synchronized(this@NitroSse) {
-                val id = requestId
-                requestId = null
-                id
-            }
-            currentRequestId?.let { NetworkInspector.reportResponseEnd(it, totalBytesReceived.get()) }
+            if (requestId != this@NitroSse.requestId || !isRunning.get()) return@post
+            clearActiveRequestAndReportEnd()
             scheduleReconnect(false, connectionAttemptVersion.get())
         }
     }
@@ -525,8 +526,14 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     override fun restart() {
         synchronized(this) { config } ?: return
         stopInternal()
+        isRunning.set(true)
+        val version = connectionAttemptVersion.incrementAndGet()
         updateState(SseState.RECONNECTING)
-        start()
+        sseDispatcher?.post {
+            reconnectStrategy.reset()
+            requestId = null
+            performConnection(version)
+        }
     }
 
     override fun isConnected(): Boolean {
@@ -546,13 +553,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         }
     }
 
-    private fun performInternalCleanup() {
-        reconnectStrategy.reset()
-        if (!isDispatcherDestroyed) {
-            if (::eventBuffer.isInitialized) eventBuffer.flush()
-        } else {
-            if (::eventBuffer.isInitialized) eventBuffer.clear()
-        }
+    private fun clearActiveRequestAndReportEnd() {
         val currentRequestId = synchronized(this) {
             eventSource?.cancel()
             eventSource = null
@@ -563,31 +564,34 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         currentRequestId?.let { NetworkInspector.reportResponseEnd(it, totalBytesReceived.get()) }
     }
 
+    private fun performInternalCleanup() {
+        reconnectStrategy.reset()
+        if (!isDispatcherDestroyed) {
+            if (::eventBuffer.isInitialized) eventBuffer.flush()
+        } else {
+            if (::eventBuffer.isInitialized) eventBuffer.clear()
+        }
+        clearActiveRequestAndReportEnd()
+    }
+
     override fun dispose() {
         Log.d(TAG, "Disposing NitroSse instance and cleaning up resources...")
-        
-        if (::eventBuffer.isInitialized) {
-            eventBuffer.clearCallback()
-        }
         
         isRunning.set(false)
         connectionAttemptVersion.incrementAndGet()
         
-        networkMonitor?.stop()
-        lifecycleManager?.stopObserving()
-        
-        try {
-            val currentRequestId = synchronized(this) {
-                eventSource?.cancel()
-                eventSource = null
-                val id = requestId
-                requestId = null
-                id
-            }
-            currentRequestId?.let { NetworkInspector.reportRequestFailed(it, true) }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error during synchronous dispose: ${e.message}")
+        if (::eventBuffer.isInitialized) {
+            eventBuffer.clearCallback()
+            eventBuffer.clear()
         }
+        
+        networkMonitor?.stop()
+        networkMonitor = null
+        
+        lifecycleManager?.stopObserving()
+        lifecycleManager = null
+        
+        clearActiveRequestAndReportEnd()
         
         sseDispatcher?.removeCallbacksAndMessages(null)
         sseDispatcherThread?.quitSafely()

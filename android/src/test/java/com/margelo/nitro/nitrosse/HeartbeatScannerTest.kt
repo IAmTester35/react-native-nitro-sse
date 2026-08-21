@@ -5,16 +5,30 @@ import org.junit.Test
 
 class HeartbeatScanner {
     private var isAtStartOfLine = true
+    private var isReadingComment = false
+    private val commentBuffer = java.io.ByteArrayOutputStream()
+    val comments = mutableListOf<String>()
     var heartbeatCount = 0
         private set
 
     fun scan(bytes: ByteArray, length: Int) {
         for (i in 0 until length) {
             val b = bytes[i]
-            if (isAtStartOfLine && b == ':'.code.toByte()) {
+            val isNewline = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
+            if (isReadingComment) {
+                if (isNewline) {
+                    isReadingComment = false
+                    comments.add(commentBuffer.toString("UTF-8").trimStart())
+                    commentBuffer.reset()
+                } else {
+                    commentBuffer.write(b.toInt())
+                }
+            } else if (isAtStartOfLine && b == ':'.code.toByte()) {
+                isReadingComment = true
+                commentBuffer.reset()
                 heartbeatCount++
             }
-            isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
+            isAtStartOfLine = isNewline
         }
     }
 }

@@ -38,6 +38,7 @@ class NitroSseCoordinatorTest {
             30000.0,
             0.0,
             2.0,
+            3.0,
             false,
             false,
             null,
@@ -178,6 +179,182 @@ class NitroSseCoordinatorTest {
     }
 
     @Test
+    fun testCoordinatorHandlesFatalError404() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        val emittedEvents = mutableListOf<SseEvent>()
+        sse.setup(config) { events ->
+            emittedEvents.addAll(events)
+        }
+        drainLoopers()
+        
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+        
+        val errorResponse = createResponse(404, "Not Found")
+        sse.connectionDidFail(Exception("Not Found"), errorResponse, actualReqId)
+        drainLoopers()
+        
+        assertFalse(sse.isConnected())
+        assertEquals(SseState.FAILED, sse.getState())
+        
+        val errorEvent = emittedEvents.find { it.type == SseEventType.ERROR }
+        assertNotNull(errorEvent)
+        assertTrue(errorEvent?.message?.contains("Fatal Error") == true || errorEvent?.message?.contains("404") == true)
+    }
+
+    @Test
+    fun testCoordinatorHandlesFatalError405MethodNotAllowed() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+        
+        val errorResponse = createResponse(405, "Method Not Allowed")
+        sse.connectionDidFail(Exception("Method Not Allowed"), errorResponse, actualReqId)
+        drainLoopers()
+        
+        assertFalse(sse.isConnected())
+        assertEquals(SseState.FAILED, sse.getState())
+    }
+
+    @Test
+    fun testCoordinatorHandlesFatalError410Gone() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+        
+        val errorResponse = createResponse(410, "Gone")
+        sse.connectionDidFail(Exception("Gone"), errorResponse, actualReqId)
+        drainLoopers()
+        
+        assertFalse(sse.isConnected())
+        assertEquals(SseState.FAILED, sse.getState())
+    }
+
+    @Test
+    fun testCoordinatorHandlesFatalError422UnprocessableEntity() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+        
+        val errorResponse = createResponse(422, "Unprocessable Entity")
+        sse.connectionDidFail(Exception("Unprocessable Entity"), errorResponse, actualReqId)
+        drainLoopers()
+        
+        assertFalse(sse.isConnected())
+        assertEquals(SseState.FAILED, sse.getState())
+    }
+
+    @Test
+    fun testCoordinatorHandlesTimeout408Reconnecting() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+        
+        val errorResponse = createResponse(408, "Request Timeout")
+        sse.connectionDidFail(Exception("Request Timeout"), errorResponse, actualReqId)
+        drainLoopers()
+        
+        // 408 is recoverable, should transition to RECONNECTING
+        assertEquals(SseState.RECONNECTING, sse.getState())
+    }
+
+    @Test
+    fun testCoordinatorHandlesServerError500Reconnecting() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+        
+        val errorResponse = createResponse(500, "Internal Server Error")
+        sse.connectionDidFail(Exception("Server Error"), errorResponse, actualReqId)
+        drainLoopers()
+        
+        // 500 is recoverable, should transition to RECONNECTING
+        assertEquals(SseState.RECONNECTING, sse.getState())
+    }
+
+    @Test
+    fun testCoordinatorEmitsHeartbeatWithCommentPayload() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        val emittedEvents = mutableListOf<SseEvent>()
+        sse.setup(config) { events ->
+            emittedEvents.addAll(events)
+        }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+        
+        val clientField = NitroSse::class.java.getDeclaredField("client")
+        clientField.isAccessible = true
+        val client = clientField.get(sse) as okhttp3.OkHttpClient
+        val interceptor = client.networkInterceptors.filterIsInstance<HeartbeatNetworkInterceptor>().first()
+        
+        val onHeartbeatField = HeartbeatNetworkInterceptor::class.java.getDeclaredField("onHeartbeat")
+        onHeartbeatField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val onHeartbeat = onHeartbeatField.get(interceptor) as (String?, String) -> Unit
+
+        onHeartbeat(actualReqId, "keepalive-text-payload")
+        sse.flush()
+        drainLoopers()
+        
+        val heartbeatEvent = emittedEvents.find { it.type == SseEventType.HEARTBEAT }
+        assertNotNull(heartbeatEvent)
+        assertEquals("keepalive-text-payload", heartbeatEvent?.message)
+    }
+
+    @Test
     fun testCoordinatorHandlesNoContent204() {
         val sse = NitroSse(dispatcher)
         val config = createMockConfig()
@@ -242,9 +419,11 @@ class NitroSseCoordinatorTest {
         sse.connectionDidFail(Exception("Rate Limited"), errorResponse, actualReqId)
         drainLoopers()
         
-        // Unhandled 429 without Retry-After header fails fast to avoid aggressive retry loops
-        assertFalse(sse.isConnected())
-        assertEquals(SseState.FAILED, sse.getState())
+        // 429 without Retry-After header falls back to exponential backoff reconnection
+        assertTrue(sse.isConnected())
+        assertEquals(SseState.RECONNECTING, sse.getState())
+        sse.stop()
+        drainLoopers()
     }
 
     @Test
@@ -269,11 +448,11 @@ class NitroSseCoordinatorTest {
         val onHeartbeatField = HeartbeatNetworkInterceptor::class.java.getDeclaredField("onHeartbeat")
         onHeartbeatField.isAccessible = true
         @Suppress("UNCHECKED_CAST")
-        val onHeartbeat = onHeartbeatField.get(interceptor) as (String?) -> Unit
+        val onHeartbeat = onHeartbeatField.get(interceptor) as (String?, String) -> Unit
 
         // Simulates stale RID mismatch: heartbeat should not be pushed
         val staleRid = "stale-rid-999"
-        onHeartbeat(staleRid)
+        onHeartbeat(staleRid, "keep-alive")
         sse.flush()
         drainLoopers()
         
