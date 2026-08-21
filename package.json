@@ -1,19 +1,17 @@
 {
   "name": "react-native-nitro-sse",
-  "version": "2.4.2",
+  "version": "2.5.0",
   "description": "High-performance Server-Sent Events (SSE) for React Native, powered by Nitro Modules.",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
   "exports": {
     ".": {
-      "source": "./src/index.ts",
       "types": "./lib/typescript/src/index.d.ts",
       "default": "./lib/module/index.js"
     },
     "./package.json": "./package.json"
   },
   "files": [
-    "src",
     "lib",
     "android",
     "ios",
@@ -24,10 +22,12 @@
     "!ios/Tests",
     "!android/build",
     "!android/src/test",
+    "!android/jacoco.gradle",
     "!android/gradle",
     "!android/gradlew",
     "!android/gradlew.bat",
     "!android/local.properties",
+    "!lib/**/*.map",
     "!**/__tests__",
     "!**/__fixtures__",
     "!**/__mocks__",
@@ -89,12 +89,12 @@
     "eslint-plugin-prettier": "^5.5.4",
     "jest": "^29.7.0",
     "lefthook": "^2.0.3",
-    "nitrogen": "0.36.5",
+    "nitrogen": "0.37.0",
     "prettier": "^2.8.8",
     "react": "19.2.3",
     "react-native": "0.85.3",
     "react-native-builder-bob": "^0.40.17",
-    "react-native-nitro-modules": "0.36.5",
+    "react-native-nitro-modules": "0.37.0",
     "release-it": "^19.0.4",
     "turbo": "^2.5.6",
     "typescript": "^5.9.2"
