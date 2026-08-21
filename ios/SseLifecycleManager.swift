@@ -28,9 +28,10 @@ class SseLifecycleManager {
     }
     
     /// Registers observer for iOS application state transitions via `NotificationCenter`.
+    /// Calls `removeObserver(self)` first to guarantee idempotency without mutable state.
     func startObserving() {
-        NotificationCenter.default.removeObserver(self)
 #if os(iOS)
+        NotificationCenter.default.removeObserver(self)
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleAppDidEnterBackground),
@@ -48,7 +49,9 @@ class SseLifecycleManager {
     
     /// Unregisters all lifecycle notification observers.
     func stopObserving() {
+#if os(iOS)
         NotificationCenter.default.removeObserver(self)
+#endif
     }
     
     /// Begins a `UIBackgroundTask` to request background execution time from iOS.

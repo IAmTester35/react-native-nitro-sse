@@ -20,6 +20,7 @@ class NitroSseIntegrationTests: XCTestCase {
             maxRetryIntervalMs: 5000,
             jitterFactor: 0.0,
             maxReconnectAttempts: 3,
+            maxAuthRetries: 3,
             autoParseJSON: true,
             monitorNetwork: false,
             onBeforeRequest: nil,

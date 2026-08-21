@@ -37,11 +37,6 @@ enum SseConnectionHandler {
         }
         esConfig.urlSessionConfiguration = sessionConfig
         esConfig.headers = config.headers ?? [:]
-        
-        if let lastId = lastProcessedId, !lastId.isEmpty {
-            esConfig.headers["Last-Event-ID"] = lastId
-        }
-        
         esConfig.lastEventId = lastProcessedId ?? ""
         esConfig.method = config.method?.stringValue.uppercased() ?? "GET"
         esConfig.body = config.body?.data(using: .utf8)
@@ -71,6 +66,17 @@ private class SseHandler: EventHandler {
         self.dispatcher = dispatcher
     }
     
+    private func dispatchToDelegate(isTerminal: Bool = false, _ action: @escaping (SseConnectionDelegate) -> Void) {
+        dispatcher.async { [weak self] in
+            guard let self = self, self.source != nil else { return }
+            if isTerminal {
+                self.isConnectedOrFinished = true
+            }
+            guard let delegate = self.delegate else { return }
+            action(delegate)
+        }
+    }
+    
     func startConnectionTimer(timeout: TimeInterval) {
         guard timeout > 0 else { return }
         dispatcher.asyncAfter(delay: timeout) { [weak self] in
@@ -86,28 +92,20 @@ private class SseHandler: EventHandler {
     }
     
     func onOpened() {
-        guard source != nil else { return }
-        isConnectedOrFinished = true
-        dispatcher.async { [weak self] in
-            guard let self = self else { return }
-            self.delegate?.connectionDidOpen(attemptVersion: self.attemptVersion)
+        dispatchToDelegate(isTerminal: true) { delegate in
+            delegate.connectionDidOpen(attemptVersion: self.attemptVersion)
         }
     }
     
     func onClosed() {
-        guard source != nil else { return }
-        isConnectedOrFinished = true
-        dispatcher.async { [weak self] in
-            guard let self = self else { return }
-            self.delegate?.connectionDidClose(attemptVersion: self.attemptVersion)
+        dispatchToDelegate(isTerminal: true) { delegate in
+            delegate.connectionDidClose(attemptVersion: self.attemptVersion)
         }
     }
     
     func onMessage(eventType: String, messageEvent: MessageEvent) {
-        guard source != nil else { return }
-        dispatcher.async { [weak self] in
-            guard let self = self else { return }
-            self.delegate?.connectionDidReceiveMessage(
+        dispatchToDelegate { delegate in
+            delegate.connectionDidReceiveMessage(
                 eventType: eventType,
                 data: messageEvent.data,
                 lastEventId: messageEvent.lastEventId,
@@ -119,19 +117,14 @@ private class SseHandler: EventHandler {
     /// Maps native SSE comments (lines starting with ':') to heartbeat events.
     /// LDSwiftEventSource parses comments natively via `onComment`, avoiding manual byte parsing.
     func onComment(comment: String) {
-        guard source != nil else { return }
-        dispatcher.async { [weak self] in
-            guard let self = self else { return }
-            self.delegate?.connectionDidReceiveComment(comment, attemptVersion: self.attemptVersion)
+        dispatchToDelegate { delegate in
+            delegate.connectionDidReceiveComment(comment, attemptVersion: self.attemptVersion)
         }
     }
     
     func onError(error: Error) {
-        guard source != nil else { return }
-        isConnectedOrFinished = true
-        dispatcher.async { [weak self] in
-            guard let self = self else { return }
-            self.delegate?.connectionDidFail(error: error, attemptVersion: self.attemptVersion)
+        dispatchToDelegate(isTerminal: true) { delegate in
+            delegate.connectionDidFail(error: error, attemptVersion: self.attemptVersion)
         }
     }
 }

@@ -40,7 +40,7 @@ class NitroSse: HybridNitroSseSpec {
     private var currentState: SseState = .idle
 
     private var consecutiveAuthErrors: Int = 0
-    private let maxAuthRetries: Int = 3
+    private static let defaultMaxAuthRetries: Int = 3
 
     private var totalBytesReceived: Double = 0
     private var reconnectCount: Double = 0
@@ -59,18 +59,28 @@ class NitroSse: HybridNitroSseSpec {
 
     // MARK: - Lifecycle
 
-    deinit {
-        // Synchronous cleanup is required during deallocation to avoid executing callbacks on deallocated instances.
+    /// Synchronously cleans up all active network sockets, timers, and lifecycle observers.
+    func dispose() {
         if dispatcher.isCurrentDispatcher() {
-            self.stopInternal()
+            self.stopInternal(emitClosed: false)
+            self.eventBuffer.clear()
             self.networkMonitor?.stop()
+            self.networkMonitor = nil
         } else {
             dispatcher.sync {
-                self.stopInternal()
+                self.stopInternal(emitClosed: false)
+                self.eventBuffer.clear()
                 self.networkMonitor?.stop()
+                self.networkMonitor = nil
             }
         }
         lifecycleManager?.stopObserving()
+        lifecycleManager = nil
+    }
+
+    deinit {
+        // Synchronous cleanup is required during deallocation to avoid executing callbacks on deallocated instances.
+        dispose()
     }
 
     // MARK: - HybridNitroSseSpec
@@ -293,6 +303,13 @@ class NitroSse: HybridNitroSseSpec {
         }
     }
 
+    private func finishActiveRequestInspector() {
+        if let rid = self.requestId {
+            NitroSseNetworkInspector.reportResponseEnd(rid, encodedDataLength: Int(self.totalBytesReceived))
+            self.requestId = nil
+        }
+    }
+
     private func hibernateConnection() {
         dispatcher.assertOnQueue()
         guard self.isRunning else { return }
@@ -304,10 +321,7 @@ class NitroSse: HybridNitroSseSpec {
         
         self.eventSource?.stop()
         self.eventSource = nil
-        if let rid = self.requestId {
-            NitroSseNetworkInspector.reportResponseEnd(rid, encodedDataLength: Int(self.totalBytesReceived))
-            self.requestId = nil
-        }
+        self.finishActiveRequestInspector()
         self.isRunning = false
         
         self.lifecycleManager?.cleanupBackgroundTask()
@@ -341,6 +355,16 @@ class NitroSse: HybridNitroSseSpec {
                 }
             }
 
+            let safeHandleError: (Error) -> Void = { [weak self] error in
+                self?.dispatcher.async { [weak self] in
+                    guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
+                    if !flag.isCompleted {
+                        flag.isCompleted = true
+                        self.handleInterceptorError(error, attemptVersion: attemptVersion)
+                    }
+                }
+            }
+
             interceptor().then { [weak self] promise2 in
                 promise2.then { [weak self] newHeaders in
                     self?.dispatcher.async { [weak self] in
@@ -356,24 +380,8 @@ class NitroSse: HybridNitroSseSpec {
                             self.performEstablishConnection(attemptVersion: attemptVersion)
                         }
                     }
-                }.catch { [weak self] error in
-                    self?.dispatcher.async { [weak self] in
-                        guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
-                        if !flag.isCompleted {
-                            flag.isCompleted = true
-                            self.handleInterceptorError(error, attemptVersion: attemptVersion)
-                        }
-                    }
-                }
-            }.catch { [weak self] error in
-                self?.dispatcher.async { [weak self] in
-                    guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
-                    if !flag.isCompleted {
-                        flag.isCompleted = true
-                        self.handleInterceptorError(error, attemptVersion: attemptVersion)
-                    }
-                }
-            }
+                }.catch(safeHandleError)
+            }.catch(safeHandleError)
         } else {
             self.performEstablishConnection(attemptVersion: attemptVersion)
         }
@@ -400,11 +408,7 @@ class NitroSse: HybridNitroSseSpec {
         guard isRunning, let config = config, let url = URL(string: config.url), attemptVersion == self.connectionAttemptVersion else { return }
         
         self.updateState(.connecting)
-        
-        if let rid = self.requestId {
-            NitroSseNetworkInspector.reportResponseEnd(rid, encodedDataLength: Int(self.totalBytesReceived))
-            self.requestId = nil
-        }
+        self.finishActiveRequestInspector()
         
         let es = SseConnectionHandler.createEventSource(
             url: url,
@@ -416,7 +420,15 @@ class NitroSse: HybridNitroSseSpec {
         )
         self.eventSource = es
         
-        let request = URLRequest(url: url)
+        var request = URLRequest(url: url)
+        request.httpMethod = config.method?.stringValue.uppercased() ?? "GET"
+        request.allHTTPHeaderFields = config.headers
+        if let body = config.body {
+            request.httpBody = body.data(using: .utf8)
+        }
+        if let lastId = lastProcessedId, !lastId.isEmpty {
+            request.setValue(lastId, forHTTPHeaderField: "Last-Event-ID")
+        }
         self.requestId = NitroSseNetworkInspector.reportRequestStart(request, encodedDataLength: 0)
     }
 
@@ -435,10 +447,7 @@ class NitroSse: HybridNitroSseSpec {
         self.wasRunningBeforeHibernation = false
         self.eventSource?.stop()
         self.eventSource = nil
-        if let rid = self.requestId {
-            NitroSseNetworkInspector.reportResponseEnd(rid, encodedDataLength: Int(self.totalBytesReceived))
-            self.requestId = nil
-        }
+        self.finishActiveRequestInspector()
         self.reconnectStrategy.reset()
         self.lifecycleManager?.cleanupBackgroundTask()
     }
@@ -451,7 +460,7 @@ class NitroSse: HybridNitroSseSpec {
         self.stopInternal()
     }
 
-    private func scheduleAutomaticReconnect(isError: Bool, attemptVersion: Int) {
+    private func scheduleAutomaticReconnect(isError: Bool, fixedDelay: TimeInterval? = nil, attemptVersion: Int) {
         dispatcher.assertOnQueue()
         guard isRunning, attemptVersion == self.connectionAttemptVersion else { return }
 
@@ -460,40 +469,23 @@ class NitroSse: HybridNitroSseSpec {
             print("[NitroSse] Max reconnection attempts reached (\(maxAttempts)). Stopping.")
             failAndStop(message: "Max reconnection attempts reached (\(maxAttempts)).")
             return
+        }
+
+        let delay: TimeInterval
+        if let customDelay = fixedDelay {
+            reconnectStrategy.recordAttempt()
+            delay = customDelay
+        } else {
+            delay = reconnectStrategy.nextDelay(isError: isError)
         }
 
         // Increment connectionAttemptVersion before stopping eventSource to invalidate any in-flight
         // or asynchronous onError/onClosed callbacks triggered during shutdown/teardown.
         self.connectionAttemptVersion += 1
         let newVersion = self.connectionAttemptVersion
-        let safeDelay = reconnectStrategy.nextDelay(isError: isError)
         self.updateState(.reconnecting)
         eventSource?.stop()
         eventSource = nil
-        dispatcher.asyncAfter(delay: safeDelay) { [weak self] in
-            guard let self = self, self.isRunning, newVersion == self.connectionAttemptVersion else { return }
-            self.establishConnection(attemptVersion: newVersion)
-        }
-    }
-
-    private func scheduleAutomaticReconnectWithFixedDelay(_ delay: TimeInterval, attemptVersion: Int) {
-        dispatcher.assertOnQueue()
-        guard isRunning, attemptVersion == self.connectionAttemptVersion else { return }
-
-        if reconnectStrategy.hasReachedMaxAttempts() {
-            let maxAttempts = Int(config?.maxReconnectAttempts ?? -1.0)
-            print("[NitroSse] Max reconnection attempts reached (\(maxAttempts)). Stopping.")
-            failAndStop(message: "Max reconnection attempts reached (\(maxAttempts)).")
-            return
-        }
-        reconnectStrategy.recordAttempt()
-
-        // Increment connectionAttemptVersion to discard stale callbacks from previous cycle
-        self.connectionAttemptVersion += 1
-        let newVersion = self.connectionAttemptVersion
-        eventSource?.stop()
-        eventSource = nil
-        self.updateState(.reconnecting)
         dispatcher.asyncAfter(delay: delay) { [weak self] in
             guard let self = self, self.isRunning, newVersion == self.connectionAttemptVersion else { return }
             self.establishConnection(attemptVersion: newVersion)
@@ -516,7 +508,7 @@ extension NitroSse: SseConnectionDelegate {
                 url: self.config?.url,
                 response: nil,
                 statusCode: 200,
-                headers: self.config?.headers ?? [:]
+                headers: [:]
             )
             
             self.eventBuffer.push(SseEvent(type: .open, data: nil, parsedData: nil, id: nil, event: nil, message: nil, statusCode: 200, retry: nil, state: nil))
@@ -526,10 +518,7 @@ extension NitroSse: SseConnectionDelegate {
     func connectionDidClose(attemptVersion: Int) {
         dispatcher.async { [weak self] in
             guard let self = self, attemptVersion == self.connectionAttemptVersion else { return }
-            if let rid = self.requestId {
-                NitroSseNetworkInspector.reportResponseEnd(rid, encodedDataLength: Int(self.totalBytesReceived))
-                self.requestId = nil
-            }
+            self.finishActiveRequestInspector()
             if self.isRunning {
                 self.scheduleAutomaticReconnect(isError: false, attemptVersion: attemptVersion)
             }
@@ -594,6 +583,7 @@ extension NitroSse: SseConnectionDelegate {
             }
 
             // HTTP 401/403 Auth errors trigger token refresh via onBeforeRequest interceptor up to maxAuthRetries.
+            let limit = Int(self.config?.maxAuthRetries ?? Double(Self.defaultMaxAuthRetries))
             if statusCode == 401 || statusCode == 403 {
                 if self.config?.onBeforeRequest == nil {
                     self.failAndStop(message: "Auth Error (\(statusCode)) - No interceptor provided. Stopping.", statusCode: Double(statusCode))
@@ -601,17 +591,17 @@ extension NitroSse: SseConnectionDelegate {
                 }
 
                 self.consecutiveAuthErrors += 1
-                if self.consecutiveAuthErrors >= self.maxAuthRetries {
-                    self.failAndStop(message: "Auth Error (\(statusCode)) - Retry limit reached (\(self.maxAuthRetries)). Stopping.", statusCode: Double(statusCode))
+                if self.consecutiveAuthErrors >= limit {
+                    self.failAndStop(message: "Auth Error (\(statusCode)) - Retry limit reached (\(limit)). Stopping.", statusCode: Double(statusCode))
                     return
                 }
                 
-                self.eventBuffer.push(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Auth Error (\(statusCode)) - Retry \(self.consecutiveAuthErrors)/\(self.maxAuthRetries). Refreshing token...", statusCode: Double(statusCode), retry: nil, state: nil))
+                self.eventBuffer.push(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Auth Error (\(statusCode)) - Retry \(self.consecutiveAuthErrors)/\(limit). Refreshing token...", statusCode: Double(statusCode), retry: nil, state: nil))
                 self.scheduleAutomaticReconnect(isError: true, attemptVersion: attemptVersion)
                 return
             }
 
-            let isFatal = (statusCode == 400)
+            let isFatal = (statusCode >= 400 && statusCode <= 499 && statusCode != 401 && statusCode != 403 && statusCode != 408 && statusCode != 429)
             if isFatal {
                 self.failAndStop(message: "Fatal Error (\(statusCode)). Stopping.", statusCode: Double(statusCode))
                 return
@@ -623,7 +613,7 @@ extension NitroSse: SseConnectionDelegate {
                 let jitter = Double.random(in: 0.5...1.5)
                 let totalDelay = retryAfter + jitter
                 self.eventBuffer.push(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Retry-After received: \(Int(totalDelay))s", statusCode: Double(statusCode), retry: totalDelay * 1000.0, state: nil))
-                self.scheduleAutomaticReconnectWithFixedDelay(totalDelay, attemptVersion: attemptVersion)
+                self.scheduleAutomaticReconnect(isError: true, fixedDelay: totalDelay, attemptVersion: attemptVersion)
                 return
             }
 

@@ -19,6 +19,7 @@ class NitroSseCoordinatorTests: XCTestCase {
             maxRetryIntervalMs: 30000,
             jitterFactor: 0.0,
             maxReconnectAttempts: maxReconnectAttempts,
+            maxAuthRetries: 3,
             autoParseJSON: false,
             monitorNetwork: false,
             onBeforeRequest: nil,
@@ -104,6 +105,130 @@ class NitroSseCoordinatorTests: XCTestCase {
         XCTAssertFalse(sse.isConnected())
         XCTAssertEqual(try! sse.getState(), .failed)
         XCTAssertTrue(emittedEvents.contains { $0.type == .error && $0.message?.contains("400") == true })
+    }
+
+    func testCoordinatorHandlesFatalError404() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        
+        var emittedEvents: [SseEvent] = []
+        try! sse.setup(config: config) { events in
+            emittedEvents.append(contentsOf: events)
+        }
+        try! sse.start()
+        
+        let error = NSError(domain: "NSURLErrorDomain", code: 404, userInfo: nil)
+        sse.connectionDidFail(error: error, attemptVersion: sse.connectionAttemptVersion)
+        
+        sse.flush()
+        
+        XCTAssertFalse(sse.isConnected())
+        XCTAssertEqual(try! sse.getState(), .failed)
+        XCTAssertTrue(emittedEvents.contains { $0.type == .error && $0.message?.contains("404") == true })
+    }
+
+    func testCoordinatorHandlesFatalError405() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        
+        try! sse.setup(config: config) { _ in }
+        try! sse.start()
+        
+        let error = NSError(domain: "NSURLErrorDomain", code: 405, userInfo: nil)
+        sse.connectionDidFail(error: error, attemptVersion: sse.connectionAttemptVersion)
+        sse.flush()
+        
+        XCTAssertFalse(sse.isConnected())
+        XCTAssertEqual(try! sse.getState(), .failed)
+    }
+
+    func testCoordinatorHandlesFatalError410() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        
+        try! sse.setup(config: config) { _ in }
+        try! sse.start()
+        
+        let error = NSError(domain: "NSURLErrorDomain", code: 410, userInfo: nil)
+        sse.connectionDidFail(error: error, attemptVersion: sse.connectionAttemptVersion)
+        sse.flush()
+        
+        XCTAssertFalse(sse.isConnected())
+        XCTAssertEqual(try! sse.getState(), .failed)
+    }
+
+    func testCoordinatorHandlesFatalError422() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        
+        try! sse.setup(config: config) { _ in }
+        try! sse.start()
+        
+        let error = NSError(domain: "NSURLErrorDomain", code: 422, userInfo: nil)
+        sse.connectionDidFail(error: error, attemptVersion: sse.connectionAttemptVersion)
+        sse.flush()
+        
+        XCTAssertFalse(sse.isConnected())
+        XCTAssertEqual(try! sse.getState(), .failed)
+    }
+
+    func testCoordinatorHandlesTimeout408Reconnecting() {
+        let dispatcher = MockSseDispatcher()
+        dispatcher.executeImmediately = false
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        
+        try! sse.setup(config: config) { _ in }
+        dispatcher.executeAllPendingBlocks()
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+        
+        let error = NSError(domain: "NSURLErrorDomain", code: 408, userInfo: nil)
+        sse.connectionDidFail(error: error, attemptVersion: sse.connectionAttemptVersion)
+        dispatcher.executeAllPendingBlocks()
+        
+        XCTAssertEqual(try! sse.getState(), .reconnecting)
+    }
+
+    func testCoordinatorHandlesServerError500Reconnecting() {
+        let dispatcher = MockSseDispatcher()
+        dispatcher.executeImmediately = false
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        
+        try! sse.setup(config: config) { _ in }
+        dispatcher.executeAllPendingBlocks()
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+        
+        let error = NSError(domain: "NSURLErrorDomain", code: 500, userInfo: nil)
+        sse.connectionDidFail(error: error, attemptVersion: sse.connectionAttemptVersion)
+        dispatcher.executeAllPendingBlocks()
+        
+        XCTAssertEqual(try! sse.getState(), .reconnecting)
+    }
+
+    func testCoordinatorEmitsHeartbeatWithCommentPayload() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        
+        var emittedEvents: [SseEvent] = []
+        try! sse.setup(config: config) { events in
+            emittedEvents.append(contentsOf: events)
+        }
+        try! sse.start()
+        
+        sse.connectionDidReceiveComment("keepalive-comment", attemptVersion: sse.connectionAttemptVersion)
+        sse.flush()
+        
+        let heartbeat = emittedEvents.first(where: { $0.type == .heartbeat })
+        XCTAssertNotNil(heartbeat)
+        XCTAssertEqual(heartbeat?.message, "keepalive-comment")
     }
 
     func testCoordinatorHandlesNoContent204() {
