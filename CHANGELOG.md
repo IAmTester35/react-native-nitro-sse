@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.5.0 (2026-08-18)
+## 2.5.0 (2026-09-04)
 
 ### Features
 
@@ -18,9 +18,12 @@
 
 ### Improvements
 
+- **Android**: Enabled `retryOnConnectionFailure(true)` on `OkHttpClient` for transparent socket-level route failover.
+- **Nitro**: Upgraded `react-native-nitro-modules` and `nitrogen` to 0.37.0.
 - **TypeScript**: Improved byte metrics tracking in `MockSseEngine` and state handling in `MockReplaceDriver`.
 - **Native (iOS/Android)**: Hardened lifecycle observer registration and thread safety.
 - **Android**: Cached DevTools reflection lookups in `NetworkInspector`.
+- **Architecture**: Documented design rationale for cross-platform reconnection parity and async JS interceptor safety over native library defaults.
 - Deduplicated native helpers and reduced bundle size.
 
 ## 2.4.2 (2026-08-14)

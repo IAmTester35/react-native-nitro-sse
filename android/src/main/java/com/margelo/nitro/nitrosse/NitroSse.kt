@@ -83,6 +83,11 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             }
             eventBuffer.configure(config.batchingIntervalMs ?: 0.0, config.maxBufferSize?.toInt() ?: 1000)
 
+            // ARCHITECTURAL DECISION:
+            // Custom SseReconnectStrategy is used instead of third-party reconnection libraries to guarantee:
+            // 1. Cross-platform parity: Identical backoff/jitter formulas, attempt limits, and state transitions with iOS.
+            // 2. Lifecycle synchronization: Clean coordination with SseLifecycleManager hibernation and SseNetworkMonitor.
+            // 3. Strict maxReconnectAttempts enforcement.
             reconnectStrategy.configure(
                 config.retryIntervalMs ?: 1000.0,
                 config.maxRetryIntervalMs ?: 30000.0,
@@ -94,6 +99,9 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 val builder = OkHttpClient.Builder()
                     .connectTimeout((config.connectionTimeoutMs ?: 15000.0).toLong(), TimeUnit.MILLISECONDS)
                     .readTimeout((config.readTimeoutMs ?: 300000.0).toLong(), TimeUnit.MILLISECONDS)
+                    // Enables transparent socket-level retry on route failures (multiple IP fallback, transient resets)
+                    // before bubbling up to full SSE stream reconnect.
+                    .retryOnConnectionFailure(true)
                     .addNetworkInterceptor(HeartbeatNetworkInterceptor(totalBytesReceived) { heartbeatRid, comment ->
                         // Guard keep-alive signals by active request ID to ignore residual bytes from closed/closing sockets
                         val currentRid = synchronized(this@NitroSse) { requestId }
@@ -106,6 +114,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 this.client = this.client!!.newBuilder()
                     .connectTimeout((config.connectionTimeoutMs ?: 15000.0).toLong(), TimeUnit.MILLISECONDS)
                     .readTimeout((config.readTimeoutMs ?: 300000.0).toLong(), TimeUnit.MILLISECONDS)
+                    .retryOnConnectionFailure(true)
                     .build()
             }
             
@@ -260,6 +269,10 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         if (!isRunning.get() || version != connectionAttemptVersion.get()) return
         
         val currentConfig = synchronized(this) { config } ?: return
+        // ARCHITECTURAL DECISION:
+        // okhttp3.Authenticator is not used here because Authenticator.authenticate() is a synchronous callback
+        // executed on OkHttp's thread, whereas onBeforeRequest is an asynchronous JavaScript Promise resolved
+        // via JSI. Awaiting JS promises synchronously inside Authenticator would risk deadlocking the JS/UI thread.
         val interceptor = currentConfig.onBeforeRequest
         
         if (interceptor != null) {
@@ -343,6 +356,12 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         
         oldRequestId?.let { NetworkInspector.reportResponseEnd(it, totalBytesReceived.get()) }
         
+        // ARCHITECTURAL DECISION:
+        // SSE headers are set explicitly on Request.Builder rather than via an OkHttp Interceptor because:
+        // 1. Network Inspector transparency: React Native Network Inspector captures the request immediately upon
+        //    creation, ensuring DevTools shows the exact outbound SSE headers (Accept, Cache-Control, Last-Event-ID).
+        // 2. Explicit identity encoding: Ensures OkHttp's BridgeInterceptor does not automatically inject
+        //    "Accept-Encoding: gzip". Gzip compression corrupts raw byte scanning in HeartbeatNetworkInterceptor.
         val requestBuilder = Request.Builder()
             .url(currentConfig.url)
             .header("Accept", "text/event-stream")
@@ -416,6 +435,12 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             currentRequestId?.let { NetworkInspector.reportRequestFailed(it, false) }
 
             val maxRetries = synchronized(this@NitroSse) { config?.maxAuthRetries?.toInt() ?: DEFAULT_MAX_AUTH_RETRIES }
+            // ARCHITECTURAL DECISION:
+            // okhttp3.Authenticator is not used here because Authenticator.authenticate() runs synchronously
+            // on OkHttp's dispatcher thread pool. In React Native, token refreshes occur via asynchronous JS Promises
+            // (onBeforeRequest). Blocking synchronously on OkHttp threads to await JS promises risks deadlocking the
+            // JS engine or exhausting the thread pool. Handling 401/403 here allows asynchronous resolution via
+            // sseDispatcher, enforces maxAuthRetries, and reports retry progress to the JS layer.
             if (statusCode == 401 || statusCode == 403) {
                 val currentConfig = synchronized(this@NitroSse) { config }
                 if (currentConfig?.onBeforeRequest == null) {
@@ -438,6 +463,11 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 return@post
             }
 
+            // ARCHITECTURAL DECISION:
+            // Retry-After delay is scheduled on sseDispatcher rather than within an OkHttp Interceptor.
+            // An OkHttp interceptor would block a worker thread synchronously with Thread.sleep(), while
+            // sseDispatcher.postDelayed allows the thread to remain free, transitions SseState to RECONNECTING,
+            // emits the retry metadata to React Native, and respects connectionAttemptVersion and lifecycle events.
             val retryAfterMillis = SseReconnectStrategy.extractRetryAfterMillis(response)
             if ((statusCode == 429 || statusCode == 503) && retryAfterMillis != null) {
                 if (reconnectStrategy.hasReachedMaxAttempts()) {
@@ -472,6 +502,11 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 updateState(SseState.STALE)
             }
 
+            // ARCHITECTURAL DECISION:
+            // While OkHttpClient.Builder.retryOnConnectionFailure(true) transparently retries initial route/TCP
+            // failures during connection establishment, broken persistent SSE streams or read timeouts trigger
+            // full teardown and reconnection here. This coordinates with SseDispatcher, enforces exponential backoff,
+            // respects SseLifecycleManager hibernation, and invalidates old callbacks via connectionAttemptVersion.
             eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, t?.message ?: "Link lost ($statusCode)", if (statusCode != -1) statusCode.toDouble() else null, null, null))
             scheduleReconnect(true, connectionAttemptVersion.get())
         }

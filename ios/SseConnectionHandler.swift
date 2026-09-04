@@ -31,6 +31,14 @@ enum SseConnectionHandler {
         let connectionTimeout = (config.connectionTimeoutMs ?? 15000.0) / 1000.0
         let handler = SseHandler(delegate: delegate, attemptVersion: attemptVersion, dispatcher: dispatcher)
         var esConfig = EventSource.Config(handler: handler, url: url)
+        // ARCHITECTURAL DECISION:
+        // Returning .shutdown intentionally disables LDSwiftEventSource's built-in reconnection loop.
+        // Reconnection is coordinated externally by NitroSse and SseReconnectStrategy to ensure:
+        // 1. Cross-platform parity: Identical backoff/jitter formulas and retry counters with Android (which uses OkHttp).
+        // 2. Async JS interceptors: onBeforeRequest returns an async JS Promise; LDSwiftEventSource's headerTransform
+        //    is synchronous and cannot await JS promises before initiating a reconnect.
+        // 3. Mobile lifecycle & network synchronization: Clean coordination with SseLifecycleManager hibernation
+        //    and SseNetworkMonitor, enforced with connectionAttemptVersion invalidation and maxReconnectAttempts.
         esConfig.connectionErrorHandler = { [weak handler] error in
             handler?.onError(error: error)
             return .shutdown

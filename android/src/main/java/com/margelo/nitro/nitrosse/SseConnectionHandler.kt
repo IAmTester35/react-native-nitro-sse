@@ -53,9 +53,16 @@ class SseConnectionHandler(private val delegate: SseConnectionDelegate) {
 /**
  * Network interceptor for byte accounting and SSE heartbeat detection.
  *
- * Scans the raw response stream before OkHttp's EventSource parser runs, because OkHttp
- * discards SSE comment lines (`:`). Sniffing raw bytes at the network layer allows detecting
- * keep-alive signals and extracting comment payloads without modifying the SSE parser interface.
+ * ARCHITECTURAL DECISION:
+ * Scans the raw response stream before OkHttp's EventSource parser runs, because Square's okhttp-sse
+ * (ServerSentEventReader) silently discards SSE comment lines (`:`) and EventSourceListener lacks an
+ * onComment callback. Sniffing raw bytes at the network layer allows detecting keep-alive signals
+ * and extracting comment payloads without modifying or replacing okhttp-sse with third-party parsers.
+ *
+ * Why okhttp3.EventListener (e.g. responseBodyEnd) is NOT used:
+ * EventListener.responseBodyEnd() only fires once the entire response stream has finished/terminated.
+ * For persistent, long-running SSE connections, this callback never fires during active streaming,
+ * preventing continuous real-time byte accounting and inspection of incoming keep-alive comment frames.
  */
 internal class HeartbeatNetworkInterceptor(
     private val totalBytesReceived: AtomicLong,
