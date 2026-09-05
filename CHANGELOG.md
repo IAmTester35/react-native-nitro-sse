@@ -1,29 +1,33 @@
 # Changelog
 
-## 2.5.0 (2026-09-04)
+## 2.5.0 (2026-09-05)
 
 ### Features
 
 - **React**: Added `useNitroSse` hook for lifecycle management and auto-cleanup.
 - **Core**: Added `dispose()`, `removeAllEventListeners(type?)`, and `maxAuthRetries` option.
-- **Android**: Included SSE comment text in heartbeat event payload.
+- **Android**: Included SSE comment text in heartbeat payload.
 
 ### Fixes
 
+- **Core**: Reset `lastProcessedId` to `null` on empty `id:` field on Android and iOS.
+- **Core**: Prevented static `config.headers` from overriding dynamic reconnection `Last-Event-ID`.
 - **Core**: Halted reconnect attempts on fatal 4xx HTTP errors (404, 405, 410, 422).
 - **Core**: Prevented redundant state dispatches during synchronous `dispose()`.
-- **iOS**: Fixed duplicate `Last-Event-ID` header injection and synchronized state transitions on dispatcher queue.
+- **iOS**: Bound `idleTimeout` to `readTimeout` in `SseConnectionHandler` to prevent 300s default override.
+- **iOS**: Prevented dual delivery of `onError` and `onClosed` on connection failure.
+- **iOS**: Fixed duplicate `Last-Event-ID` header injection and thread-synchronized state transitions.
+- **Android**: Added `GzipSource` in heartbeat interceptor to prevent crashes on forced gzip proxies.
 - **Android**: Fallback to exponential backoff on HTTP 429 missing `Retry-After`.
-- **Android**: Dispatched buffer events off the UI thread to prevent jank.
+- **Android**: Dispatched event buffer off the UI thread.
+- **Cross-Platform**: Unified comment parsing to strip only a single leading space after `:`.
 
 ### Improvements
 
-- **Android**: Enabled `retryOnConnectionFailure(true)` on `OkHttpClient` for transparent socket-level route failover.
+- **Android**: Enabled OkHttp `retryOnConnectionFailure(true)` for transparent route failover.
 - **Nitro**: Upgraded `react-native-nitro-modules` and `nitrogen` to 0.37.0.
-- **TypeScript**: Improved byte metrics tracking in `MockSseEngine` and state handling in `MockReplaceDriver`.
-- **Native (iOS/Android)**: Hardened lifecycle observer registration and thread safety.
-- **Android**: Cached DevTools reflection lookups in `NetworkInspector`.
-- **Architecture**: Documented design rationale for cross-platform reconnection parity and async JS interceptor safety over native library defaults.
+- **TypeScript**: Improved byte metrics and mock driver state handling.
+- **Native**: Hardened lifecycle observer registration, thread safety, and cached DevTools lookups.
 - Deduplicated native helpers and reduced bundle size.
 
 ## 2.4.2 (2026-08-14)
