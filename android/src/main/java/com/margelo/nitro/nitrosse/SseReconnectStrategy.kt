@@ -7,16 +7,8 @@ import kotlin.math.pow
 import kotlin.random.Random
 
 /**
- * Calculates retry backoff intervals for reconnecting failed SSE connections.
- *
- * Employs exponential backoff with randomized jitter to prevent thundering herd pressure on backend
- * servers during outage recovery, and parses standard HTTP `Retry-After` headers.
- *
- * ARCHITECTURAL DECISION:
- * Square's okhttp-sse library provides no built-in reconnection loop or backoff algorithm.
- * This class is maintained natively in Kotlin to provide 100% mathematical parity with iOS's
- * SseReconnectStrategy.swift (identical exponential backoff, jitter formula, retry attempt accounting,
- * and maxReconnectAttempts enforcement), while remaining decoupled from any Android networking threads.
+ * Calculates retry backoff intervals using randomized jitter exponential backoff.
+ * Maintains mathematical parity with iOS SseReconnectStrategy.
  */
 class SseReconnectStrategy {
     private var retryIntervalMs: Double = 1000.0
