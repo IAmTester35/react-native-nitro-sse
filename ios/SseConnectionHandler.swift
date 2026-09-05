@@ -31,21 +31,26 @@ enum SseConnectionHandler {
         let connectionTimeout = (config.connectionTimeoutMs ?? 15000.0) / 1000.0
         let handler = SseHandler(delegate: delegate, attemptVersion: attemptVersion, dispatcher: dispatcher)
         var esConfig = EventSource.Config(handler: handler, url: url)
-        // ARCHITECTURAL DECISION:
-        // Returning .shutdown intentionally disables LDSwiftEventSource's built-in reconnection loop.
-        // Reconnection is coordinated externally by NitroSse and SseReconnectStrategy to ensure:
-        // 1. Cross-platform parity: Identical backoff/jitter formulas and retry counters with Android (which uses OkHttp).
-        // 2. Async JS interceptors: onBeforeRequest returns an async JS Promise; LDSwiftEventSource's headerTransform
-        //    is synchronous and cannot await JS promises before initiating a reconnect.
-        // 3. Mobile lifecycle & network synchronization: Clean coordination with SseLifecycleManager hibernation
-        //    and SseNetworkMonitor, enforced with connectionAttemptVersion invalidation and maxReconnectAttempts.
+        // Prevent LDSwiftEventSource's default 300s idle timeout override.
+        esConfig.idleTimeout = readTimeout
+        // Disable LDSwift internal reconnect; reconnection is coordinated externally by NitroSse.
         esConfig.connectionErrorHandler = { [weak handler] error in
             handler?.onError(error: error)
             return .shutdown
         }
         esConfig.urlSessionConfiguration = sessionConfig
-        esConfig.headers = config.headers ?? [:]
+        // Prevent initial config headers from overriding the dynamic Last-Event-ID on reconnection.
+        var initialHeaders = config.headers ?? [:]
+        initialHeaders = initialHeaders.filter { $0.key.caseInsensitiveCompare("Last-Event-Id") != .orderedSame }
+        esConfig.headers = initialHeaders
         esConfig.lastEventId = lastProcessedId ?? ""
+        if let lastId = lastProcessedId, !lastId.isEmpty {
+            esConfig.headerTransform = { headers in
+                var transformed = headers
+                transformed["Last-Event-Id"] = lastId
+                return transformed
+            }
+        }
         esConfig.method = config.method?.stringValue.uppercased() ?? "GET"
         esConfig.body = config.body?.data(using: .utf8)
         
@@ -67,6 +72,7 @@ private class SseHandler: EventHandler {
     let attemptVersion: Int
     let dispatcher: SseDispatcher
     private var isConnectedOrFinished: Bool = false
+    private var isTerminalDispatched: Bool = false
     
     init(delegate: SseConnectionDelegate, attemptVersion: Int, dispatcher: SseDispatcher) {
         self.delegate = delegate
@@ -78,8 +84,10 @@ private class SseHandler: EventHandler {
         dispatcher.async { [weak self] in
             guard let self = self, self.source != nil else { return }
             if isTerminal {
-                self.isConnectedOrFinished = true
+                guard !self.isTerminalDispatched else { return }
+                self.isTerminalDispatched = true
             }
+            self.isConnectedOrFinished = true
             guard let delegate = self.delegate else { return }
             action(delegate)
         }
@@ -90,6 +98,7 @@ private class SseHandler: EventHandler {
         dispatcher.asyncAfter(delay: timeout) { [weak self] in
             guard let self = self, !self.isConnectedOrFinished, self.source != nil else { return }
             self.isConnectedOrFinished = true
+            self.isTerminalDispatched = true
             self.source?.stop()
             self.source = nil
             self.delegate?.connectionDidFail(
@@ -100,7 +109,7 @@ private class SseHandler: EventHandler {
     }
     
     func onOpened() {
-        dispatchToDelegate(isTerminal: true) { delegate in
+        dispatchToDelegate { delegate in
             delegate.connectionDidOpen(attemptVersion: self.attemptVersion)
         }
     }
@@ -123,10 +132,11 @@ private class SseHandler: EventHandler {
     }
     
     /// Maps native SSE comments (lines starting with ':') to heartbeat events.
-    /// LDSwiftEventSource parses comments natively via `onComment`, avoiding manual byte parsing.
+    /// Normalizes comment by removing single leading space per WHATWG SSE specification for cross-platform parity.
     func onComment(comment: String) {
+        let normalized = comment.hasPrefix(" ") ? String(comment.dropFirst()) : comment
         dispatchToDelegate { delegate in
-            delegate.connectionDidReceiveComment(comment, attemptVersion: self.attemptVersion)
+            delegate.connectionDidReceiveComment(normalized, attemptVersion: self.attemptVersion)
         }
     }
     

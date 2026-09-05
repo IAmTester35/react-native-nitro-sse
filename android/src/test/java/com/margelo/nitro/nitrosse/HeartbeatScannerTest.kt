@@ -18,7 +18,8 @@ class HeartbeatScanner {
             if (isReadingComment) {
                 if (isNewline) {
                     isReadingComment = false
-                    comments.add(commentBuffer.toString("UTF-8").trimStart())
+                    val raw = commentBuffer.toString("UTF-8")
+                    comments.add(if (raw.startsWith(" ")) raw.substring(1) else raw)
                     commentBuffer.reset()
                 } else {
                     commentBuffer.write(b.toInt())
@@ -112,5 +113,16 @@ class HeartbeatScannerTest {
         val data = "data: ok\r\n:heartbeat\r\n".toByteArray()
         scanner.scan(data, data.size)
         assertEquals(1, scanner.heartbeatCount)
+    }
+
+    @Test
+    fun testCommentSingleLeadingSpaceDroppedPreservingIndentation() {
+        val scanner = HeartbeatScanner()
+        val data = ": keepalive\n:   indented\n:unspaced\n".toByteArray()
+        scanner.scan(data, data.size)
+        assertEquals(3, scanner.heartbeatCount)
+        assertEquals("keepalive", scanner.comments[0])
+        assertEquals("  indented", scanner.comments[1])
+        assertEquals("unspaced", scanner.comments[2])
     }
 }

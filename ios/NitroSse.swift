@@ -336,12 +336,8 @@ class NitroSse: HybridNitroSseSpec {
         guard isRunning, let config = config, attemptVersion == self.connectionAttemptVersion else { return }
 
         if let interceptor = config.onBeforeRequest {
-            // ARCHITECTURAL DECISION:
-            // LDSwiftEventSource.Config.headerTransform is not used here because it is a synchronous closure
-            // (([String: String]) -> [String: String]) executed on LDSwift's internal queue. In React Native / JSI,
-            // onBeforeRequest returns an asynchronous JS Promise (e.g. for async auth token refreshes). Blocking
-            // synchronously inside headerTransform would risk deadlocking or freezing the JS/UI runtime. Handling it
-            // here allows asynchronously awaiting the JS Promise with a timeout guard before creating EventSource.
+            // Await async JS interceptor (with timeout guard) before creating EventSource,
+            // as LDSwiftEventSource.Config.headerTransform is synchronous.
             let capturedConfig = config
             // Reference-type completion flag to prevent races between interceptor promise resolution and connection timeout.
             class CompletionFlag {
@@ -431,11 +427,7 @@ class NitroSse: HybridNitroSseSpec {
         if let body = config.body {
             request.httpBody = body.data(using: .utf8)
         }
-        // ARCHITECTURAL DECISION:
-        // lastProcessedId is tracked in NitroSse and explicitly injected into URLRequest instead of relying solely
-        // on LDSwiftEventSource's internal lastEventId. Because EventSource instances are destroyed and recreated
-        // across reconnections, network switches, and mobile lifecycle hibernation, lastProcessedId must outlive
-        // the transient EventSource object, remain queryable by JS, and be reported to React Native Network Inspector.
+        // Injected explicitly so lastProcessedId outlives EventSource recreation.
         if let lastId = lastProcessedId, !lastId.isEmpty {
             request.setValue(lastId, forHTTPHeaderField: "Last-Event-ID")
         }
@@ -470,15 +462,7 @@ class NitroSse: HybridNitroSseSpec {
         self.stopInternal()
     }
 
-    /// ARCHITECTURAL DECISION:
-    /// Reconnection is coordinated externally via SseDispatcher and connectionAttemptVersion rather than
-    /// letting LDSwiftEventSource loop internally (which would occur if connectionErrorHandler returned .proceed).
-    /// Reasons:
-    /// 1. Lifecycle & Network synchronization: Prevents background reconnect loops when the app is hibernating
-    ///    or when the device is completely offline.
-    /// 2. Asynchronous interceptor support: Allows awaiting async `onBeforeRequest` JS promises before re-establishing.
-    /// 3. State transparency: Emits observable `SseState.reconnecting` and retry metadata events to React Native.
-    /// 4. Stale callback invalidation: Incrementing `connectionAttemptVersion` discards any residual async callbacks.
+    /// Reconnects with exponential backoff coordinated externally via SseDispatcher and attemptVersion.
     private func scheduleAutomaticReconnect(isError: Bool, fixedDelay: TimeInterval? = nil, attemptVersion: Int) {
         dispatcher.assertOnQueue()
         guard isRunning, attemptVersion == self.connectionAttemptVersion else { return }
@@ -539,6 +523,7 @@ extension NitroSse: SseConnectionDelegate {
             guard let self = self, attemptVersion == self.connectionAttemptVersion else { return }
             self.finishActiveRequestInspector()
             if self.isRunning {
+                // Server clean disconnect invalidates session and stops LDSwift internal timer.
                 self.scheduleAutomaticReconnect(isError: false, attemptVersion: attemptVersion)
             }
         }
@@ -551,9 +536,8 @@ extension NitroSse: SseConnectionDelegate {
             let metadataSize = Double(eventType.utf8.count) + Double(lastEventId.utf8.count)
             self.totalBytesReceived += encodedDataSize + metadataSize
             
-            if !lastEventId.isEmpty {
-                self.lastProcessedId = lastEventId
-            }
+            // WHATWG SSE Spec: If the server sends an empty id (e.g. 'id:\n'), reset lastProcessedId to nil.
+            self.lastProcessedId = lastEventId.isEmpty ? nil : lastEventId
             
             let parsedData = (self.config?.autoParseJSON == true) ? SseEventBuffer.parseJsonToAnyMap(data) : nil
             
@@ -595,10 +579,7 @@ extension NitroSse: SseConnectionDelegate {
             NitroSseNetworkInspector.reportRequestFailed(self.requestId, cancelled: false)
             self.requestId = nil
             
-            // ARCHITECTURAL DECISION:
-            // While LDSwiftEventSource halts internally on HTTP 204 per the SSE specification, explicit handling
-            // here ensures cross-platform parity with Android (where OkHttp does not auto-terminate on 204),
-            // guarantees a clean failAndStop transition to SseState.failed/closed, and notifies the JS runtime.
+            // HTTP 204 No Content explicitly terminates stream across platforms.
             if statusCode == 204 {
                 self.failAndStop(message: "No Content (204). Stopping.", statusCode: 204)
                 return
@@ -647,10 +628,7 @@ extension NitroSse: SseConnectionDelegate {
                 return
             }
 
-            // ARCHITECTURAL DECISION:
-            // SseConnectionHandler configures URLSessionConfiguration.timeoutIntervalForRequest (which resets on every
-            // chunk) rather than LDSwiftEventSource.Config.idleTimeout. Intercepting NSURLErrorTimedOut / -1001 here
-            // maps directly to SseState.stale, notifying the JS layer before initiating backoff reconnection.
+            // Map request timeout to stale state before initiating reconnect.
             let isTimeout = (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut) || statusCode == -1001
             if isTimeout {
                 self.updateState(.stale)

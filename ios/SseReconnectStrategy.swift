@@ -1,19 +1,7 @@
 import Foundation
 
-/// Calculates backoff delays using randomized full jitter exponential backoff to prevent thundering herd spikes on servers.
-/// Encapsulates retry state and HTTP `Retry-After` header parsing rules without thread dependencies.
-///
-/// ARCHITECTURAL DECISION:
-/// Maintained as a dedicated cross-platform strategy rather than delegating to LDSwiftEventSource's internal backoff
-/// (`EventSource.Config.reconnectTime`, `maxReconnectTime`, and `backoffResetThreshold`).
-/// Reasons for custom implementation:
-/// 1. Cross-platform parity: Android's okhttp-sse lacks built-in backoff. Custom calculation guarantees identical
-///    exponential backoff formulas, random jitter distribution, and attempt accounting across iOS and Android.
-/// 2. Threshold enforcement: LDSwiftEventSource has no native concept of `maxReconnectAttempts` (reconnects indefinitely).
-///    This strategy enforces attempt caps and coordinates `SseState.failed` transitions.
-/// 3. Reconnection lifecycle decoupling: LDSwiftEventSource's backoff is coupled to its internal socket loop.
-///    Decoupling the strategy allows NitroSse to control reconnection timing while coordinating with SseDispatcher,
-///    asynchronous JSI token refresh (`onBeforeRequest`), and mobile lifecycle hibernation.
+/// Calculates backoff delays using randomized full jitter exponential backoff.
+/// Custom implementation guarantees cross-platform parity with Android and enforces maxReconnectAttempts.
 class SseReconnectStrategy {
     private var backoffCounter: Int = 0
     private var currentReconnectAttempts: Int = 0
@@ -94,7 +82,8 @@ class SseReconnectStrategy {
         currentReconnectAttempts = 0
     }
     
-    /// Parses `Retry-After` HTTP headers per RFC 7231, accepting either integer seconds or HTTP-date (RFC 1123) formats.
+    /// Parses `Retry-After` HTTP headers per RFC 7231 (integer seconds or RFC 1123 date).
+    /// Fallback to full jitter backoff when response metadata is omitted by underlying client.
     static func extractRetryAfterSeconds(from error: Error) -> TimeInterval? {
         let nsError = error as NSError
         guard let response = nsError.userInfo["response"] as? HTTPURLResponse else { return nil }

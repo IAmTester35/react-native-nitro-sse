@@ -511,4 +511,43 @@ class NitroSseCoordinatorTest {
         assertFalse(sse.isConnected())
         assertEquals(SseState.FAILED, sse.getState())
     }
+
+    @Test
+    fun testEmptyIdResetsLastProcessedId() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val currentReqId = reqIdField.get(sse) as String
+        
+        val lastIdField = NitroSse::class.java.getDeclaredField("lastProcessedId")
+        lastIdField.isAccessible = true
+        
+        // 1. Receive event with id "event-1"
+        sse.connectionDidReceiveMessage("event-1", "message", "hello", currentReqId)
+        drainLoopers()
+        assertEquals("event-1", lastIdField.get(sse))
+        
+        // 2. Receive event with empty id -> resets to null per WHATWG SSE spec
+        sse.connectionDidReceiveMessage("", "message", "world", currentReqId)
+        drainLoopers()
+        assertNull(lastIdField.get(sse))
+        
+        // 3. Receive event with null id -> maintains previous state (null)
+        sse.connectionDidReceiveMessage(null, "message", "test", currentReqId)
+        drainLoopers()
+        assertNull(lastIdField.get(sse))
+        
+        // 4. Receive event with new id -> sets new id
+        sse.connectionDidReceiveMessage("event-2", "message", "foo", currentReqId)
+        drainLoopers()
+        assertEquals("event-2", lastIdField.get(sse))
+    }
 }

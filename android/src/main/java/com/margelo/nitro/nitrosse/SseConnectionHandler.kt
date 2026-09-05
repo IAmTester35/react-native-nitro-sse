@@ -10,6 +10,7 @@ import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import okio.Buffer
 import okio.ForwardingSource
+import okio.GzipSource
 import okio.buffer
 import java.util.concurrent.atomic.AtomicLong
 
@@ -51,18 +52,8 @@ class SseConnectionHandler(private val delegate: SseConnectionDelegate) {
 }
 
 /**
- * Network interceptor for byte accounting and SSE heartbeat detection.
- *
- * ARCHITECTURAL DECISION:
- * Scans the raw response stream before OkHttp's EventSource parser runs, because Square's okhttp-sse
- * (ServerSentEventReader) silently discards SSE comment lines (`:`) and EventSourceListener lacks an
- * onComment callback. Sniffing raw bytes at the network layer allows detecting keep-alive signals
- * and extracting comment payloads without modifying or replacing okhttp-sse with third-party parsers.
- *
- * Why okhttp3.EventListener (e.g. responseBodyEnd) is NOT used:
- * EventListener.responseBodyEnd() only fires once the entire response stream has finished/terminated.
- * For persistent, long-running SSE connections, this callback never fires during active streaming,
- * preventing continuous real-time byte accounting and inspection of incoming keep-alive comment frames.
+ * Network interceptor for byte accounting and SSE heartbeat/comment detection.
+ * Sniffs raw stream before EventSourceReader discards SSE comments (`:`).
  */
 internal class HeartbeatNetworkInterceptor(
     private val totalBytesReceived: AtomicLong,
@@ -80,12 +71,19 @@ internal class HeartbeatNetworkInterceptor(
 
         val responseBody = response.body
         if (responseBody != null) {
+            val isGzip = "gzip".equals(response.header("Content-Encoding"), ignoreCase = true)
+            val rawSource = if (isGzip) {
+                GzipSource(responseBody.source())
+            } else {
+                responseBody.source()
+            }
+
             val countingBody = object : ResponseBody() {
                 override fun contentType() = responseBody.contentType()
-                override fun contentLength() = responseBody.contentLength()
+                override fun contentLength() = if (isGzip) -1L else responseBody.contentLength()
 
                 private val bufferedSource by lazy {
-                    (object : ForwardingSource(responseBody.source()) {
+                    (object : ForwardingSource(rawSource) {
                         private var isAtStartOfLine = true
                         private var isReadingComment = false
                         private val commentBuffer = java.io.ByteArrayOutputStream()
@@ -102,7 +100,9 @@ internal class HeartbeatNetworkInterceptor(
                                         if (isReadingComment) {
                                             if (isNewline) {
                                                 isReadingComment = false
-                                                val commentText = commentBuffer.toString("UTF-8").trimStart()
+                                                val rawComment = commentBuffer.toString("UTF-8")
+                                                // WHATWG SSE Spec: Remove only a single leading space after ':' if present
+                                                val commentText = if (rawComment.startsWith(" ")) rawComment.substring(1) else rawComment
                                                 commentBuffer.reset()
                                                 onHeartbeat(rid, commentText)
                                             } else {
@@ -126,7 +126,11 @@ internal class HeartbeatNetworkInterceptor(
 
                 override fun source() = bufferedSource
             }
-            return response.newBuilder().body(countingBody).build()
+            val responseBuilder = response.newBuilder().body(countingBody)
+            if (isGzip) {
+                responseBuilder.removeHeader("Content-Encoding").removeHeader("Content-Length")
+            }
+            return responseBuilder.build()
         }
         return response
     }
