@@ -31,7 +31,7 @@ npm install react-native-nitro-sse react-native-nitro-modules
 
 | react-native-nitro-sse | react-native-nitro-modules |
 | :--------------------- | :------------------------- |
-| **2.5.0 - latest**     | **0.37.1**                 |
+| **3.0.0 - latest**     | **0.37.1**                 |
 | **2.3.0 - 2.4.2**      | **0.35.9**                 |
 | **2.2.0 - 2.2.3**      | **0.35.4**                 |
 | **2.0.0 - 2.1.1**      | **0.35.2**                 |
@@ -102,6 +102,7 @@ Extends all [`SseConfig`](#configuration-reference-sseconfig) options with lifec
 | Property                 | Type                                        | Description                                                                                                                     |
 | :----------------------- | :------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------ |
 | `client`                 | `SseClient \| null`                         | Underlying SseClient instance.                                                                                                  |
+| `isReady`                | `boolean`                                   | Whether the hook has finished mounting and the client instance is initialized and ready.                                        |
 | `state`                  | `SseState`                                  | Current connection state (`'idle' \| 'connecting' \| 'open' \| 'reconnecting' \| 'paused' \| 'stale' \| 'closed' \| 'failed'`). |
 | `isConnected`            | `boolean`                                   | Whether connection is currently active.                                                                                         |
 | `start()`                | `() => void`                                | Start streaming manually.                                                                                                       |

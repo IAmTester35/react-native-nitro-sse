@@ -1,24 +1,33 @@
 # Changelog
 
-## 2.5.0 (2026-09-08)
+## 3.0.0 (Scheduled for 2026-09-14)
+
+### Breaking Changes
+
+- **Errors**: Calling `start()` or `restart()` before `setup()` now throws `NitroSseStateError`.
+- **Headers**: Calling `setup()` clears previous headers; headers from earlier calls or `updateHeaders()` are no longer preserved.
 
 ### Features
 
-- **API**: Added `useNitroSse` React hook, `dispose()`, `removeAllEventListeners(type?)`, and `maxAuthRetries` configuration.
-- **Heartbeat**: Included SSE comment text in heartbeat payloads on Android.
+- **React Hook**: Added `useNitroSse` hook with `isReady` property.
+- **Client**: Added `dispose()`, `removeAllEventListeners(type?)`, and `maxAuthRetries` configuration.
+- **Android**: Added SSE comment text to heartbeat events.
 
 ### Fixes
 
-- **Headers & Event IDs**: Fixed duplicate `Last-Event-ID` injection on iOS, prevented static headers from overriding reconnection ID, and reset `lastProcessedId` on empty `id:` field across platforms.
-- **Reconnection & Errors**: Halted reconnect attempts on non-retryable 4xx HTTP errors (404, 405, 410, 422), fallback to exponential backoff on HTTP 429 without `Retry-After`, and eliminated duplicate error/close callback delivery on iOS.
-- **Lifecycle & State**: Bound iOS `idleTimeout` to `readTimeout`, synchronized state transitions, and prevented redundant state events during synchronous `dispose()`.
-- **Parsing & Performance**: Handled gzip proxies in heartbeat interceptor, unified single leading space stripping for comments, and moved Android event buffer dispatching off the UI thread.
+- **Headers**: Fixed duplicate `Last-Event-ID` on iOS and prevented static headers from overriding reconnect IDs.
+- **Reconnection**: Stopped reconnection on non-retryable 4xx errors (404, 405, 410, 422).
+- **Reconnection**: Added exponential backoff fallback for HTTP 429 responses without a `Retry-After` header.
+- **iOS**: Fixed duplicate error and close events.
+- **Native**: Fixed crashes on invalid URLs by validating URL schemes on iOS and catching OkHttp exceptions on Android.
+- **Core**: Bound iOS `idleTimeout` to `readTimeout` and moved Android event buffer processing off the UI thread.
+- **Headers**: Stripped CRLF and null characters from headers.
 
 ### Improvements
 
+- **React Hook**: Dynamic header updates in `useNitroSse` now apply without reconnecting the socket.
 - **Dependencies**: Upgraded `react-native-nitro-modules` and `nitrogen` to 0.37.1.
-- **Native**: Enabled OkHttp route failover (`retryOnConnectionFailure`), hardened lifecycle observer registrations, and cached DevTools lookups.
-- **Core & Tooling**: Improved mock driver state handling, byte metrics, and deduplicated native helpers to reduce bundle size.
+- **Android**: Enabled OkHttp `retryOnConnectionFailure`.
 
 ## 2.4.2 (2026-08-14)
 
@@ -57,20 +66,6 @@
 - **Network Monitor Safety**: Added generation tracking to `SseNetworkMonitor` on iOS/Android to discard stale callbacks on restart/teardown.
 - **Architecture Refactoring**: Modularized native core (`NitroSse.swift` / `NitroSse.kt`) into dedicated components (Buffer, Reconnect, Network, Lifecycle).
 - **Testing & Example**: Expanded JS, iOS (XCTest), and Android (JUnit) test coverage and updated example app dashboard.
-
-## 2.4.0-beta.1 (2026-08-03)
-
-### Features
-
-- **Connection State Machine & API**: Introduced `SseState` (`idle`, `connecting`, `open`, `stale`, `reconnecting`, `pause`, `close`, `fail`) and added `getState()` method to inspect active connection state.
-- **State Change Event**: Added `'state'` to `SseEventType` and `state` property to `SseEvent`, enabling event listeners to subscribe directly to connection state transitions.
-
-### Improvements
-
-- **iOS**: Refactored `NitroSse.swift` into smaller, maintainable modules (Buffer, Reconnect, Network, Lifecycle).
-- **Android**: Refactored `NitroSse.kt` into smaller, maintainable modules (Buffer, Reconnect, Network, Lifecycle).
-- **Testing**: Expanded Native Unit Tests for both iOS and Android covering connection state transitions and edge cases.
-- **Example**: Updated example app UI to display real-time connection states.
 
 ## 2.3.2 (2026-07-24)
 

@@ -27,7 +27,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
-  - NitroSse (2.5.0):
+  - NitroSse (3.0.0):
     - hermes-engine
     - LDSwiftEventSource
     - NitroModules
@@ -52,7 +52,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
-  - NitroSse/Tests (2.5.0):
+  - NitroSse/Tests (3.0.0):
     - hermes-engine
     - LDSwiftEventSource
     - NitroModules
@@ -2107,7 +2107,7 @@ SPEC CHECKSUMS:
   hermes-engine: 576c9b40094cee47debbc36067b05270c1fe47eb
   LDSwiftEventSource: b0826ca826ca890609a9833a05cae1f357fd3b99
   NitroModules: 38f8754287858ff1294e43fd43f614a664e54050
-  NitroSse: 6c0aa6253a9b0d2e4d4a105e832560c1bdad0383
+  NitroSse: 438ac4bd23f2492326aee4dbddd4afa56861b302
   RCTDeprecation: a4c521821fab57cbb125b36effe84d897d0dfa12
   RCTRequired: 9f3a7e5645d4bc3f551593de7550bb66ab6e42bc
   RCTSwiftUI: 239ed2eb9e73de5a6f518810630f0c95e01c8702
