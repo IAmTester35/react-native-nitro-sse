@@ -1,20 +1,16 @@
 # react-native-nitro-sse
 
-High-performance Server-Sent Events (SSE) client for React Native, built on top of **Nitro Modules (JSI)**. Designed for mission-critical apps requiring high-throughput streaming, battery optimization, and extreme stability.
+Server-Sent Events (SSE) client for React Native built on **Nitro Modules (JSI)**, supporting event batching, background lifecycle management, and automatic reconnection.
 
 ---
 
-## Why NitroSSE?
+## Features
 
-Traditional EventSource libraries run on the JS thread or use the legacy React Native Bridge. NitroSSE moves the entire control logic down to the native layer:
-
-- **Zero-Latency JSI**: Instantaneous JS-Native communication bypassing the async bridge.
-- **Advanced Backpressure**: Batches high-frequency events and automatically flushes when the buffer is full to prevent memory pressure, keeping the UI thread fluid under extreme load.
-- **Intelligent Reconnect**: Automatic recovery using **Exponential Backoff** and **Jitter** to prevent server stampedes.
-- **Lifecycles**: Auto-hibernates connections in background and resumes on foreground to preserve battery.
-- **Heartbeat Watchdog**: Native detection of keep-alive/ping comments to auto-reconnect dead sockets.
-- **RN DevTools Integration**: Plug-and-play network tracing in **React Native 0.83+ DevTools** (monitor streams directly).
-- **Local Mocking Engine**: Simulates streams, connection drops, and delays entirely in JS without backend setup.
+- **JSI Architecture**: Direct JS-to-native communication without the asynchronous bridge.
+- **Event Batching**: Batches high-frequency events to reduce UI thread load.
+- **Auto Reconnect**: Configurable exponential backoff with jitter.
+- **Lifecycle & Heartbeat**: Pauses and resumes connections on app state changes; detects inactive connections via heartbeat comments.
+- **DevTools & Mocking**: Network inspection in React Native 0.83+ DevTools and local stream simulation.
 
 ---
 
@@ -35,28 +31,32 @@ npm install react-native-nitro-sse react-native-nitro-modules
 
 | react-native-nitro-sse | react-native-nitro-modules |
 | :--------------------- | :------------------------- |
-| **2.5.0 - latest**     | **0.37.0**                 |
-| **2.4.0 - 2.4.2**      | **0.35.9**                 |
-| **2.3.1**              | **0.35.9**                 |
-| **2.3.0**              | **0.35.6**                 |
+| **2.5.0 - latest**     | **0.37.1**                 |
+| **2.3.0 - 2.4.2**      | **0.35.9**                 |
 | **2.2.0 - 2.2.3**      | **0.35.4**                 |
 | **2.0.0 - 2.1.1**      | **0.35.2**                 |
-| **1.6.2**              | **0.35.2**                 |
-| **1.4.0 - 1.6.1**      | **0.35.0**                 |
-| **1.2.2 - 1.3.1**      | **0.34.1**                 |
-| **1.2.0 - 1.2.1**      | **0.34.0**                 |
-| **1.1.0**              | **0.33.9**                 |
-| **1.0.0**              | **0.33.8**                 |
+
+<details>
+<summary>Older versions (1.x)</summary>
+
+| react-native-nitro-sse | react-native-nitro-modules |
+| :--------------------- | :------------------------- |
+| **1.4.0 - 1.6.2**      | **0.35.2**                 |
+| **1.0.0 - 1.3.1**      | **0.34.1**                 |
+
+</details>
 
 ---
 
 ## Usage
 
-### Using the `useNitroSse` Hook (Recommended)
+### Hook (`useNitroSse`)
+
+Recommended for React Native functional components. Handles native lifecycle, listener subscription, and cleanup automatically on unmount.
 
 ```tsx
 import React from 'react';
-import { Text, View } from 'react-native';
+import { Text } from 'react-native';
 import { useNitroSse } from 'react-native-nitro-sse';
 
 function StreamComponent() {
@@ -64,85 +64,123 @@ function StreamComponent() {
     url: 'https://api.example.com/stream',
     headers: { Authorization: 'Bearer TOKEN' },
     autoParseJSON: true,
-    onMessage: (e) => console.log('Received:', e.data, e.parsedData),
+    onMessage: (e) => console.log('Message:', e.data, e.parsedData),
     onError: (e) => console.error('Error:', e.message),
     events: {
-      custom_event: (e) => console.log('Custom event:', e.data),
+      custom_event: (e) => console.log('Custom:', e.data),
     },
   });
 
   return (
-    <View>
-      <Text>
-        Status: {state} ({isConnected ? 'Connected' : 'Disconnected'})
-      </Text>
-    </View>
+    <Text>
+      Status: {state} ({isConnected ? 'Connected' : 'Disconnected'})
+    </Text>
   );
 }
 ```
 
+<details>
+<summary><b><code>useNitroSse</code> Options & Return Values</b></summary>
+
+#### Options (`UseNitroSseOptions`)
+
+Extends all [`SseConfig`](#configuration-reference-sseconfig) options with lifecycle callbacks:
+
+| Option          | Type                                        | Default | Description                                           |
+| :-------------- | :------------------------------------------ | :------ | :---------------------------------------------------- |
+| `autoStart`     | `boolean`                                   | `true`  | Auto-start streaming on mount or URL change.          |
+| `onMessage`     | `(event: SseEvent) => void`                 | —       | Handler for incoming message events.                  |
+| `onError`       | `(event: SseEvent) => void`                 | —       | Handler for transport or connection errors.           |
+| `onOpen`        | `(event: SseEvent) => void`                 | —       | Handler for stream open events.                       |
+| `onClose`       | `(event: SseEvent) => void`                 | —       | Handler for stream close events.                      |
+| `onHeartbeat`   | `(event: SseEvent) => void`                 | —       | Handler for keep-alive heartbeat ping comments (`:`). |
+| `onStateChange` | `(state: SseState) => void`                 | —       | Handler for connection state transitions.             |
+| `events`        | `Record<string, (event: SseEvent) => void>` | —       | Handlers for specific custom event types.             |
+
+#### Return Values (`UseNitroSseReturn`)
+
+| Property                 | Type                                        | Description                                                                                                                     |
+| :----------------------- | :------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------ |
+| `client`                 | `SseClient \| null`                         | Underlying SseClient instance.                                                                                                  |
+| `state`                  | `SseState`                                  | Current connection state (`'idle' \| 'connecting' \| 'open' \| 'reconnecting' \| 'paused' \| 'stale' \| 'closed' \| 'failed'`). |
+| `isConnected`            | `boolean`                                   | Whether connection is currently active.                                                                                         |
+| `start()`                | `() => void`                                | Start streaming manually.                                                                                                       |
+| `stop()`                 | `() => void`                                | Stop streaming manually.                                                                                                        |
+| `restart()`              | `() => void`                                | Restart with a fresh handshake.                                                                                                 |
+| `flush()`                | `() => void`                                | Immediately flush buffered events.                                                                                              |
+| `updateHeaders(headers)` | `(headers: Record<string, string>) => void` | Update request headers dynamically.                                                                                             |
+| `setLastProcessedId(id)` | `(id: string) => void`                      | Update event ID used for `Last-Event-ID` on reconnect.                                                                          |
+| `getStats()`             | `() => SseStats \| undefined`               | Retrieve connection metrics.                                                                                                    |
+| `injectMockEvent(event)` | `(event: Partial<SseEvent>) => void`        | Inject mock event (dev only).                                                                                                   |
+
+</details>
+
+---
+
 ### Imperative API
 
-```tsx
-import { useEffect } from 'react';
+Ideal for Zustand, Redux, background tasks, or services outside the React tree.
+
+```ts
 import { createNitroSse } from 'react-native-nitro-sse';
 
-function StreamComponent() {
-  useEffect(() => {
-    const sse = createNitroSse();
+const sse = createNitroSse();
 
-    sse.setup({
-      url: 'https://api.example.com/stream',
-      headers: { Authorization: 'Bearer TOKEN' },
-      autoParseJSON: true,
-    });
+sse.setup({
+  url: 'https://api.example.com/stream',
+  headers: { Authorization: 'Bearer TOKEN' },
+  autoParseJSON: true,
+});
 
-    sse.addEventListener('message', (e) => console.log('Received:', e.data));
-    sse.addEventListener('error', (e) => console.error('Error:', e.message));
+sse.addEventListener('open', () => console.log('Connected'));
+sse.addEventListener('message', (e) =>
+  console.log('Received:', e.data, e.parsedData)
+);
+sse.addEventListener('error', (e) => console.error('Error:', e.message));
 
-    sse.start();
+sse.start();
 
-    return () => {
-      sse.dispose();
-    };
-  }, []);
-
-  return null;
-}
+// Cleanup: sse.dispose();
 ```
 
 ---
 
-## Configuration Reference (`SseConfig`)
+## API & Configuration Reference
+
+<a id="configuration-reference-sseconfig"></a>
+
+<details>
+<summary><b>Configuration Reference (<code>SseConfig</code>)</b></summary>
 
 | Parameter              | Type                                    | Default  | Description                                                     |
 | :--------------------- | :-------------------------------------- | :------- | :-------------------------------------------------------------- |
-| `url`                  | `string`                                | —        | **Required**. SSE endpoint target.                              |
+| `url`                  | `string`                                | —        | **Required**. SSE endpoint URL.                                 |
 | `method`               | `'get' \| 'post'`                       | `'get'`  | HTTP method.                                                    |
 | `headers`              | `Record<string, string>`                | `{}`     | Custom request headers.                                         |
-| `body`                 | `string`                                | —        | Payload sent during POST requests.                              |
-| `backgroundExecution`  | `boolean`                               | `false`  | (iOS) Keep background execution active when app is minimized.   |
-| `batchingIntervalMs`   | `number`                                | `0`      | Batch window (ms). `0` sends events instantly.                  |
-| `maxBufferSize`        | `number`                                | `1000`   | Native memory safety threshold.                                 |
-| `connectionTimeoutMs`  | `number`                                | `15000`  | Handshake connect timeout threshold.                            |
-| `readTimeoutMs`        | `number`                                | `300000` | Socket inactivity limit triggers reconnect.                     |
-| `retryIntervalMs`      | `number`                                | `1000`   | Backoff base delay (ms) for reconnect.                          |
-| `maxRetryIntervalMs`   | `number`                                | `30000`  | Cap on backoff reconnect delay (ms).                            |
-| `jitterFactor`         | `number`                                | `0.5`    | Randomization spread ratio (`0.0` to `1.0`).                    |
-| `maxReconnectAttempts` | `number`                                | `-1`     | Limit reconnections. `-1` = infinite. `0` = disabled.           |
-| `maxAuthRetries`       | `number`                                | `3`      | Max consecutive 401/403 retry attempts using `onBeforeRequest`. |
-| `autoParseJSON`        | `boolean`                               | `false`  | Parses event `data` on native thread; outputs to `parsedData`.  |
-| `monitorNetwork`       | `boolean`                               | `true`   | Pauses/resumes connection on WiFi <-> Cell or link changes.     |
-| `onBeforeRequest`      | `() => Promise<Record<string, string>>` | —        | Async hook running immediately before every request.            |
-| `mock`                 | `SseMockConfig`                         | —        | Injected mock stream settings (Dev environment only).           |
+| `body`                 | `string`                                | —        | Payload sent with POST requests.                                |
+| `backgroundExecution`  | `boolean`                               | `false`  | (iOS) Continue receiving events when app is in the background.  |
+| `batchingIntervalMs`   | `number`                                | `0`      | Event batching interval in ms (`0` sends immediately).          |
+| `maxBufferSize`        | `number`                                | `1000`   | Maximum events buffered before forcing a dispatch.              |
+| `connectionTimeoutMs`  | `number`                                | `15000`  | Connection timeout in ms.                                       |
+| `readTimeoutMs`        | `number`                                | `300000` | Inactivity timeout in ms before reconnecting.                   |
+| `retryIntervalMs`      | `number`                                | `1000`   | Initial reconnect delay in ms.                                  |
+| `maxRetryIntervalMs`   | `number`                                | `30000`  | Maximum reconnect delay in ms.                                  |
+| `jitterFactor`         | `number`                                | `0.5`    | Reconnect delay randomization factor (`0.0` to `1.0`).          |
+| `maxReconnectAttempts` | `number`                                | `-1`     | Max reconnect attempts (`-1` = infinite, `0` = disabled).       |
+| `maxAuthRetries`       | `number`                                | `3`      | Consecutive 401/403 retry attempts with `onBeforeRequest`.      |
+| `autoParseJSON`        | `boolean`                               | `false`  | Automatically parses JSON `data` strings into `parsedData`.     |
+| `monitorNetwork`       | `boolean`                               | `true`   | Pause and resume connection on network connectivity changes.    |
+| `onBeforeRequest`      | `() => Promise<Record<string, string>>` | —        | Async hook to update headers before each request.               |
+| `mock`                 | `SseMockConfig`                         | —        | Mock stream configuration (development only).                   |
 
----
+</details>
 
-## Mocking & Testing System (`v2.3.0+`)
+<details>
+<summary><b>Mocking & Testing System (<code>v2.3.0+</code>)</b></summary>
 
-NitroSSE includes a built-in mock streaming engine to test application responses without running live endpoints. Mocks are automatically disabled in production configurations.
+Simulate SSE streams locally for testing without a live backend. Mocks are disabled in production builds.
 
-### Configuration (`SseMockConfig`)
+#### Configuration (`SseMockConfig`)
 
 ```tsx
 sse.setup({
@@ -151,7 +189,7 @@ sse.setup({
     mode: 'replace', // 'replace' = Pure JS local simulation; 'inject' = Server + injected events
     eventsPerSecond: 2,
     loop: true,
-    errorRate: 0.1, // 10% chance to simulate connection drops and trigger reconnects
+    errorRate: 0.1, // 10% chance to simulate connection drops
     data: [
       { type: 'open', statusCode: 200 },
       { type: 'message', data: 'Initial greeting' },
@@ -160,15 +198,15 @@ sse.setup({
         data: '{"id":123,"status":"online"}',
         delayMs: 1500,
       },
-      { type: 'message', data: 'Periodic heartbeat comments' },
+      { type: 'message', data: 'Periodic heartbeat' },
     ],
   },
 });
 ```
 
-### Manual Injector
+#### Manual Injector
 
-Inject custom testing events programmatically at runtime to mock specific app situations:
+Inject custom testing events programmatically at runtime:
 
 ```tsx
 sse.injectMockEvent({
@@ -178,18 +216,23 @@ sse.injectMockEvent({
 });
 ```
 
----
+</details>
 
-## Advanced Operations
+<details>
+<summary><b>Advanced Operations</b></summary>
 
-- **`updateHeaders(headers)`**: Change request headers (e.g., updating expired authentication tokens) without closing and opening the connection manually.
-- **`setLastProcessedId(id)`**: Update the native parser's last processed event ID. Native uses this ID as the `Last-Event-ID` header on next reconnection.
-- **`restart()`**: Immediately tears down the current network socket and initializes fresh handshake sequence.
-- **`flush()`**: Explicitly forces dispatch of currently buffered events, ignoring `batchingIntervalMs`.
-- **`getState()`**: Returns the current real-time connection state (`'idle' | 'connecting' | 'open' | 'reconnecting' | 'stale' | 'closed' | 'failed'`).
-- **`removeEventListener(type, listener)`**: Unregisters a specific event listener.
-- **`removeAllEventListeners(type?)`**: Unregisters all listeners, optionally filtered by event type.
-- **`dispose()`**: Synchronously tears down active network sockets, timers, and lifecycle observers, and clears all registered listeners.
+- **`isConnected()`**: Returns whether connection is currently active (`connecting`, `open`, or `reconnecting`).
+- **`getStats()`**: Returns connection metrics (`totalBytesReceived`, `reconnectCount`, `lastErrorTime`, `lastErrorCode`).
+- **`updateHeaders(headers)`**: Updates request headers without closing the connection.
+- **`setLastProcessedId(id)`**: Updates event ID sent in `Last-Event-ID` header on reconnect.
+- **`restart()`**: Reconnects the stream with a clean connection.
+- **`flush()`**: Dispatches buffered events immediately without waiting for `batchingIntervalMs`.
+- **`getState()`**: Returns current state (`'idle' \| 'connecting' \| 'open' \| 'stale' \| 'reconnecting' \| 'paused' \| 'closed' \| 'failed'`).
+- **`removeEventListener(type, listener)`**: Unregisters an event listener.
+- **`removeAllEventListeners(type?)`**: Unregisters all event listeners, optionally filtered by event type.
+- **`dispose()`**: Closes active connections, clears timers, observers, and listeners.
+
+</details>
 
 ---
 

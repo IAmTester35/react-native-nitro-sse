@@ -1,34 +1,24 @@
 # Changelog
 
-## 2.5.0 (2026-09-05)
+## 2.5.0 (2026-09-08)
 
 ### Features
 
-- **React**: Added `useNitroSse` hook for lifecycle management and auto-cleanup.
-- **Core**: Added `dispose()`, `removeAllEventListeners(type?)`, and `maxAuthRetries` option.
-- **Android**: Included SSE comment text in heartbeat payload.
+- **API**: Added `useNitroSse` React hook, `dispose()`, `removeAllEventListeners(type?)`, and `maxAuthRetries` configuration.
+- **Heartbeat**: Included SSE comment text in heartbeat payloads on Android.
 
 ### Fixes
 
-- **Core**: Reset `lastProcessedId` to `null` on empty `id:` field on Android and iOS.
-- **Core**: Prevented static `config.headers` from overriding dynamic reconnection `Last-Event-ID`.
-- **Core**: Halted reconnect attempts on fatal 4xx HTTP errors (404, 405, 410, 422).
-- **Core**: Prevented redundant state dispatches during synchronous `dispose()`.
-- **iOS**: Bound `idleTimeout` to `readTimeout` in `SseConnectionHandler` to prevent 300s default override.
-- **iOS**: Prevented dual delivery of `onError` and `onClosed` on connection failure.
-- **iOS**: Fixed duplicate `Last-Event-ID` header injection and thread-synchronized state transitions.
-- **Android**: Added `GzipSource` in heartbeat interceptor to prevent crashes on forced gzip proxies.
-- **Android**: Fallback to exponential backoff on HTTP 429 missing `Retry-After`.
-- **Android**: Dispatched event buffer off the UI thread.
-- **Cross-Platform**: Unified comment parsing to strip only a single leading space after `:`.
+- **Headers & Event IDs**: Fixed duplicate `Last-Event-ID` injection on iOS, prevented static headers from overriding reconnection ID, and reset `lastProcessedId` on empty `id:` field across platforms.
+- **Reconnection & Errors**: Halted reconnect attempts on non-retryable 4xx HTTP errors (404, 405, 410, 422), fallback to exponential backoff on HTTP 429 without `Retry-After`, and eliminated duplicate error/close callback delivery on iOS.
+- **Lifecycle & State**: Bound iOS `idleTimeout` to `readTimeout`, synchronized state transitions, and prevented redundant state events during synchronous `dispose()`.
+- **Parsing & Performance**: Handled gzip proxies in heartbeat interceptor, unified single leading space stripping for comments, and moved Android event buffer dispatching off the UI thread.
 
 ### Improvements
 
-- **Android**: Enabled OkHttp `retryOnConnectionFailure(true)` for transparent route failover.
-- **Nitro**: Upgraded `react-native-nitro-modules` and `nitrogen` to 0.37.0.
-- **TypeScript**: Improved byte metrics and mock driver state handling.
-- **Native**: Hardened lifecycle observer registration, thread safety, and cached DevTools lookups.
-- Deduplicated native helpers and reduced bundle size.
+- **Dependencies**: Upgraded `react-native-nitro-modules` and `nitrogen` to 0.37.1.
+- **Native**: Enabled OkHttp route failover (`retryOnConnectionFailure`), hardened lifecycle observer registrations, and cached DevTools lookups.
+- **Core & Tooling**: Improved mock driver state handling, byte metrics, and deduplicated native helpers to reduce bundle size.
 
 ## 2.4.2 (2026-08-14)
 
