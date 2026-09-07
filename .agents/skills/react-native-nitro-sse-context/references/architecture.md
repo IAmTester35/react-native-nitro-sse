@@ -10,7 +10,7 @@ Unlike legacy EventSource libraries running over the asynchronous React Native B
 
 ```text
 [ JS Engine (QuickJS/Hermes) ]
-              │ (Zero-latency direct C++ JSI call)
+              │ (Direct C++ JSI call)
               ▼
 [ HybridObject C++ Glue (nitrogen/generated) ]
        ┌──────┴────────────────────────┐
@@ -28,7 +28,7 @@ DispatchQueue (.utility)       HandlerThread ("NitroSseThread")
 
 ## 2. Threading Serialization Model
 
-To eliminate race conditions from continuous socket streaming and prevent crashes when invoking callbacks on the JS thread, the library enforces **Single-Threaded Native Serialization**:
+To prevent race conditions and ensure thread-safe callback invocation, the library uses **Single-Threaded Native Serialization**:
 
 ### iOS Dispatcher (`SseDispatcher`)
 - Uses a dedicated `DispatchQueue` labeled `com.margelo.nitro.sse` with QoS `.utility`.
@@ -38,13 +38,13 @@ To eliminate race conditions from continuous socket streaming and prevent crashe
 ### Android Dispatcher (`SseDispatcher`)
 - Initializes a dedicated `android.os.HandlerThread("NitroSseThread")`.
 - `AndroidSseDispatcher` wraps an `android.os.Handler` to dispatch all connection, teardown, logging, and event processing tasks onto this background looper thread.
-- Dispatched events to JS (`onEvent`) pass through `mainDispatcher` (`Handler(Looper.getMainLooper())`) to ensure thread safety with JSI/React Native UI thread requirements.
+- Dispatched events to JS (`onEvent`) are routed via Nitro Modules' C++ `CallInvoker` directly from `SseDispatcher`, avoiding main UI thread blocking while ensuring thread safety.
 
 ---
 
-## 3. Backpressure & Event Buffering (`SseEventBuffer`)
+## 3. Event Buffering & Batching (`SseEventBuffer`)
 
-Under high-frequency SSE streams (e.g., AI streaming tokens at 100+ chunks/second), delivering each event individually to the JS thread would overload the JSI bridge and drop UI frame rates.
+Under high-frequency SSE streams, delivering each chunk individually can overload the bridge and cause UI frame drops.
 
 ```text
 Incoming SSE Chunks (Native Thread)
@@ -75,7 +75,7 @@ To prevent race conditions caused by stale async callbacks arrived after a clien
 2. **Stale Callback Guard**: Every network listener/callback compares its `attemptVersion` with `self.connectionAttemptVersion`. If mismatched, the callback aborts immediately without mutating client state.
 3. **Exponential Backoff & Jitter**:
    - `retryIntervalMs` (default: 1000ms), `maxRetryIntervalMs` (default: 30000ms).
-   - Random jitter (default factor: 0.5) avoids thundering herd server overload during recovery.
+   - Random jitter (default factor: 0.5) prevents synchronized reconnect bursts across clients.
 4. **Input Parameter Hardening & Validation**:
    - iOS (`SseReconnectStrategy.swift`) and Android (`SseReconnectStrategy.kt`, `SseEventBuffer.swift`, `SseEventBuffer.kt`) strictly validate `retryIntervalMs`, `maxRetryIntervalMs`, `jitterFactor`, `maxReconnectAttempts`, and `maxBufferSize`.
    - If values are `NaN`, `infinity`, or negative (except `maxReconnectAttempts: -1`), fallback default values are applied. `jitterFactor` is clamped to `[0.0, 1.0]`.
@@ -89,12 +89,12 @@ To prevent race conditions caused by stale async callbacks arrived after a clien
 
 ## 5. Mobile Lifecycle & Network Monitoring
 
-### Lifecycle Hibernation (`SseLifecycleManager`)
+### Lifecycle Management (`SseLifecycleManager`)
 - **iOS**: Listens to `UIApplication.didEnterBackgroundNotification` and `willEnterForegroundNotification`.
-  - If `backgroundExecution == false`: Flushes pending events, closes socket, marks `wasRunningBeforeHibernation = true`, conserving battery. Automatically resumes stream when returning to foreground.
+  - If `backgroundExecution == false`: Flushes pending events, closes socket, and automatically resumes streaming on foreground.
   - If `backgroundExecution == true`: Requests `beginBackgroundTask` to extend socket activity as permitted by iOS.
 - **Android**: Listens to lifecycle events via `ProcessLifecycleOwner.get().lifecycle`.
-  - Automatically hibernates socket when app is minimized to background and resumes on foreground restoration.
+  - Pauses socket connection when app enters background and resumes on foreground.
 
 ### Network Monitoring (`SseNetworkMonitor`)
 - **iOS**: Monitors network interface changes via `Network.framework` (`NWPathMonitor`).

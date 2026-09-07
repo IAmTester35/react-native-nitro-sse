@@ -1,6 +1,6 @@
 ---
 name: react-native-nitro-sse-context
-description: Provides comprehensive architectural context for the react-native-nitro-sse library — a high-performance Server-Sent Events (SSE) solution for React Native powered by Nitro Modules (JSI). ALWAYS use this skill when working in the react-native-nitro-sse repository, or when asked about JSI architecture, TypeScript/Kotlin/Swift code, Nitrogen codegen, event buffering, threading serialization, lifecycle hibernation, network monitoring, or writing/running unit tests for JS/Android/iOS.
+description: Provides architectural context for the react-native-nitro-sse library — a Server-Sent Events (SSE) solution for React Native using Nitro Modules (JSI). Use this skill when working in the react-native-nitro-sse repository, or when asked about JSI architecture, TypeScript/Kotlin/Swift code, Nitrogen codegen, event buffering, threading serialization, lifecycle management, network monitoring, or writing/running unit tests for JS/Android/iOS.
 ---
 
 # react-native-nitro-sse — Project Context
@@ -10,7 +10,7 @@ This file serves as the main entry point for the **react-native-nitro-sse** Cust
 ## 1. Project Overview
 
 - **Project Name:** `react-native-nitro-sse`
-- **Objective:** High-performance Server-Sent Events (SSE) client library for React Native, completely eliminating the legacy asynchronous React Native Bridge via **Nitro Modules (JSI)**. Designed for enterprise/AI streaming applications requiring high throughput, low battery consumption, and maximum stability.
+- **Objective:** Server-Sent Events (SSE) client library for React Native built on **Nitro Modules (JSI)**, supporting background lifecycle management, event batching, and automatic reconnection.
 - **Type:** Open-source React Native Native Module (Library & Workspaces Monorepo).
 - **Author:** IAmTester35 (`maithanhnam141@gmail.com`)
 
@@ -61,12 +61,12 @@ react-native-nitro-sse/
 
 ## 4. Core Architectural Principles
 
-1. **Zero-Bridge Latency (JSI)**: JS-Native interactions execute directly via JSI Hybrid Objects, completely bypassing the asynchronous legacy React Native Bridge.
-2. **Single-Threaded Serialization**: All mutable state operations and native network callbacks MUST execute on a dedicated `SseDispatcher` (`DispatchQueue` on iOS, `HandlerThread` on Android) to prevent data races.
-3. **Event Batching & Backpressure (`SseEventBuffer`)**: Automatically batches events based on `batchingIntervalMs` before flushing to JS to reduce JSI bridge overhead. Forces immediate flushing when hitting `maxBufferSize`.
-4. **Mobile Hibernation & Battery Preservation (`SseLifecycleManager`)**: Hibernates connection when app enters background (unless `backgroundExecution: true`) and automatically resumes on foregrounding.
-5. **Proactive Network Monitoring (`SseNetworkMonitor`)**: Tracks network interface changes (WiFi <-> Cellular) to proactively restart streams, preventing stale socket connections.
-6. **Versioned Reconnections**: Employs a `connectionAttemptVersion` counter to discard stale asynchronous callbacks from previous connection cycles.
+1. **JSI Architecture**: JS-native communication executes directly via JSI Hybrid Objects without the asynchronous bridge.
+2. **Single-Threaded Serialization**: Mutable state and native network callbacks execute on a dedicated `SseDispatcher` (`DispatchQueue` on iOS, `HandlerThread` on Android) to avoid race conditions.
+3. **Event Batching (`SseEventBuffer`)**: Batches events based on `batchingIntervalMs` before dispatching to JS. Flushes immediately when reaching `maxBufferSize`.
+4. **Lifecycle Management (`SseLifecycleManager`)**: Pauses connection when app enters background (unless `backgroundExecution: true`) and resumes on foreground.
+5. **Network Monitoring (`SseNetworkMonitor`)**: Listens to interface changes (WiFi <-> Cellular) to reconnect inactive streams.
+6. **Versioned Reconnections**: Uses a `connectionAttemptVersion` counter to ignore callbacks from previous connection attempts.
 
 ## 5. Reference Documentation (Progressive Disclosure)
 

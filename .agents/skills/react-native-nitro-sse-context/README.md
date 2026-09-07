@@ -6,7 +6,7 @@ This directory contains a Custom Skill designed according to the 3-layer Progres
 
 - `SKILL.md`: Main entry point containing YAML metadata and multi-language library overview (TS, Kotlin, Swift).
 - `references/`: Deep-dive resource documentation (read on-demand when tasks require it):
-  - `architecture.md`: Details on JSI Nitro Modules architecture, Threading Serialization, Backpressure Buffer, Lifecycle & DevTools Inspector.
+  - `architecture.md`: Details on JSI Nitro Modules architecture, Threading Serialization, Event Buffer, Lifecycle & DevTools Inspector.
   - `conventions.md`: Code conventions across TypeScript, Kotlin, and Swift, thread safety rules, error status handling & attempt versioning.
   - `native-implementations.md`: Implementation details on iOS (LDSwiftEventSource / GCD) and Android (OkHttp SSE / HandlerThread).
   - `testing-guide.md`: 3-tier unit testing workflow (Jest JS, Android JUnit/Robolectric, iOS XCTest).

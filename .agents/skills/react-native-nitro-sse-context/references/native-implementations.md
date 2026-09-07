@@ -53,7 +53,7 @@ The Android implementation is built on **OkHttp SSE** (`okhttp3.sse.EventSource`
 3. **`AndroidSseDispatcher.kt` & `SseDispatcher.kt`**:
    - Wraps an `android.os.HandlerThread("NitroSseThread")` and `Handler` to serialize all execution onto a dedicated background thread.
 4. **`SseEventBuffer.kt`**:
-   - Accumulates native `SseEvent` items and executes the JS callback (`onEvent`) via `mainDispatcher` (`Handler(Looper.getMainLooper())`).
+   - Accumulates native `SseEvent` items and flushes them in batches directly on `sseDispatcher`, with `onEvent` callbacks safely routed to the JS thread via Nitro's `CallInvoker`.
    - Validates `maxBufferSize` thresholds against invalid numbers (`NaN`, infinity, <= 0).
 5. **`SseLifecycleManager.kt`**:
    - Uses Android Jetpack's `DefaultLifecycleObserver` registered with `ProcessLifecycleOwner.get().lifecycle` to observe `ON_STOP` (app background) and `ON_START` (app foreground).
