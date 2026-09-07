@@ -25,6 +25,9 @@ class SseLifecycleManager(
 
     private val _hasSubscribed = AtomicBoolean(false)
 
+    /**
+     * Registers the lifecycle observer with the application lifecycle provider on the main thread.
+     */
     fun startObserving() {
         if (_hasSubscribed.compareAndSet(false, true)) {
             mainDispatcher.post {
@@ -33,6 +36,9 @@ class SseLifecycleManager(
         }
     }
 
+    /**
+     * Unregisters the lifecycle observer from the application lifecycle provider.
+     */
     fun stopObserving() {
         if (_hasSubscribed.compareAndSet(true, false)) {
             mainDispatcher.post {

@@ -27,6 +27,12 @@ class SseLifecycleManager {
         self.onForeground = onForeground
     }
     
+    /// Ensures notification observers are unregistered and active background tasks are ended on deallocation.
+    deinit {
+        stopObserving()
+        cleanupBackgroundTask()
+    }
+    
     /// Registers observer for iOS application state transitions via `NotificationCenter`.
     /// Calls `removeObserver(self)` first to guarantee idempotency without mutable state.
     func startObserving() {

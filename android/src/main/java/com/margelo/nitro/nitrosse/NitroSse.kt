@@ -590,6 +590,9 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         clearActiveRequestAndReportEnd()
     }
 
+    /**
+     * Synchronously cleans up active network sockets, timers, and lifecycle observers.
+     */
     override fun dispose() {
         Log.d(TAG, "Disposing NitroSse instance and cleaning up resources...")
         
