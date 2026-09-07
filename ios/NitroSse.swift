@@ -127,11 +127,15 @@ class NitroSse: HybridNitroSseSpec {
         }
     }
 
-    /// Replaces active HTTP headers for subsequent request attempts (e.g. updating authorization tokens).
+    /// Updates active HTTP headers for subsequent request attempts (e.g. updating authorization tokens).
     func updateHeaders(headers: [String: String]) throws {
         dispatcher.async {
             guard let config = self.config else { return }
-            self.config = config.copyWith(headers: headers)
+            var merged = config.headers ?? [:]
+            for (k, v) in headers {
+                merged[k] = v
+            }
+            self.config = config.copyWith(headers: merged)
             print("[NitroSse] Headers updated for subsequent connections.")
         }
     }
@@ -406,7 +410,12 @@ class NitroSse: HybridNitroSseSpec {
 
     private func performEstablishConnection(attemptVersion: Int) {
         dispatcher.assertOnQueue()
-        guard isRunning, let config = config, let url = URL(string: config.url), attemptVersion == self.connectionAttemptVersion else { return }
+        guard isRunning, let config = config, attemptVersion == self.connectionAttemptVersion else { return }
+        guard let url = URL(string: config.url), let scheme = url.scheme, ["http", "https"].contains(scheme.lowercased()) else {
+            print("[NitroSse] Invalid SSE URL: \(config.url)")
+            self.failAndStop(message: "Invalid URL: \(config.url)", statusCode: -1)
+            return
+        }
         
         self.updateState(.connecting)
         self.finishActiveRequestInspector()

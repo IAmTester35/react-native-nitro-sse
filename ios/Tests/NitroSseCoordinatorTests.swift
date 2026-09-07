@@ -3,10 +3,11 @@ import NitroModules
 @testable import NitroSse
 
 class NitroSseCoordinatorTests: XCTestCase {
+    private let TEST_URL = "http://localhost:33333/events"
     
     private func createMockConfig(maxReconnectAttempts: Double = 2) -> SseConfig {
         return SseConfig(
-            url: "http://localhost:9999/dummy",
+            url: TEST_URL,
             method: .get,
             headers: [:],
             body: nil,
@@ -287,7 +288,7 @@ class NitroSseCoordinatorTests: XCTestCase {
         dispatcher.executeAllPendingBlocks()
         
         // Construct standard HTTP 429 response containing Retry-After headers.
-        let url = URL(string: "http://localhost:9999/dummy")!
+        let url = URL(string: TEST_URL)!
         let response = HTTPURLResponse(url: url, statusCode: 429, httpVersion: nil, headerFields: ["Retry-After": "5", "retry-after": "5"])!
         let error = NSError(domain: "NSURLErrorDomain", code: 429, userInfo: ["response": response])
         
@@ -511,5 +512,26 @@ class NitroSseCoordinatorTests: XCTestCase {
         
         XCTAssertFalse(sse.isConnected())
         XCTAssertEqual(try! sse.getState(), .failed)
+    }
+
+    func testUpdateHeadersMergesWithExistingHeaders() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig().copyWith(headers: ["X-Initial": "1", "Authorization": "old"])
+        
+        try! sse.setup(config: config) { _ in }
+        dispatcher.executeAllPendingBlocks()
+        
+        try! sse.updateHeaders(headers: ["Authorization": "new", "Tenant": "tenant-1"])
+        dispatcher.executeAllPendingBlocks()
+        
+        let mirror = Mirror(reflecting: sse)
+        if let configProp = mirror.children.first(where: { $0.label == "config" })?.value as? SseConfig {
+            XCTAssertEqual(configProp.headers?["X-Initial"], "1")
+            XCTAssertEqual(configProp.headers?["Authorization"], "new")
+            XCTAssertEqual(configProp.headers?["Tenant"], "tenant-1")
+        } else {
+            XCTFail("Could not access config property on NitroSse")
+        }
     }
 }
