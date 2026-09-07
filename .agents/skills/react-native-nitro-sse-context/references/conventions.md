@@ -69,14 +69,14 @@ The repository enforces responsibility boundaries:
 
 All native implementations MUST adhere to the following HTTP status code matrix:
 
-| HTTP Code | Mandatory Native Behavior | Target Connection State |
-|---|---|---|
-| **200 OK** | Emit `open` event, reset retry counters & consecutive auth error counters. | `SseState.OPEN` |
-| **204 No Content** | Emit `error` event ("No Content (204). Stopping."), cancel socket, DO NOT retry. | `SseState.FAILED` -> `CLOSED` |
-| **400 Bad Request** | Emit `error` event, close socket, do not retry. | `SseState.FAILED` -> `CLOSED` |
-| **401 / 403 Auth Error** | If `onBeforeRequest` is configured, increment `consecutiveAuthErrors` and attempt token refresh (max 3 retries). Stop if no interceptor or retries exhausted. | `SseState.RECONNECTING` (or `FAILED`) |
-| **429 Rate Limit / 503** | If `Retry-After` header present, pause for specified duration + random Jitter. Stop if 429 has no `Retry-After`. | `SseState.RECONNECTING` (or `FAILED`) |
-| **Timeout (-1001 / SocketTimeout)** | Mark connection as stale, emit `error` event, and schedule automatic reconnection. | `SseState.STALE` -> `RECONNECTING` |
+| HTTP Code                           | Mandatory Native Behavior                                                                                                                                     | Target Connection State               |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| **200 OK**                          | Emit `open` event, reset retry counters & consecutive auth error counters.                                                                                    | `SseState.OPEN`                       |
+| **204 No Content**                  | Emit `error` event ("No Content (204). Stopping."), cancel socket, DO NOT retry.                                                                              | `SseState.FAILED` -> `CLOSED`         |
+| **400 Bad Request**                 | Emit `error` event, close socket, do not retry.                                                                                                               | `SseState.FAILED` -> `CLOSED`         |
+| **401 / 403 Auth Error**            | If `onBeforeRequest` is configured, increment `consecutiveAuthErrors` and attempt token refresh (max 3 retries). Stop if no interceptor or retries exhausted. | `SseState.RECONNECTING` (or `FAILED`) |
+| **429 Rate Limit / 503**            | If `Retry-After` header present, pause for specified duration + random Jitter. Fallback to exponential backoff if 429 has no `Retry-After`.                    | `SseState.RECONNECTING` (or `FAILED`) |
+| **Timeout (-1001 / SocketTimeout)** | Mark connection as stale, emit `error` event, and schedule automatic reconnection.                                                                            | `SseState.STALE` -> `RECONNECTING`    |
 
 ---
 
@@ -98,7 +98,17 @@ All asynchronous socket, timer, or network path callbacks **MUST** verify genera
        }
    }
    ```
+
    If `attemptVersion != currentVersion`, the callback terminates immediately without logging errors or modifying client connection state.
 
 2. **`monitorGeneration`**:
    `SseNetworkMonitor` implementations (iOS & Android) increment a `monitorGeneration` counter on `start()` and `stop()` to discard queued background path updates from previous path monitor instances.
+
+---
+
+## 7. Testing URL Convention
+
+All test files (TypeScript, Kotlin, Swift) MUST use the unified canonical test URL constant:
+
+- `TEST_URL = 'http://localhost:33333/events'`
+  Avoid using ad-hoc, random, or arbitrary endpoint URLs (`node example/sse-server.js`).

@@ -67,6 +67,7 @@ react-native-nitro-sse/
 4. **Lifecycle Management (`SseLifecycleManager`)**: Pauses connection when app enters background (unless `backgroundExecution: true`) and resumes on foreground.
 5. **Network Monitoring (`SseNetworkMonitor`)**: Listens to interface changes (WiFi <-> Cellular) to reconnect inactive streams.
 6. **Versioned Reconnections**: Uses a `connectionAttemptVersion` counter to ignore callbacks from previous connection attempts.
+7. **Canonical Testing Endpoint**: All test suites (JS/TS, Android, iOS) standardize on `const TEST_URL = 'http://localhost:33333/events'` matching `example/sse-server.js` instead of arbitrary URLs.
 
 ## 5. Reference Documentation (Progressive Disclosure)
 
