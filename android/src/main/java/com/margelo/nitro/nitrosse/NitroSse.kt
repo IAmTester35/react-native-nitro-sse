@@ -217,7 +217,8 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     override fun updateHeaders(headers: Map<String, String>) {
         synchronized(this) {
             this.config?.let {
-                this.config = it.copy(headers = headers)
+                val merged = (it.headers ?: emptyMap()) + headers
+                this.config = it.copy(headers = merged)
             }
         }
     }
@@ -349,39 +350,44 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         
         oldRequestId?.let { NetworkInspector.reportResponseEnd(it, totalBytesReceived.get()) }
         
-        // Set SSE headers explicitly for Network Inspector visibility and encoding control.
-        val requestBuilder = Request.Builder()
-            .url(currentConfig.url)
-            .header("Accept", "text/event-stream")
-            .header("Cache-Control", "no-cache")
-        
-        // Populate config headers first, filtering out Last-Event-ID so dynamic reconnection ID takes precedence.
-        currentConfig.headers?.forEach { (k, v) -> 
-            if (!k.equals("Last-Event-ID", ignoreCase = true)) {
-                requestBuilder.header(k, v)
+        try {
+            // Set SSE headers explicitly for Network Inspector visibility and encoding control.
+            val requestBuilder = Request.Builder()
+                .url(currentConfig.url)
+                .header("Accept", "text/event-stream")
+                .header("Cache-Control", "no-cache")
+            
+            // Populate config headers first, filtering out Last-Event-ID so dynamic reconnection ID takes precedence.
+            currentConfig.headers?.forEach { (k, v) -> 
+                if (!k.equals("Last-Event-ID", ignoreCase = true)) {
+                    requestBuilder.header(k, v)
+                }
             }
+
+            currentLastId?.let { 
+                if (it.isNotEmpty()) requestBuilder.header("Last-Event-ID", it) 
+            }
+
+            // Explicitly set identity encoding after custom headers to prevent OkHttp from requesting gzip.
+            // If gzipped, HeartbeatNetworkInterceptor intercepts raw compressed bytes before decompression,
+            // corrupting byte-level comment scanning for keep-alive events (':').
+            requestBuilder.header("Accept-Encoding", "identity")
+
+            if (currentConfig.method == HttpMethod.POST) {
+                val body = currentConfig.body?.toRequestBody("application/json".toMediaType()) ?: "".toRequestBody()
+                requestBuilder.post(body)
+            }
+
+            requestBuilder.tag(String::class.java, newRequestId)
+            val request = requestBuilder.build()
+            NetworkInspector.reportRequestStart(newRequestId, request)
+            
+            val newEventSource = connectionHandler.createEventSource(client!!, request, newRequestId)
+            synchronized(this) { eventSource = newEventSource }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create SSE connection request: ${e.message}", e)
+            failAndStop("Invalid connection request: ${e.message}", -1.0)
         }
-
-        currentLastId?.let { 
-            if (it.isNotEmpty()) requestBuilder.header("Last-Event-ID", it) 
-        }
-
-        // Explicitly set identity encoding after custom headers to prevent OkHttp from requesting gzip.
-        // If gzipped, HeartbeatNetworkInterceptor intercepts raw compressed bytes before decompression,
-        // corrupting byte-level comment scanning for keep-alive events (':').
-        requestBuilder.header("Accept-Encoding", "identity")
-
-        if (currentConfig.method == HttpMethod.POST) {
-            val body = currentConfig.body?.toRequestBody("application/json".toMediaType()) ?: "".toRequestBody()
-            requestBuilder.post(body)
-        }
-
-        requestBuilder.tag(String::class.java, newRequestId)
-        val request = requestBuilder.build()
-        NetworkInspector.reportRequestStart(newRequestId, request)
-        
-        val newEventSource = connectionHandler.createEventSource(client!!, request, newRequestId)
-        synchronized(this) { eventSource = newEventSource }
     }
 
     override fun connectionDidOpen(response: Response, requestId: String) {

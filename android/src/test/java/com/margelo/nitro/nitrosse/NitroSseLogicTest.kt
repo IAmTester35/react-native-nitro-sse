@@ -26,6 +26,9 @@ import java.util.concurrent.TimeUnit
  * event buffer capacity/timer flushing, multi-threaded event submission, and OkHttp listener delivery.
  */
 class NitroSseLogicTest {
+    companion object {
+        private const val TEST_URL = "http://localhost:33333/events"
+    }
 
     @Test
     fun testBackoffWithJitterCalculation() {
@@ -93,9 +96,32 @@ class NitroSseLogicTest {
     }
 
     @Test
+    fun testReconnectStrategyRecordAttempt() {
+        val strategy = SseReconnectStrategy()
+        strategy.configure(
+            retryIntervalMs = 1000.0,
+            maxRetryIntervalMs = 30000.0,
+            jitterFactor = 0.0,
+            maxReconnectAttempts = 2
+        )
+
+        assertEquals(0, strategy.currentReconnectAttempts)
+        assertEquals(1, strategy.recordAttempt())
+        assertEquals(1, strategy.currentReconnectAttempts)
+        assertFalse(strategy.hasReachedMaxAttempts())
+
+        assertEquals(2, strategy.recordAttempt())
+        assertTrue(strategy.hasReachedMaxAttempts())
+
+        strategy.reset()
+        assertEquals(0, strategy.currentReconnectAttempts)
+        assertFalse(strategy.hasReachedMaxAttempts())
+    }
+
+    @Test
     fun testRetryAfterDateParsing() {
         fun createResponse(headerValue: String?): Response {
-            val request = Request.Builder().url("https://example.com").build()
+            val request = Request.Builder().url(TEST_URL).build()
             val builder = Response.Builder()
                 .request(request)
                 .protocol(Protocol.HTTP_1_1)
@@ -175,7 +201,7 @@ class NitroSseLogicTest {
     @Test
     fun testRetryAfterInvalidDate() {
         fun createResponse(headerValue: String): Response {
-            val request = Request.Builder().url("https://example.com").build()
+            val request = Request.Builder().url(TEST_URL).build()
             return Response.Builder()
                 .request(request)
                 .protocol(Protocol.HTTP_1_1)

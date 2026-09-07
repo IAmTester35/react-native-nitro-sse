@@ -101,4 +101,30 @@ class NitroSseJsonTest {
         val result = JsonUtils.parseJsonToAnyMap(sb.toString())
         assertNull(result)
     }
+
+    @Test
+    fun testNonObjectRootsReturnNull() {
+        assertNull(JsonUtils.parseJsonToAnyMap("[\"item1\", \"item2\"]"))
+        assertNull(JsonUtils.parseJsonToAnyMap("\"plain string\""))
+        assertNull(JsonUtils.parseJsonToAnyMap("12345"))
+        assertNull(JsonUtils.parseJsonToAnyMap("true"))
+        assertNull(JsonUtils.parseJsonToAnyMap("null"))
+    }
+
+    @Test
+    fun testWhitespaceAndValidJson() {
+        val trimmed = "   \n\t {\"key\": \"value\"} \r\n ".trim()
+        assertTrue(trimmed.startsWith("{"))
+        val map = JsonUtils.jsonObjectToMap(JSONObject(trimmed))
+        assertEquals("value", map["key"])
+    }
+
+    @Test
+    fun testMalformedJsonReturnsNull() {
+        assertNull(JsonUtils.parseJsonToAnyMap(""))
+        assertNull(JsonUtils.parseJsonToAnyMap("   \n\t  "))
+        assertNull(JsonUtils.parseJsonToAnyMap("{ bad json : 123 }"))
+        assertNull(JsonUtils.parseJsonToAnyMap("{\"unclosed\": "))
+    }
 }
+

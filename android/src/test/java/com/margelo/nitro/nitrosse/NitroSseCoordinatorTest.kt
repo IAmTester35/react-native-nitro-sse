@@ -22,10 +22,11 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [Build.VERSION_CODES.O], shadows = [ShadowHybridNitroSseSpecCxxPart::class])
 class NitroSseCoordinatorTest {
+    private val TEST_URL = "http://localhost:33333/events"
 
     private fun createMockConfig(): SseConfig {
         return SseConfig(
-            "http://localhost:9999/dummy",
+            TEST_URL,
             null,
             emptyMap(),
             null,
@@ -47,7 +48,7 @@ class NitroSseCoordinatorTest {
     }
 
     private fun createResponse(code: Int, message: String): Response {
-        val request = Request.Builder().url("http://localhost:9999/dummy").build()
+        val request = Request.Builder().url(TEST_URL).build()
         return Response.Builder()
             .request(request)
             .protocol(Protocol.HTTP_1_1)
@@ -549,5 +550,25 @@ class NitroSseCoordinatorTest {
         sse.connectionDidReceiveMessage("event-2", "message", "foo", currentReqId)
         drainLoopers()
         assertEquals("event-2", lastIdField.get(sse))
+    }
+
+    @Test
+    fun testUpdateHeadersMergesWithExistingHeaders() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig().copy(headers = mapOf("X-Initial" to "1", "Authorization" to "old"))
+        
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        
+        sse.updateHeaders(mapOf("Authorization" to "new", "Tenant" to "tenant-1"))
+        drainLoopers()
+        
+        val configField = NitroSse::class.java.getDeclaredField("config")
+        configField.isAccessible = true
+        val currentConfig = configField.get(sse) as SseConfig
+        
+        assertEquals("1", currentConfig.headers?.get("X-Initial"))
+        assertEquals("new", currentConfig.headers?.get("Authorization"))
+        assertEquals("tenant-1", currentConfig.headers?.get("Tenant"))
     }
 }
