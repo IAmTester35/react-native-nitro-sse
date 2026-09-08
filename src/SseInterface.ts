@@ -139,13 +139,13 @@ export type SseMockMode = 'replace' | 'inject';
 /**
  * Represents a single mock SSE event configuration.
  */
-export interface SseMockEvent<TData = AnyMap> {
+export interface SseMockEvent {
   /** The type of the event. */
   type?: SseEventType;
   /** The data payload of the event as a raw string. */
   data?: string;
   /** The parsed JSON data, if autoParseJSON is enabled and parsing succeeds. */
-  parsedData?: TData;
+  parsedData?: AnyMap;
   /** The event ID, if provided. */
   id?: string;
   /** The event name, if provided (internal 'event' field in SSE). */

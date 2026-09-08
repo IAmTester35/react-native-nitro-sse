@@ -5,7 +5,6 @@ import type { NitroSse } from './NitroSse.nitro';
 import type { SseClient } from './SseInterface';
 
 export * from './SseInterface';
-export * from './NitroSse.nitro';
 export * from './useNitroSse';
 export * from './NitroSseClient';
 export * from './NitroSseError';
