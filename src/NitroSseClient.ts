@@ -1,3 +1,4 @@
+import type { AnyMap } from 'react-native-nitro-modules';
 import type { NitroSse } from './NitroSse.nitro';
 import type {
   SseClient,
@@ -442,7 +443,10 @@ export class NitroSseClient implements SseClient {
     }
   }
 
-  addEventListener(type: string, listener: SseListener): void {
+  addEventListener<TData = AnyMap>(
+    type: string,
+    listener: SseListener<TData>
+  ): void {
     this._checkDisposed();
     if (typeof type !== 'string' || !type.trim()) {
       throw new NitroSseValidationError(
@@ -462,15 +466,18 @@ export class NitroSseClient implements SseClient {
     if (!this._listeners.has(cleanType)) {
       this._listeners.set(cleanType, new Set());
     }
-    this._listeners.get(cleanType)!.add(listener);
+    this._listeners.get(cleanType)!.add(listener as SseListener);
   }
 
-  removeEventListener(type: string, listener: SseListener): void {
+  removeEventListener<TData = AnyMap>(
+    type: string,
+    listener: SseListener<TData>
+  ): void {
     this._checkDisposed();
     if (typeof type !== 'string' || typeof listener !== 'function') {
       return;
     }
-    this._listeners.get(type.trim())?.delete(listener);
+    this._listeners.get(type.trim())?.delete(listener as SseListener);
   }
 
   removeAllEventListeners(type?: string): void {

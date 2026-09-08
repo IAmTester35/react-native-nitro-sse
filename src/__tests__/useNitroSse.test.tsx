@@ -6,6 +6,7 @@ import {
   type UseNitroSseOptions,
   type UseNitroSseReturn,
 } from '../useNitroSse';
+import type { SseEvent } from '../SseInterface';
 
 jest.mock('react-native-nitro-modules', () => {
   return {
@@ -332,6 +333,52 @@ describe('useNitroSse Hook Tests', () => {
     expect(onCustomEvent).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'custom', data: 'custom message' })
     );
+  });
+
+  it('should support strongly-typed parsedData for custom events via generic parameter', () => {
+    interface WeatherEvents {
+      lightning: { voltage: number; strikePoint: string };
+      storm: { windSpeed: number };
+    }
+
+    let capturedLightning: SseEvent<WeatherEvents['lightning']> | undefined;
+    let capturedStorm: SseEvent<WeatherEvents['storm']> | undefined;
+
+    useNitroSse<WeatherEvents>({
+      url: TEST_URL,
+      events: {
+        lightning: (e) => {
+          capturedLightning = e;
+        },
+        storm: (e) => {
+          capturedStorm = e;
+        },
+      },
+    });
+
+    flushEffects();
+
+    nativeCallback([
+      {
+        type: 'message',
+        event: 'lightning',
+        data: '{"voltage":100000,"strikePoint":"tower"}',
+        parsedData: { voltage: 100000, strikePoint: 'tower' },
+      },
+      {
+        type: 'message',
+        event: 'storm',
+        data: '{"windSpeed":85}',
+        parsedData: { windSpeed: 85 },
+      },
+    ]);
+
+    expect(capturedLightning).toBeDefined();
+    expect(capturedLightning?.parsedData?.voltage).toBe(100000);
+    expect(capturedLightning?.parsedData?.strikePoint).toBe('tower');
+
+    expect(capturedStorm).toBeDefined();
+    expect(capturedStorm?.parsedData?.windSpeed).toBe(85);
   });
 
   it('should not call setState on unmount cleanup to avoid flicker and unmounted updates', () => {

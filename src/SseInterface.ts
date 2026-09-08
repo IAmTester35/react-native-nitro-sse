@@ -139,13 +139,13 @@ export type SseMockMode = 'replace' | 'inject';
 /**
  * Represents a single mock SSE event configuration.
  */
-export interface SseMockEvent {
+export interface SseMockEvent<TData = AnyMap> {
   /** The type of the event. */
   type?: SseEventType;
   /** The data payload of the event as a raw string. */
   data?: string;
   /** The parsed JSON data, if autoParseJSON is enabled and parsing succeeds. */
-  parsedData?: AnyMap;
+  parsedData?: TData;
   /** The event ID, if provided. */
   id?: string;
   /** The event name, if provided (internal 'event' field in SSE). */
@@ -196,13 +196,13 @@ export interface SseMockConfig {
 /**
  * Represents a single SSE event.
  */
-export interface SseEvent {
+export interface SseEvent<TData = AnyMap> {
   /** The type of the event. */
   type: SseEventType;
   /** The data payload of the event as a raw string. */
   data?: string;
   /** The parsed JSON data, if autoParseJSON is enabled and parsing succeeds. */
-  parsedData?: AnyMap;
+  parsedData?: TData;
   /** The event ID, if provided. */
   id?: string;
   /** The event name, if provided (internal 'event' field in SSE). */
@@ -234,7 +234,7 @@ export interface SseStats {
 /**
  * Listener for a specific SSE event.
  */
-export type SseListener = (event: SseEvent) => void;
+export type SseListener<TData = AnyMap> = (event: SseEvent<TData>) => void;
 
 /**
  * Public interface for the NitroSse client, supporting typed event listeners.
@@ -251,12 +251,18 @@ export interface SseClient {
    * Register a listener for a specific event type ('message', 'open', etc.)
    * or a custom SSE event name (from the 'event:' field).
    */
-  addEventListener(type: string, listener: SseListener): void;
+  addEventListener<TData = AnyMap>(
+    type: string,
+    listener: SseListener<TData>
+  ): void;
 
   /**
    * Unregister a listener.
    */
-  removeEventListener(type: string, listener: SseListener): void;
+  removeEventListener<TData = AnyMap>(
+    type: string,
+    listener: SseListener<TData>
+  ): void;
 
   /**
    * Unregister all listeners, optionally filtered by event type.

@@ -7,15 +7,25 @@ import type {
   SseState,
   SseStats,
 } from './SseInterface';
+import type { AnyMap } from 'react-native-nitro-modules';
 
-export interface UseNitroSseOptions extends SseConfig {
+type SseEventMap = Record<string, any>;
+
+export interface UseNitroSseOptions<
+  TEvents extends SseEventMap = Record<string, AnyMap>,
+  TMessage = AnyMap
+> extends SseConfig {
   /**
    * Whether to automatically start streaming on mount or when URL changes.
    * @default true
    */
   autoStart?: boolean;
+  /** Map of handlers for specific custom event types */
+  events?: {
+    [K in keyof TEvents]?: (event: SseEvent<TEvents[K]>) => void;
+  };
   /** Handler for incoming message events (both default and custom events) */
-  onMessage?: (event: SseEvent) => void;
+  onMessage?: (event: SseEvent<TMessage>) => void;
   /** Handler for transport or connection errors */
   onError?: (event: SseEvent) => void;
   /** Handler for stream open events */
@@ -26,8 +36,6 @@ export interface UseNitroSseOptions extends SseConfig {
   onHeartbeat?: (event: SseEvent) => void;
   /** Handler for connection state transitions */
   onStateChange?: (state: SseState) => void;
-  /** Map of handlers for specific custom event types */
-  events?: Record<string, (event: SseEvent) => void>;
 }
 
 export interface UseNitroSseReturn {
@@ -114,12 +122,15 @@ function isConnectedState(s: SseState): boolean {
  * @param options SSE configuration options, callbacks, and custom event handlers.
  * @returns State, client instance, and imperative control methods.
  */
-export function useNitroSse(options: UseNitroSseOptions): UseNitroSseReturn {
+export function useNitroSse<
+  TEvents extends SseEventMap = Record<string, AnyMap>,
+  TMessage = AnyMap
+>(options: UseNitroSseOptions<TEvents, TMessage>): UseNitroSseReturn {
   const isValidOptions =
     Boolean(options) && typeof options === 'object' && !Array.isArray(options);
-  const safeOptions: UseNitroSseOptions = isValidOptions
+  const safeOptions: UseNitroSseOptions<TEvents, TMessage> = isValidOptions
     ? options
-    : ({} as UseNitroSseOptions);
+    : ({} as UseNitroSseOptions<TEvents, TMessage>);
 
   if (!isValidOptions && typeof __DEV__ !== 'undefined' && __DEV__) {
     console.error(
@@ -165,7 +176,16 @@ export function useNitroSse(options: UseNitroSseOptions): UseNitroSseReturn {
   }, [headers, restConfig, hasValidUrl]);
 
   // Callback ref holding the latest handler references across renders
-  const callbacksRef = useRef({
+  const callbacksRef = useRef<{
+    onMessage?: (event: SseEvent<TMessage>) => void;
+    onError?: (event: SseEvent) => void;
+    onOpen?: (event: SseEvent) => void;
+    onClose?: (event: SseEvent) => void;
+    onHeartbeat?: (event: SseEvent) => void;
+    onStateChange?: (state: SseState) => void;
+    events?: { [K in keyof TEvents]?: (event: SseEvent<TEvents[K]>) => void };
+    onBeforeRequest?: () => Promise<Record<string, string>>;
+  }>({
     onMessage,
     onError,
     onOpen,
@@ -246,7 +266,7 @@ export function useNitroSse(options: UseNitroSseOptions): UseNitroSseReturn {
       // Attach typed event listeners
       clientInstance.addEventListener('message', (e) => {
         try {
-          callbacksRef.current.onMessage?.(e);
+          callbacksRef.current.onMessage?.(e as SseEvent<TMessage>);
         } catch (err) {
           console.error(
             '[useNitroSse] Unhandled error in onMessage callback:',
@@ -255,7 +275,9 @@ export function useNitroSse(options: UseNitroSseOptions): UseNitroSseReturn {
         }
         if (e.event && e.event !== e.type) {
           try {
-            callbacksRef.current.events?.[e.event]?.(e);
+            const handler =
+              callbacksRef.current.events?.[e.event as keyof TEvents];
+            (handler as ((event: SseEvent<any>) => void) | undefined)?.(e);
           } catch (err) {
             console.error(
               `[useNitroSse] Unhandled error in events['${e.event}'] callback:`,
