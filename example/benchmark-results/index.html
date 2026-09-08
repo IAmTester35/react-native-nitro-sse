@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nitro SSE — Benchmark Dashboard</title>
+
+  <!-- Tailwind (CDN, JIT) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', 'Helvetica', 'Arial', 'sans-serif'],
+            mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    /* The only CSS Tailwind can't express directly: scrollbar polish. Everything else is utilities. */
+    #fileList::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    #fileList::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+
+<body class="min-h-full bg-slate-50 font-sans text-slate-900 antialiased">
+  <div class="mx-auto max-w-[1600px] p-5 md:p-6">
+
+    <!-- Header -->
+    <header class="mb-5 flex flex-wrap items-center justify-between gap-4">
+      <div>
+        <h1 class="text-[22px] font-bold tracking-tight text-slate-900">Nitro SSE — Benchmark Inspector</h1>
+        <p class="mt-0.5 text-[13px] text-slate-500">Interactive comparison of high-throughput JSI streaming benchmarks
+          across devices &amp; versions.</p>
+      </div>
+      <div class="flex items-center gap-2.5">
+        <label
+          class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-[13px] font-semibold text-slate-900 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-100 focus-within:ring-2 focus-within:ring-blue-500 focus-within:ring-offset-1"
+          title="Open JSON benchmark reports from disk">
+          <span aria-hidden="true">📂</span> Open JSON Files
+          <input type="file" id="fileInput" multiple accept=".json" class="hidden" />
+        </label>
+        <button id="refreshBtn"
+          class="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-[13px] font-semibold text-slate-900 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-60"
+          title="Fetch latest results from local server">
+          <span id="refreshBtnLabel" aria-hidden="true">🔄</span>
+          <span id="refreshBtnText">Fetch Server</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="grid grid-cols-1 items-start gap-5 lg:grid-cols-[260px_1fr]">
+
+      <!-- Sidebar: Run Selector -->
+      <aside class="rounded-[10px] border border-slate-200 bg-white p-3.5 shadow-sm lg:sticky lg:top-5">
+        <div class="mb-3 flex items-center justify-between border-b border-slate-200 pb-2">
+          <h2 class="text-[13px] font-bold uppercase tracking-wide text-slate-500">
+            Runs (<span id="selectedCount">0</span>/<span id="totalCount">0</span>)
+          </h2>
+          <div class="flex gap-1">
+            <button id="selectAllBtn"
+              class="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500">All</button>
+            <button id="deselectAllBtn"
+              class="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500">None</button>
+          </div>
+        </div>
+        <div id="fileList" class="flex max-h-[420px] flex-col gap-2 overflow-y-auto lg:max-h-[660px]">
+          <div class="p-6 text-center text-[13px] text-slate-500">Loading runs…</div>
+        </div>
+      </aside>
+
+      <!-- Main: Chart -->
+      <main class="flex flex-col gap-4">
+        <div class="w-full rounded-[10px] border border-slate-200 bg-white p-5 shadow-sm">
+          <div class="mb-4 flex flex-col gap-3">
+            <div class="flex flex-wrap items-center justify-between gap-2.5">
+              <h3 id="chartTitle" class="text-base font-bold text-slate-900">Throughput Comparison</h3>
+              <span id="activeRunsIndicator" class="text-xs font-semibold text-slate-500">Comparing 0 runs</span>
+            </div>
+            <div id="tabs" class="flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1" role="tablist"
+              aria-label="Benchmark metric">
+              <button
+                class="tab-btn rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-blue-600 shadow-sm transition-colors"
+                data-metric="throughput" role="tab" aria-selected="true">Throughput (ev/s)</button>
+              <button
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                data-metric="dataRate" role="tab" aria-selected="false">Data Rate (KB/s)</button>
+              <button
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                data-metric="latencyP95" role="tab" aria-selected="false">Latency P95 (ms)</button>
+              <button
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                data-metric="latencyAvg" role="tab" aria-selected="false">Latency Avg (ms)</button>
+              <button
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                data-metric="latencyMax" role="tab" aria-selected="false">Latency Max (ms)</button>
+              <button
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                data-metric="batches" role="tab" aria-selected="false">Total Batches</button>
+              <button
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                data-metric="avgBatch" role="tab" aria-selected="false">Avg Batch Size</button>
+              <button
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                data-metric="delivery" role="tab" aria-selected="false">Delivery (%)</button>
+              <button
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                data-metric="churn" role="tab" aria-selected="false">Alloc Churn (KB)</button>
+              <button
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                data-metric="gcs" role="tab" aria-selected="false">Hermes GCs</button>
+              <button
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                data-metric="gcCpu" role="tab" aria-selected="false">GC CPU (ms)</button>
+              <button
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                data-metric="heap" role="tab" aria-selected="false">Final Heap (KB)</button>
+            </div>
+          </div>
+          <div class="relative h-[380px] w-full md:h-[480px] lg:h-[580px]">
+            <canvas id="benchmarkChart"></canvas>
+            <div id="chartEmptyState"
+              class="pointer-events-none absolute inset-0 hidden flex-col items-center justify-center gap-1 text-center text-slate-400">
+              <span class="text-2xl" aria-hidden="true">☐</span>
+              <p class="text-sm font-medium">No runs selected</p>
+              <p class="text-xs">Check a run in the sidebar to plot it here.</p>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    // Distinct palette for multiple selected runs
+    const COLORS = [
+      '#2563eb', // Blue
+      '#16a34a', // Green
+      '#ea580c', // Orange
+      '#9333ea', // Purple
+      '#0891b2', // Cyan
+      '#e11d48', // Red
+      '#ca8a04', // Amber
+    ];
+
+    const TAB_ACTIVE = ['bg-white', 'text-blue-600', 'shadow-sm'];
+    const TAB_INACTIVE = ['text-slate-500', 'hover:bg-white/60', 'hover:text-slate-900'];
+
+    // State
+    const state = {
+      reports: [], // { id, name, platform, version, timestamp, data, color, checked }
+      activeMetric: 'throughput',
+    };
+
+    let chartInstance = null;
+
+    // Elements
+    const fileListEl = document.getElementById('fileList');
+    const fileInput = document.getElementById('fileInput');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const refreshBtnText = document.getElementById('refreshBtnText');
+    const refreshBtnLabel = document.getElementById('refreshBtnLabel');
+    const selectAllBtn = document.getElementById('selectAllBtn');
+    const deselectAllBtn = document.getElementById('deselectAllBtn');
+    const selectedCountEl = document.getElementById('selectedCount');
+    const totalCountEl = document.getElementById('totalCount');
+    const tabBtns = document.querySelectorAll('.tab-btn');
+    const chartTitleEl = document.getElementById('chartTitle');
+    const activeRunsIndicator = document.getElementById('activeRunsIndicator');
+    const chartEmptyState = document.getElementById('chartEmptyState');
+
+    // Fetch reports from local server endpoint
+    async function fetchServerReports() {
+      setRefreshLoading(true);
+      try {
+        const res = await fetch('/api/reports');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const items = await res.json();
+        loadReportItems(items);
+      } catch (err) {
+        // Fallback: try default localhost:3100 if opened as file://
+        try {
+          const fallbackRes = await fetch('http://localhost:3100/api/reports');
+          if (fallbackRes.ok) {
+            const items = await fallbackRes.json();
+            loadReportItems(items);
+            return;
+          }
+        } catch (_) { }
+        console.warn('Could not auto-fetch from server. Use "Open JSON Files" button to load reports manually.');
+        renderFileList();
+      } finally {
+        setRefreshLoading(false);
+      }
+    }
+
+    function setRefreshLoading(isLoading) {
+      refreshBtn.disabled = isLoading;
+      refreshBtnLabel.textContent = isLoading ? '⏳' : '🔄';
+      refreshBtnText.textContent = isLoading ? 'Fetching…' : 'Fetch Server';
+    }
+
+    function loadReportItems(items) {
+      if (!Array.isArray(items) || items.length === 0) {
+        renderFileList();
+        return;
+      }
+
+      state.reports = items.map((item, idx) => {
+        const data = item.data || item;
+        const name = item.filename || `${data.platform || 'device'}-${data.timestamp}`;
+        return {
+          id: name,
+          name,
+          platform: data.platform || 'unknown',
+          version: data.libraryVersion || 'unknown',
+          timestamp: data.timestamp || Date.now(),
+          data,
+          color: COLORS[idx % COLORS.length],
+          checked: true, // checked by default
+        };
+      });
+
+      renderFileList();
+      updateView();
+    }
+
+    // Handle manual JSON file upload
+    fileInput.addEventListener('change', async (e) => {
+      const files = Array.from(e.target.files || []);
+      if (files.length === 0) return;
+
+      const newItems = [];
+      for (const file of files) {
+        try {
+          const text = await file.text();
+          const json = JSON.parse(text);
+          newItems.push({
+            filename: file.name,
+            data: json,
+          });
+        } catch (err) {
+          console.error('Error reading JSON:', file.name, err);
+        }
+      }
+
+      loadReportItems(newItems);
+      fileInput.value = ''; // allow re-selecting the same file(s) later
+    });
+
+    refreshBtn.addEventListener('click', () => {
+      fetchServerReports();
+    });
+
+    selectAllBtn.addEventListener('click', () => {
+      state.reports.forEach((r) => (r.checked = true));
+      renderFileList();
+      updateView();
+    });
+
+    deselectAllBtn.addEventListener('click', () => {
+      state.reports.forEach((r) => (r.checked = false));
+      renderFileList();
+      updateView();
+    });
+
+    // Metric Tabs
+    tabBtns.forEach((btn) => {
+      btn.addEventListener('click', () => setActiveTab(btn));
+    });
+
+    function setActiveTab(btn) {
+      tabBtns.forEach((b) => {
+        b.classList.remove(...TAB_ACTIVE);
+        b.classList.add(...TAB_INACTIVE);
+        b.setAttribute('aria-selected', 'false');
+      });
+      btn.classList.remove(...TAB_INACTIVE);
+      btn.classList.add(...TAB_ACTIVE);
+      btn.setAttribute('aria-selected', 'true');
+      state.activeMetric = btn.dataset.metric;
+      updateChart();
+    }
+
+    function renderFileList() {
+      totalCountEl.textContent = state.reports.length;
+      const selected = state.reports.filter((r) => r.checked);
+      selectedCountEl.textContent = selected.length;
+
+      if (state.reports.length === 0) {
+        fileListEl.innerHTML = `
+          <div class="rounded-lg border border-dashed border-slate-300 p-6 text-center text-slate-500">
+            <p class="mb-1 text-[13px] font-medium">No reports loaded</p>
+            <p class="text-xs text-slate-400">Start the server or open JSON files above.</p>
+          </div>`;
+        return;
+      }
+
+      fileListEl.innerHTML = state.reports
+        .map((r, idx) => {
+          const cardClasses = r.checked
+            ? 'border-blue-600 bg-blue-50'
+            : 'border-slate-200 bg-white hover:bg-slate-50';
+          const isIOS = r.platform.toLowerCase().includes('ios');
+          const badgeClasses = isIOS ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800';
+          return `
+            <div
+              class="file-card flex cursor-pointer items-start gap-2 rounded-lg border p-2 px-2.5 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${cardClasses}"
+              data-id="${r.id}"
+              role="checkbox"
+              aria-checked="${r.checked}"
+              tabindex="0"
+            >
+              <input
+                type="checkbox"
+                id="chk-${idx}"
+                ${r.checked ? 'checked' : ''}
+                data-id="${r.id}"
+                tabindex="-1"
+                class="mt-0.5 h-[15px] w-[15px] cursor-pointer accent-blue-600"
+              />
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-1.5 break-all font-mono text-[11px] font-semibold leading-tight" style="color: ${r.checked ? r.color : '#0f172a'}">
+                  <span class="inline-block h-[7px] w-[7px] flex-shrink-0 rounded-full" style="background: ${r.color}"></span>${r.name}
+                </div>
+                <div class="mt-1 flex flex-wrap gap-1">
+                  <span class="rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${badgeClasses}">${r.platform}</span>
+                  <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-slate-600">v${r.version}</span>
+                </div>
+              </div>
+            </div>
+          `;
+        })
+        .join('');
+
+      // Click + keyboard toggling
+      fileListEl.querySelectorAll('.file-card').forEach((card) => {
+        const toggle = () => {
+          const chk = card.querySelector('input[type="checkbox"]');
+          chk.checked = !chk.checked;
+          const rep = state.reports.find((r) => r.id === chk.dataset.id);
+          if (rep) rep.checked = chk.checked;
+          renderFileList();
+          updateView();
+        };
+        card.addEventListener('click', (e) => {
+          if (e.target.tagName === 'INPUT') return;
+          toggle();
+        });
+        card.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            toggle();
+          }
+        });
+      });
+
+      fileListEl.querySelectorAll('input[type="checkbox"]').forEach((chk) => {
+        chk.addEventListener('change', () => {
+          const rep = state.reports.find((r) => r.id === chk.dataset.id);
+          if (rep) rep.checked = chk.checked;
+          renderFileList();
+          updateView();
+        });
+      });
+    }
+
+    function updateView() {
+      const active = state.reports.filter((r) => r.checked);
+      activeRunsIndicator.textContent = `Comparing ${active.length} run${active.length === 1 ? '' : 's'}`;
+      updateChart();
+    }
+
+    function updateChart() {
+      const active = state.reports.filter((r) => r.checked);
+      const ctx = document.getElementById('benchmarkChart').getContext('2d');
+
+      chartEmptyState.classList.toggle('hidden', active.length !== 0);
+      chartEmptyState.classList.toggle('flex', active.length === 0);
+
+      if (!chartInstance) {
+        chartInstance = new Chart(ctx, {
+          type: 'bar',
+          data: { labels: [], datasets: [] },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+              mode: 'index',
+              intersect: false,
+            },
+            plugins: {
+              legend: {
+                position: 'top',
+                labels: {
+                  boxWidth: 12,
+                  font: { family: '-apple-system', size: 12 },
+                },
+              },
+              tooltip: {
+                backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                padding: 10,
+                cornerRadius: 6,
+              },
+            },
+            scales: {
+              x: {
+                grid: { display: false },
+                ticks: {
+                  autoSkip: false, // Ensure all columns are explicitly shown!
+                  maxRotation: 45,
+                  minRotation: 25,
+                  font: { size: 10, weight: '600' },
+                },
+              },
+              y: {
+                beginAtZero: true,
+                grid: { color: '#f1f5f9' },
+                ticks: { font: { size: 11 } },
+              },
+            },
+          },
+        });
+      }
+
+      if (active.length === 0) {
+        chartInstance.data.labels = [];
+        chartInstance.data.datasets = [];
+        chartInstance.update();
+        return;
+      }
+
+      // Collect all unique scenarios across active runs in exact original order
+      const scenarioOrder = [];
+      const scenarioSet = new Set();
+      active.forEach((rep) => {
+        (rep.data.results || []).forEach((res) => {
+          if (!scenarioSet.has(res.name)) {
+            scenarioSet.add(res.name);
+            scenarioOrder.push(res.name);
+          }
+        });
+      });
+      const labels = scenarioOrder;
+
+      const metric = state.activeMetric;
+      const titles = {
+        throughput: 'Event Throughput (ev/s — Higher is better)',
+        dataRate: 'Data Transfer Rate (KB/s — Higher is better)',
+        latencyP95: 'P95 Delivery Latency (ms — Lower is better)',
+        latencyAvg: 'Average Delivery Latency (ms — Lower is better)',
+        latencyMax: 'Peak Max Latency Spike (ms — Lower is better)',
+        batches: 'Total JSI Batches Dispatched (Count — Batching reduces bridge calls)',
+        avgBatch: 'Average Batch Size (Events/batch — Batching compression)',
+        delivery: 'Event Delivery Completeness Rate (% — Target: 100%)',
+        churn: 'Hermes Memory Allocation Churn (KB — Lower is better)',
+        gcs: 'Hermes GC Invocations (Count — Lower is better)',
+        gcCpu: 'Hermes GC CPU Time (ms — Lower is better)',
+        heap: 'Final Heap Size (KB — Memory footprint)',
+      };
+      chartTitleEl.textContent = titles[metric] || 'Benchmark Chart';
+
+      const datasets = active.map((rep) => {
+        const dataValues = labels.map((label) => {
+          const item = (rep.data.results || []).find((r) => r.name === label);
+          if (!item) return 0;
+          if (metric === 'throughput') return item.throughput;
+          if (metric === 'dataRate') return item.dataRateKBps ?? 0;
+          if (metric === 'latencyP95') return item.latency?.p95Ms ?? 0;
+          if (metric === 'latencyAvg') return item.latency?.avgMs ?? 0;
+          if (metric === 'latencyMax') return item.latency?.maxMs ?? 0;
+          if (metric === 'batches') return item.totalBatches ?? 0;
+          if (metric === 'avgBatch') return parseFloat(item.avgBatchSize || '1');
+          if (metric === 'delivery') return item.deliveryRatePercent ?? 100;
+          if (metric === 'churn') return item.hermesMetrics?.totalAllocatedBytesDeltaKB ?? item.hermesMetrics?.allocatedBytesDeltaKB ?? 0;
+          if (metric === 'gcs') return item.hermesMetrics?.gcCountDelta ?? 0;
+          if (metric === 'gcCpu') return item.hermesMetrics?.gcCpuTimeDeltaMs ?? 0;
+          if (metric === 'heap') return item.hermesMetrics?.finalHeapSizeKB ?? 0;
+          return 0;
+        });
+
+        return {
+          label: `${rep.platform} (v${rep.version})`,
+          data: dataValues,
+          backgroundColor: rep.color + 'cc',
+          borderColor: rep.color,
+          borderWidth: 1.5,
+          borderRadius: 4,
+          categoryPercentage: 0.85,
+          barPercentage: 0.9,
+        };
+      });
+
+      chartInstance.data.labels = labels;
+      chartInstance.data.datasets = datasets;
+      chartInstance.update();
+    }
+
+    // Auto-init on page load
+    window.addEventListener('DOMContentLoaded', () => {
+      fetchServerReports();
+    });
+  </script>
+</body>
+
+</html>

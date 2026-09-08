@@ -45,7 +45,8 @@
     "test:native": "yarn test:android && yarn test:ios",
     "ci": "yarn lint && yarn typecheck && yarn test && yarn prepare && (cd example/ios && pod install) && yarn test:native && yarn turbo run build:android build:ios",
     "release": "release-it --only-version",
-    "server": "node example/sse-server.js",
+    "server": "node example/script/sse-server.mjs",
+    "bench:server": "node example/script/sse-benchmark-server.mjs",
     "lint": "eslint \"**/*.{js,ts,tsx}\""
   },
   "keywords": [
