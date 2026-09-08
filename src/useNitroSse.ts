@@ -9,7 +9,7 @@ import type {
 } from './SseInterface';
 import type { AnyMap } from 'react-native-nitro-modules';
 
-type SseEventMap = Record<string, any>;
+type SseEventMap = object;
 
 export interface UseNitroSseOptions<
   TEvents extends SseEventMap = Record<string, AnyMap>,
@@ -89,8 +89,10 @@ export function safeSerializeConfig(obj: unknown): string {
         seen.add(value);
         if (!Array.isArray(value)) {
           const sorted: Record<string, unknown> = {};
-          for (const k of Object.keys(value).sort()) {
-            sorted[k] = (value as Record<string, unknown>)[k];
+          for (const [k, v] of Object.entries(value).sort(([a], [b]) =>
+            a.localeCompare(b)
+          )) {
+            sorted[k] = v;
           }
           return sorted;
         }
@@ -128,9 +130,8 @@ export function useNitroSse<
 >(options: UseNitroSseOptions<TEvents, TMessage>): UseNitroSseReturn {
   const isValidOptions =
     Boolean(options) && typeof options === 'object' && !Array.isArray(options);
-  const safeOptions: UseNitroSseOptions<TEvents, TMessage> = isValidOptions
-    ? options
-    : ({} as UseNitroSseOptions<TEvents, TMessage>);
+  const safeOptions: Partial<UseNitroSseOptions<TEvents, TMessage>> =
+    isValidOptions ? options : {};
 
   if (!isValidOptions && typeof __DEV__ !== 'undefined' && __DEV__) {
     console.error(
@@ -251,6 +252,7 @@ export function useNitroSse<
 
       const config: SseConfig = {
         ...restConfigRef.current,
+        url: restConfigRef.current.url ?? '',
         ...(headersRef.current !== undefined
           ? { headers: headersRef.current }
           : {}),
@@ -264,9 +266,9 @@ export function useNitroSse<
       clientInstance.setup(config);
 
       // Attach typed event listeners
-      clientInstance.addEventListener('message', (e) => {
+      clientInstance.addEventListener<TMessage>('message', (e) => {
         try {
-          callbacksRef.current.onMessage?.(e as SseEvent<TMessage>);
+          callbacksRef.current.onMessage?.(e);
         } catch (err) {
           console.error(
             '[useNitroSse] Unhandled error in onMessage callback:',
@@ -277,7 +279,9 @@ export function useNitroSse<
           try {
             const handler =
               callbacksRef.current.events?.[e.event as keyof TEvents];
-            (handler as ((event: SseEvent<any>) => void) | undefined)?.(e);
+            if (handler) {
+              (handler as (event: SseEvent<unknown>) => void)(e);
+            }
           } catch (err) {
             console.error(
               `[useNitroSse] Unhandled error in events['${e.event}'] callback:`,

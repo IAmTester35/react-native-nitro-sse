@@ -28,7 +28,7 @@ declare const __DEV__: boolean | undefined;
  * converting non-string values to strings, and pruning null/undefined values.
  */
 export function sanitizeHeaders(
-  headers?: Record<string, string>
+  headers?: Record<string, unknown>
 ): Record<string, string> {
   if (!headers || typeof headers !== 'object' || Array.isArray(headers)) {
     return {};
@@ -123,14 +123,15 @@ export function validateConfig(config: SseConfig): SseConfig {
       );
     }
     const lm = config.method.toLowerCase();
-    if (lm !== 'get' && lm !== 'post') {
+    if (lm === 'get' || lm === 'post') {
+      lowerMethod = lm;
+    } else {
       throw new NitroSseValidationError(
         `[NitroSse] Invalid config: 'method' must be 'get' or 'post', received '${config.method}'.`,
         'INVALID_CONFIG',
         { received: config.method }
       );
     }
-    lowerMethod = lm as 'get' | 'post';
   }
 
   if (
@@ -370,7 +371,7 @@ export class NitroSseClient implements SseClient {
           try {
             const h = await rawOnBeforeRequest();
             if (h && typeof h === 'object' && !Array.isArray(h)) {
-              return sanitizeHeaders(h as Record<string, string>);
+              return sanitizeHeaders(h);
             }
             if (
               typeof __DEV__ !== 'undefined' &&
