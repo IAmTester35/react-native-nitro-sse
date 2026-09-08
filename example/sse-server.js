@@ -178,6 +178,16 @@ const server = http.createServer((req, res) => {
       res.write(`event: message\n`);
       res.write(`data: ${data}\n\n`);
 
+      // Every 2 events, send a custom named event to test custom listeners
+      if (count % 2 === 0) {
+        console.log(`Sending custom event (notification) #${count}`);
+        res.write(`id: custom-${count}\n`);
+        res.write(`event: notification\n`);
+        res.write(
+          `data: ${JSON.stringify({ alert: `Custom alert #${count}`, time: new Date().toLocaleTimeString() })}\n\n`
+        );
+      }
+
       // Auto-close after 20 events to test reconnection
       if (count >= 20) {
         console.log('Reached 20 events, closing connection early');
