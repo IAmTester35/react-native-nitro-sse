@@ -56,6 +56,12 @@ class SseEventBuffer {
         onFlush?(batch)
     }
     
+    /// Nullifies the flush callback to prevent invoking a destroyed JS runtime during teardown.
+    func clearCallback() {
+        dispatcher?.assertOnQueue()
+        self.onFlush = nil
+    }
+    
     /// Clears buffered events without invoking the flush callback.
     /// Used during teardown to avoid executing JS callbacks after the bridge runtime is destroyed.
     func clear() {
