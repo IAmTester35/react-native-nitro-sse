@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0 (Scheduled for 2026-09-14)
+## 3.0.0-beta.1 (Scheduled for 2026-09-14)
 
 ### Breaking Changes
 
