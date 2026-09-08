@@ -59,11 +59,12 @@ export function validateConfig(config: SseConfig): SseConfig {
     );
   }
 
-  if (typeof config.url !== 'string' || !config.url.trim()) {
+  const rawUrl: unknown = config.url;
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) {
     throw new NitroSseValidationError(
       "[NitroSse] Invalid config: 'url' must be a non-empty string.",
       'INVALID_CONFIG',
-      { received: (config as any).url }
+      { received: rawUrl }
     );
   }
 
@@ -74,10 +75,16 @@ export function validateConfig(config: SseConfig): SseConfig {
     lowerUrl.startsWith('javascript:') ||
     lowerUrl.startsWith('data:') ||
     lowerUrl.startsWith('file:') ||
-    lowerUrl.startsWith('ftp:')
+    lowerUrl.startsWith('ftp:') ||
+    lowerUrl.startsWith('ws:') ||
+    lowerUrl.startsWith('wss:')
   ) {
+    const isWs = lowerUrl.startsWith('ws:') || lowerUrl.startsWith('wss:');
+    const reason = isWs
+      ? `Unsupported protocol (WebSocket "${trimmedUrl}"). SSE requires HTTP or HTTPS.`
+      : `Unsupported protocol in URL "${trimmedUrl}". SSE requires HTTP or HTTPS.`;
     throw new NitroSseValidationError(
-      `[NitroSse] Invalid config: Unsupported protocol in URL "${trimmedUrl}". SSE requires HTTP or HTTPS.`,
+      `[NitroSse] Invalid config: ${reason}`,
       'INVALID_CONFIG',
       { url: trimmedUrl }
     );
@@ -260,13 +267,14 @@ export function validateConfig(config: SseConfig): SseConfig {
         { received: config.mock }
       );
     }
-    if (config.mock.mode !== 'replace' && config.mock.mode !== 'inject') {
+    const mode: unknown = config.mock.mode;
+    if (mode !== 'replace' && mode !== 'inject') {
       throw new NitroSseValidationError(
-        `[NitroSse] Invalid mock config: 'mode' must be 'replace' or 'inject', received '${
-          (config.mock as any).mode
-        }'.`,
+        `[NitroSse] Invalid mock config: 'mode' must be 'replace' or 'inject', received '${String(
+          mode
+        )}'.`,
         'INVALID_CONFIG',
-        { received: config.mock.mode }
+        { received: mode }
       );
     }
     if (!Array.isArray(config.mock.data)) {
@@ -355,9 +363,42 @@ export class NitroSseClient implements SseClient {
         })
       : undefined;
 
+    const rawOnBeforeRequest = validatedConfig.onBeforeRequest;
+    const safeOnBeforeRequest = rawOnBeforeRequest
+      ? async () => {
+          try {
+            const h = await rawOnBeforeRequest();
+            if (h && typeof h === 'object' && !Array.isArray(h)) {
+              return sanitizeHeaders(h as Record<string, string>);
+            }
+            if (
+              typeof __DEV__ !== 'undefined' &&
+              __DEV__ &&
+              h !== undefined &&
+              h !== null
+            ) {
+              console.warn(
+                '[NitroSse] onBeforeRequest returned an invalid headers value (expected an object):',
+                h
+              );
+            }
+            return {};
+          } catch (err) {
+            console.error(
+              '[NitroSse] Error in onBeforeRequest interceptor:',
+              err
+            );
+            throw err;
+          }
+        }
+      : undefined;
+
     this._config = {
       ...validatedConfig,
       ...(cleanHeaders !== undefined ? { headers: cleanHeaders } : {}),
+      ...(safeOnBeforeRequest !== undefined
+        ? { onBeforeRequest: safeOnBeforeRequest }
+        : {}),
     };
     this._pendingHeaders = {};
     this._legacyCallback = onEvent;

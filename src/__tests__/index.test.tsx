@@ -330,9 +330,15 @@ describe('NitroSseModule Unit Tests', () => {
 
       NitroSseModule.setup(configWithInterceptor as any, onEvent);
       expect(mockNative.setup).toHaveBeenCalledWith(
-        configWithInterceptor,
+        expect.objectContaining({
+          url: TEST_URL,
+          onBeforeRequest: expect.any(Function),
+        }),
         expect.any(Function)
       );
+      const passedInterceptor =
+        mockNative.setup.mock.calls[0][0].onBeforeRequest;
+      expect(typeof passedInterceptor).toBe('function');
     });
   });
 
@@ -1464,6 +1470,8 @@ describe('NitroSseModule Unit Tests', () => {
             'data:text/plain;base64,SGVsbG8=',
             'file:///etc/passwd',
             'ftp://example.com/events',
+            'ws://example.com/events',
+            'wss://example.com/events',
           ];
 
           for (const url of dangerousUrls) {
@@ -1516,6 +1524,46 @@ describe('NitroSseModule Unit Tests', () => {
             client.setup({ url: TEST_URL, onBeforeRequest: {} as any })
           ).toThrow(NitroSseValidationError);
         });
+      });
+
+      it('should defensively sanitize onBeforeRequest headers and fall back on invalid return in NitroSseClient', async () => {
+        const { createNitroSse } = require('../index');
+        const client = createNitroSse();
+        const warnSpy = jest
+          .spyOn(console, 'warn')
+          .mockImplementation(() => {});
+
+        client.setup({
+          url: TEST_URL,
+          onBeforeRequest: async () => ({
+            'Authorization\r\n': 'Bearer secret\r\n',
+            'X-Good': 'val',
+          }),
+        });
+        let passedInterceptor =
+          mockNative.setup.mock.calls.slice(-1)[0][0].onBeforeRequest;
+        let res = await passedInterceptor();
+        expect(res).toEqual({
+          'Authorization': 'Bearer secret',
+          'X-Good': 'val',
+        });
+
+        client.setup({
+          url: TEST_URL,
+          onBeforeRequest: async () => 'invalid-string' as any,
+        });
+        passedInterceptor =
+          mockNative.setup.mock.calls.slice(-1)[0][0].onBeforeRequest;
+        res = await passedInterceptor();
+        expect(res).toEqual({});
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining(
+            'onBeforeRequest returned an invalid headers value'
+          ),
+          'invalid-string'
+        );
+
+        warnSpy.mockRestore();
       });
 
       it('should defensively clamp invalid numeric bounds and warn', () => {
