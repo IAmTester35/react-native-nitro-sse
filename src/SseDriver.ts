@@ -70,6 +70,9 @@ export class NativeDriver implements SseDriver {
   }
 
   dispose(): void {
+    // Note: dispose() is a built-in method provided by the HybridObject base class in react-native-nitro-modules
+    // (registered on the JSI prototype via HybridObject::loadHybridMethods in C++). It forwards to native
+    // dispose() implementations (NitroSse.swift and NitroSse.kt) without needing to be re-declared in NitroSse.nitro.ts.
     if (typeof (this._native as any).dispose === 'function') {
       (this._native as any).dispose();
     }
@@ -187,6 +190,8 @@ export class MockInjectDriver implements SseDriver {
 
   dispose(): void {
     this._mockEngine.stop();
-    this._native.dispose();
+    if (typeof (this._native as any).dispose === 'function') {
+      (this._native as any).dispose();
+    }
   }
 }
