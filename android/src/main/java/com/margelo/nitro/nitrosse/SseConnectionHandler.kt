@@ -56,9 +56,11 @@ class SseConnectionHandler(private val delegate: SseConnectionDelegate) {
  * Sniffs raw stream before EventSourceReader discards SSE comments (`:`).
  */
 internal class HeartbeatNetworkInterceptor(
-    private val totalBytesReceived: AtomicLong,
+    private val totalBytesReceived: AtomicLong? = null,
     private val onHeartbeat: (requestId: String?, comment: String) -> Unit
 ) : Interceptor {
+    constructor(onHeartbeat: (requestId: String?, comment: String) -> Unit) : this(null, onHeartbeat)
+
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         val rid = request.tag(String::class.java)
@@ -92,7 +94,7 @@ internal class HeartbeatNetworkInterceptor(
                             val scratch = Buffer()
                             val bytesRead = super.read(scratch, byteCount)
                             if (bytesRead != -1L) {
-                                totalBytesReceived.addAndGet(bytesRead)
+                                totalBytesReceived?.addAndGet(bytesRead)
                                 try {
                                     val bytes = scratch.snapshot().toByteArray()
                                     for (b in bytes) {

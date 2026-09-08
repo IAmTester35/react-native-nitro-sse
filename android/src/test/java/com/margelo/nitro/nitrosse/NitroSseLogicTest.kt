@@ -1,8 +1,5 @@
 package com.margelo.nitro.nitrosse
 
-import android.os.Handler
-import android.os.HandlerThread
-import android.os.Looper
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
@@ -10,7 +7,11 @@ import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -288,19 +289,28 @@ class NitroSseLogicTest {
 
     @Test
     fun testEventBufferNoBatching() {
-        var flushedCount = 0
+        var flushedBatches = 0
+        var totalEvents = 0
         val dispatcher = TestSseDispatcher()
-        val buffer = SseEventBuffer(onFlush = {
-            flushedCount++
+        val buffer = SseEventBuffer(onFlush = { events ->
+            flushedBatches++
+            totalEvents += events.size
+            assertEquals("Each batch must contain exactly 1 event when batching is disabled", 1, events.size)
         }, dispatcher = dispatcher)
 
         buffer.configure(batchingIntervalMs = 0.0, maxBufferSize = 1000)
 
-        val mockEvent = SseEvent(SseEventType.MESSAGE, "test", null, "1", "message", null, 200.0, null, null)
+        val mockEvent1 = SseEvent(SseEventType.MESSAGE, "test1", null, "1", "message", null, 200.0, null, null)
+        val mockEvent2 = SseEvent(SseEventType.MESSAGE, "test2", null, "2", "message", null, 200.0, null, null)
+        val mockEvent3 = SseEvent(SseEventType.MESSAGE, "test3", null, "3", "message", null, 200.0, null, null)
 
-        buffer.push(mockEvent)
+        buffer.push(mockEvent1)
+        buffer.push(mockEvent2)
+        buffer.push(mockEvent3)
         dispatcher.executePending()
-        assertEquals("Should flush immediately when batching is disabled", 1, flushedCount)
+
+        assertEquals("Should flush 3 distinct batches for 3 pushed events", 3, flushedBatches)
+        assertEquals("Total flushed events must be 3", 3, totalEvents)
     }
 
     @Test

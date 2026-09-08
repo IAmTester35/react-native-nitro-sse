@@ -7,7 +7,11 @@ import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -570,5 +574,29 @@ class NitroSseCoordinatorTest {
         assertEquals("1", currentConfig.headers?.get("X-Initial"))
         assertEquals("new", currentConfig.headers?.get("Authorization"))
         assertEquals("tenant-1", currentConfig.headers?.get("Tenant"))
+    }
+
+    @Test
+    fun testLogicalBytesReceivedAccounting() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        sse.setup(config) { _ -> }
+        drainLoopers()
+
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val currentReqId = reqIdField.get(sse) as String
+        
+        assertEquals(0.0, sse.getStats().totalBytesReceived, 0.001)
+        
+        // Push message with data (12 B), id (4 B), type (6 B) -> total 22 B
+        sse.connectionDidReceiveMessage("id-1", "custom", "payload-data", currentReqId)
+        drainLoopers()
+        
+        assertEquals(22.0, sse.getStats().totalBytesReceived, 0.001)
     }
 }

@@ -99,11 +99,15 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                     // Enables transparent socket-level retry on route failures (multiple IP fallback, transient resets)
                     // before bubbling up to full SSE stream reconnect.
                     .retryOnConnectionFailure(true)
-                    .addNetworkInterceptor(HeartbeatNetworkInterceptor(totalBytesReceived) { heartbeatRid, comment ->
-                        // Guard keep-alive signals by active request ID to ignore residual bytes from closed/closing sockets
-                        val currentRid = synchronized(this@NitroSse) { requestId }
-                        if (heartbeatRid == null || heartbeatRid == currentRid) {
-                            eventBuffer.push(SseEvent(SseEventType.HEARTBEAT, null, null, null, null, comment, null, null, null))
+                    .addNetworkInterceptor(HeartbeatNetworkInterceptor { heartbeatRid, comment ->
+                        sseDispatcher?.post {
+                            // Guard keep-alive signals by active request ID to ignore residual bytes from closed/closing sockets
+                            val currentRid = synchronized(this@NitroSse) { requestId }
+                            if (heartbeatRid == null || heartbeatRid == currentRid) {
+                                val commentBytes = comment.toByteArray(Charsets.UTF_8).size.toLong()
+                                totalBytesReceived.addAndGet(commentBytes)
+                                eventBuffer.push(SseEvent(SseEventType.HEARTBEAT, null, null, null, null, comment, null, null, null))
+                            }
                         }
                     })
                 this.client = builder.build()
@@ -434,6 +438,11 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, requestId: String) {
         sseDispatcher?.post {
             if (requestId != this@NitroSse.requestId) return@post
+            val encodedDataSize = data.toByteArray(Charsets.UTF_8).size.toLong()
+            val metadataSize = (id?.toByteArray(Charsets.UTF_8)?.size?.toLong() ?: 0L) +
+                (type?.toByteArray(Charsets.UTF_8)?.size?.toLong() ?: 0L)
+            totalBytesReceived.addAndGet(encodedDataSize + metadataSize)
+
             val currentConfig: SseConfig?
             synchronized(this@NitroSse) {
                 // WHATWG SSE Spec: If the server sends an empty id (e.g. 'id:\n'), reset lastProcessedId to null.

@@ -38,6 +38,23 @@ class SseEventBuffer(
     }
 
     fun push(event: SseEvent) {
+        if (batchingIntervalMs <= 0.0) {
+            if (dispatcher == null || dispatcher.isCurrentDispatcher()) {
+                synchronized(eventBuffer) {
+                    eventBuffer.add(event)
+                }
+                flush()
+            } else {
+                dispatcher.post {
+                    synchronized(eventBuffer) {
+                        eventBuffer.add(event)
+                    }
+                    flush()
+                }
+            }
+            return
+        }
+
         var shouldFlush = false
         synchronized(eventBuffer) {
             eventBuffer.add(event)
@@ -46,22 +63,23 @@ class SseEventBuffer(
             }
         }
 
-        dispatcher?.post {
-            if (batchingIntervalMs <= 0 || shouldFlush) {
-                dispatcher.removeCallbacks(flushRunnable)
+        if (shouldFlush) {
+            if (dispatcher == null || dispatcher.isCurrentDispatcher()) {
+                dispatcher?.removeCallbacks(flushRunnable)
                 flush()
-            } else if (!isFlushPending.getAndSet(true)) {
-                dispatcher.postDelayed(flushRunnable, batchingIntervalMs.toLong())
+            } else {
+                dispatcher.post {
+                    dispatcher.removeCallbacks(flushRunnable)
+                    flush()
+                }
             }
-        } ?: run {
-            // Direct synchronous flush fallback when background dispatcher is absent
-            if (shouldFlush || batchingIntervalMs <= 0) {
-                flush()
-            }
+        } else if (!isFlushPending.getAndSet(true)) {
+            dispatcher?.postDelayed(flushRunnable, batchingIntervalMs.toLong())
         }
     }
 
     fun flush() {
+        dispatcher?.removeCallbacks(flushRunnable)
         val eventsToEmit: Array<SseEvent>
         synchronized(eventBuffer) {
             if (eventBuffer.isEmpty()) {

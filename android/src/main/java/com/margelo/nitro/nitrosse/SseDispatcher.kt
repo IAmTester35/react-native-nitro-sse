@@ -11,4 +11,5 @@ interface SseDispatcher {
     fun postDelayed(runnable: Runnable, delayMillis: Long)
     fun removeCallbacks(runnable: Runnable)
     fun removeCallbacksAndMessages(token: Any?)
+    fun isCurrentDispatcher(): Boolean
 }
