@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { createNitroSse } from './index';
-import { sanitizeHeaders } from './NitroSseClient';
 import type {
   SseClient,
   SseConfig,
@@ -116,17 +115,16 @@ function isConnectedState(s: SseState): boolean {
  * @returns State, client instance, and imperative control methods.
  */
 export function useNitroSse(options: UseNitroSseOptions): UseNitroSseReturn {
-  const safeOptions: UseNitroSseOptions =
-    options && typeof options === 'object' && !Array.isArray(options)
-      ? options
-      : ({} as UseNitroSseOptions);
+  const isValidOptions =
+    Boolean(options) && typeof options === 'object' && !Array.isArray(options);
+  const safeOptions: UseNitroSseOptions = isValidOptions
+    ? options
+    : ({} as UseNitroSseOptions);
 
-  if (!options || typeof options !== 'object' || Array.isArray(options)) {
-    if (typeof __DEV__ !== 'undefined' && __DEV__) {
-      console.error(
-        '[useNitroSse] Invalid options provided. Expected an options object.'
-      );
-    }
+  if (!isValidOptions && typeof __DEV__ !== 'undefined' && __DEV__) {
+    console.error(
+      '[useNitroSse] Invalid options provided. Expected an options object.'
+    );
   }
 
   const {
@@ -207,7 +205,6 @@ export function useNitroSse(options: UseNitroSseOptions): UseNitroSseReturn {
 
   // Instantiates the SseClient, attaches typed event listeners, applies configuration, and disposes on unmount
   useEffect(() => {
-    let disposed = false;
     let clientInstance: SseClient | null = null;
 
     if (!hasValidUrl) {
@@ -239,40 +236,15 @@ export function useNitroSse(options: UseNitroSseOptions): UseNitroSseReturn {
           : {}),
         onBeforeRequest: callbacksRef.current.onBeforeRequest
           ? async () => {
-              try {
-                const h = await callbacksRef.current.onBeforeRequest?.();
-                if (h && typeof h === 'object' && !Array.isArray(h)) {
-                  return sanitizeHeaders(h);
-                }
-                if (
-                  typeof __DEV__ !== 'undefined' &&
-                  __DEV__ &&
-                  h !== undefined &&
-                  h !== null
-                ) {
-                  console.warn(
-                    '[useNitroSse] onBeforeRequest returned an invalid headers value (expected an object):',
-                    h
-                  );
-                }
-                return {};
-              } catch (err) {
-                console.error(
-                  '[useNitroSse] Error in onBeforeRequest interceptor:',
-                  err
-                );
-                throw err;
-              }
+              return callbacksRef.current.onBeforeRequest!();
             }
           : undefined,
       };
 
       clientInstance.setup(config);
 
-      // Attach typed event listeners — each guarded against late native callbacks arriving after dispose
-      // and isolating unhandled exceptions in user callbacks.
+      // Attach typed event listeners
       clientInstance.addEventListener('message', (e) => {
-        if (disposed) return;
         try {
           callbacksRef.current.onMessage?.(e);
         } catch (err) {
@@ -294,65 +266,25 @@ export function useNitroSse(options: UseNitroSseOptions): UseNitroSseReturn {
       });
 
       clientInstance.addEventListener('error', (e) => {
-        if (disposed) return;
-        try {
-          callbacksRef.current.onError?.(e);
-        } catch (err) {
-          console.error(
-            '[useNitroSse] Unhandled error in onError callback:',
-            err
-          );
-        }
+        callbacksRef.current.onError?.(e);
       });
 
       clientInstance.addEventListener('open', (e) => {
-        if (disposed) return;
-        try {
-          callbacksRef.current.onOpen?.(e);
-        } catch (err) {
-          console.error(
-            '[useNitroSse] Unhandled error in onOpen callback:',
-            err
-          );
-        }
+        callbacksRef.current.onOpen?.(e);
       });
 
       clientInstance.addEventListener('close', (e) => {
-        if (disposed) return;
-        try {
-          callbacksRef.current.onClose?.(e);
-        } catch (err) {
-          console.error(
-            '[useNitroSse] Unhandled error in onClose callback:',
-            err
-          );
-        }
+        callbacksRef.current.onClose?.(e);
       });
 
       clientInstance.addEventListener('heartbeat', (e) => {
-        if (disposed) return;
-        try {
-          callbacksRef.current.onHeartbeat?.(e);
-        } catch (err) {
-          console.error(
-            '[useNitroSse] Unhandled error in onHeartbeat callback:',
-            err
-          );
-        }
+        callbacksRef.current.onHeartbeat?.(e);
       });
 
       clientInstance.addEventListener('state', (e) => {
-        if (disposed) return;
         const newState = e.state ?? 'idle';
         setState(newState);
-        try {
-          callbacksRef.current.onStateChange?.(newState);
-        } catch (err) {
-          console.error(
-            '[useNitroSse] Unhandled error in onStateChange callback:',
-            err
-          );
-        }
+        callbacksRef.current.onStateChange?.(newState);
       });
 
       if (autoStart) {
@@ -391,7 +323,6 @@ export function useNitroSse(options: UseNitroSseOptions): UseNitroSseReturn {
     }
 
     return () => {
-      disposed = true;
       clientInstance?.dispose();
       clientRef.current = null;
       setClient(null);
