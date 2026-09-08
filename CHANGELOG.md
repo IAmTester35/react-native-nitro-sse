@@ -9,9 +9,10 @@
 
 ### Features
 
-- **React Hook**: Added `useNitroSse` hook with `isReady` property.
+- **Errors**: Introduced structured error classes (`NitroSseError`, `NitroSseValidationError`, `NitroSseStateError`, `NitroSseDisposedError`, `NitroSseModuleNotFoundError`).
+- **React Hook**: Added `useNitroSse` hook with `isReady` property and lifecycle management.
 - **Client**: Added `dispose()`, `removeAllEventListeners(type?)`, and `maxAuthRetries` configuration.
-- **Android**: Added SSE comment text to heartbeat events.
+- **Android**: Added SSE comment text extraction to heartbeat events with Gzip stream support.
 
 ### Fixes
 
@@ -19,15 +20,21 @@
 - **Reconnection**: Stopped reconnection on non-retryable 4xx errors (404, 405, 410, 422).
 - **Reconnection**: Added exponential backoff fallback for HTTP 429 responses without a `Retry-After` header.
 - **iOS**: Fixed duplicate error and close events.
+- **iOS**: Handled offline foreground transitions by delegating reconnect to network monitor.
 - **Native**: Fixed crashes on invalid URLs by validating URL schemes on iOS and catching OkHttp exceptions on Android.
 - **Core**: Bound iOS `idleTimeout` to `readTimeout` and moved Android event buffer processing off the UI thread.
 - **Headers**: Stripped CRLF and null characters from headers.
+- **Comments**: Normalized SSE comments by stripping single leading space per WHATWG specification across iOS and Android.
 
 ### Improvements
 
+- **Reconnection**: Calling `start()` while in `reconnecting` state immediately triggers a retry and resets backoff.
+- **State**: Immediately flushes `state` transition events to prevent UI and React hook desynchronization.
+- **Headers**: `updateHeaders()` now merges new headers into existing ones instead of replacing them.
+- **Validation**: Added runtime configuration and argument validation for URLs, protocols, methods, and numeric boundaries.
 - **React Hook**: Dynamic header updates in `useNitroSse` now apply without reconnecting the socket.
 - **Dependencies**: Upgraded `react-native-nitro-modules` and `nitrogen` to 0.37.1.
-- **Android**: Enabled OkHttp `retryOnConnectionFailure`.
+- **Android**: Enabled OkHttp `retryOnConnectionFailure` and cached DevTools inspector reflection lookups.
 
 ---
 
