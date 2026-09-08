@@ -494,14 +494,30 @@ export class NitroSseClient implements SseClient {
 
   private _emit(type: string, event: SseEvent): void {
     const listeners = this._listeners.get(type);
-    if (listeners) {
-      Array.from(listeners).forEach((listener) => {
+    if (!listeners || listeners.size === 0) return;
+
+    // Fast-path for the most common case (single listener)
+    if (listeners.size === 1) {
+      for (const listener of listeners) {
         try {
           listener(event);
         } catch (e) {
           console.error(`[NitroSse] Error in event listener for "${type}":`, e);
         }
-      });
+        return;
+      }
+    }
+
+    // Multi-listener path: snapshot count to skip listeners added mid-iteration
+    const snapshot = listeners.size;
+    let i = 0;
+    for (const listener of listeners) {
+      if (i++ >= snapshot) break;
+      try {
+        listener(event);
+      } catch (e) {
+        console.error(`[NitroSse] Error in event listener for "${type}":`, e);
+      }
     }
   }
 
