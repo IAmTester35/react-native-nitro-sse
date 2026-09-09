@@ -1,5 +1,34 @@
-import type { HybridObject } from 'react-native-nitro-modules';
-import type { SseConfig, SseEvent, SseStats, SseState } from './SseInterface';
+import type { HybridObject, AnyMap } from 'react-native-nitro-modules';
+import type {
+  SseConfig,
+  SseStats,
+  SseState,
+  SseEventType,
+} from './SseInterface';
+
+/**
+ * Concrete SSE event representation passed across the JSI barrier.
+ */
+export interface SseEvent {
+  /** The type of the event. */
+  type: SseEventType;
+  /** The data payload of the event as a raw string. */
+  data?: string;
+  /** The parsed JSON data, if autoParseJSON is enabled and parsing succeeds. */
+  parsedData?: AnyMap;
+  /** The event ID, if provided. */
+  id?: string;
+  /** The event name, if provided (internal 'event' field in SSE). */
+  event?: string;
+  /** System message or error description. */
+  message?: string;
+  /** HTTP status code if applicable. */
+  statusCode?: number;
+  /** Server-requested retry delay in milliseconds. */
+  retry?: number;
+  /** The current connection state (only available if type is 'state'). */
+  state?: SseState;
+}
 
 export interface NitroSse
   extends HybridObject<{ ios: 'swift'; android: 'kotlin' }> {

@@ -5,7 +5,7 @@ import NitroModules
 /// All mutating operations must be synchronized on the associated `SseDispatcher`.
 class SseEventBuffer {
     private var eventBuffer: [SseEvent] = []
-    private var isFlushPending: Bool = false
+    private var pendingTimer: SseCancellable?
     private var onFlush: ((_ events: [SseEvent]) -> Void)?
     
     private var batchingIntervalMs: Double = 0
@@ -35,11 +35,14 @@ class SseEventBuffer {
         eventBuffer.append(event)
         
         if eventBuffer.count >= maxBufferSize || batchingIntervalMs <= 0 {
+            cancelPendingTimer()
             flush()
-        } else if !isFlushPending, let dispatcher = dispatcher {
-            isFlushPending = true
-            dispatcher.asyncAfter(delay: batchingIntervalMs / 1000.0) { [weak self] in
-                self?.flush()
+        } else if pendingTimer == nil, let dispatcher = dispatcher {
+            pendingTimer = dispatcher.asyncAfter(delay: batchingIntervalMs / 1000.0) { [weak self] in
+                guard let self = self else { return }
+                self.dispatcher?.assertOnQueue()
+                self.pendingTimer = nil
+                self.flush()
             }
         }
     }
@@ -47,20 +50,33 @@ class SseEventBuffer {
     /// Flushes all pending buffered events to JavaScript.
     func flush() {
         dispatcher?.assertOnQueue()
+        cancelPendingTimer()
         guard !eventBuffer.isEmpty else { return }
         
         let batch = eventBuffer
         eventBuffer.removeAll()
-        isFlushPending = false
         
         onFlush?(batch)
+    }
+    
+    private func cancelPendingTimer() {
+        dispatcher?.assertOnQueue()
+        pendingTimer?.cancel()
+        pendingTimer = nil
+    }
+    
+    /// Nullifies the flush callback to prevent invoking a destroyed JS runtime during teardown.
+    func clearCallback() {
+        dispatcher?.assertOnQueue()
+        self.onFlush = nil
     }
     
     /// Clears buffered events without invoking the flush callback.
     /// Used during teardown to avoid executing JS callbacks after the bridge runtime is destroyed.
     func clear() {
+        dispatcher?.assertOnQueue()
+        cancelPendingTimer()
         eventBuffer.removeAll()
-        isFlushPending = false
     }
     
     /// Converts a raw JSON payload string into a Nitro `AnyMap`.

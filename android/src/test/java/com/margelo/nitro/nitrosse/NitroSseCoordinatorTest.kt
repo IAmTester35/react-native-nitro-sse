@@ -7,7 +7,11 @@ import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -22,10 +26,11 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [Build.VERSION_CODES.O], shadows = [ShadowHybridNitroSseSpecCxxPart::class])
 class NitroSseCoordinatorTest {
+    private val TEST_URL = "http://localhost:33333/events"
 
     private fun createMockConfig(): SseConfig {
         return SseConfig(
-            "http://localhost:9999/dummy",
+            TEST_URL,
             null,
             emptyMap(),
             null,
@@ -38,6 +43,7 @@ class NitroSseCoordinatorTest {
             30000.0,
             0.0,
             2.0,
+            3.0,
             false,
             false,
             null,
@@ -46,7 +52,7 @@ class NitroSseCoordinatorTest {
     }
 
     private fun createResponse(code: Int, message: String): Response {
-        val request = Request.Builder().url("http://localhost:9999/dummy").build()
+        val request = Request.Builder().url(TEST_URL).build()
         return Response.Builder()
             .request(request)
             .protocol(Protocol.HTTP_1_1)
@@ -178,6 +184,182 @@ class NitroSseCoordinatorTest {
     }
 
     @Test
+    fun testCoordinatorHandlesFatalError404() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        val emittedEvents = mutableListOf<SseEvent>()
+        sse.setup(config) { events ->
+            emittedEvents.addAll(events)
+        }
+        drainLoopers()
+        
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+        
+        val errorResponse = createResponse(404, "Not Found")
+        sse.connectionDidFail(Exception("Not Found"), errorResponse, actualReqId)
+        drainLoopers()
+        
+        assertFalse(sse.isConnected())
+        assertEquals(SseState.FAILED, sse.getState())
+        
+        val errorEvent = emittedEvents.find { it.type == SseEventType.ERROR }
+        assertNotNull(errorEvent)
+        assertTrue(errorEvent?.message?.contains("Fatal Error") == true || errorEvent?.message?.contains("404") == true)
+    }
+
+    @Test
+    fun testCoordinatorHandlesFatalError405MethodNotAllowed() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+        
+        val errorResponse = createResponse(405, "Method Not Allowed")
+        sse.connectionDidFail(Exception("Method Not Allowed"), errorResponse, actualReqId)
+        drainLoopers()
+        
+        assertFalse(sse.isConnected())
+        assertEquals(SseState.FAILED, sse.getState())
+    }
+
+    @Test
+    fun testCoordinatorHandlesFatalError410Gone() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+        
+        val errorResponse = createResponse(410, "Gone")
+        sse.connectionDidFail(Exception("Gone"), errorResponse, actualReqId)
+        drainLoopers()
+        
+        assertFalse(sse.isConnected())
+        assertEquals(SseState.FAILED, sse.getState())
+    }
+
+    @Test
+    fun testCoordinatorHandlesFatalError422UnprocessableEntity() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+        
+        val errorResponse = createResponse(422, "Unprocessable Entity")
+        sse.connectionDidFail(Exception("Unprocessable Entity"), errorResponse, actualReqId)
+        drainLoopers()
+        
+        assertFalse(sse.isConnected())
+        assertEquals(SseState.FAILED, sse.getState())
+    }
+
+    @Test
+    fun testCoordinatorHandlesTimeout408Reconnecting() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+        
+        val errorResponse = createResponse(408, "Request Timeout")
+        sse.connectionDidFail(Exception("Request Timeout"), errorResponse, actualReqId)
+        drainLoopers()
+        
+        // 408 is recoverable, should transition to RECONNECTING
+        assertEquals(SseState.RECONNECTING, sse.getState())
+    }
+
+    @Test
+    fun testCoordinatorHandlesServerError500Reconnecting() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+        
+        val errorResponse = createResponse(500, "Internal Server Error")
+        sse.connectionDidFail(Exception("Server Error"), errorResponse, actualReqId)
+        drainLoopers()
+        
+        // 500 is recoverable, should transition to RECONNECTING
+        assertEquals(SseState.RECONNECTING, sse.getState())
+    }
+
+    @Test
+    fun testCoordinatorEmitsHeartbeatWithCommentPayload() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        val emittedEvents = mutableListOf<SseEvent>()
+        sse.setup(config) { events ->
+            emittedEvents.addAll(events)
+        }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+        
+        val clientField = NitroSse::class.java.getDeclaredField("client")
+        clientField.isAccessible = true
+        val client = clientField.get(sse) as okhttp3.OkHttpClient
+        val interceptor = client.networkInterceptors.filterIsInstance<HeartbeatNetworkInterceptor>().first()
+        
+        val onHeartbeatField = HeartbeatNetworkInterceptor::class.java.getDeclaredField("onHeartbeat")
+        onHeartbeatField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val onHeartbeat = onHeartbeatField.get(interceptor) as (String?, String) -> Unit
+
+        onHeartbeat(actualReqId, "keepalive-text-payload")
+        sse.flush()
+        drainLoopers()
+        
+        val heartbeatEvent = emittedEvents.find { it.type == SseEventType.HEARTBEAT }
+        assertNotNull(heartbeatEvent)
+        assertEquals("keepalive-text-payload", heartbeatEvent?.message)
+    }
+
+    @Test
     fun testCoordinatorHandlesNoContent204() {
         val sse = NitroSse(dispatcher)
         val config = createMockConfig()
@@ -242,8 +424,179 @@ class NitroSseCoordinatorTest {
         sse.connectionDidFail(Exception("Rate Limited"), errorResponse, actualReqId)
         drainLoopers()
         
-        // Unhandled 429 without Retry-After header fails fast to avoid aggressive retry loops
+        // 429 without Retry-After header falls back to exponential backoff reconnection
+        assertTrue(sse.isConnected())
+        assertEquals(SseState.RECONNECTING, sse.getState())
+        sse.stop()
+        drainLoopers()
+    }
+
+    @Test
+    fun testHeartbeatGuardedByRequestId() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        val emittedEvents = mutableListOf<SseEvent>()
+        sse.setup(config) { events ->
+            emittedEvents.addAll(events)
+        }
+        drainLoopers()
+        
+        sse.start()
+        drainLoopers()
+        
+        val clientField = NitroSse::class.java.getDeclaredField("client")
+        clientField.isAccessible = true
+        val client = clientField.get(sse) as okhttp3.OkHttpClient
+        val interceptor = client.networkInterceptors.filterIsInstance<HeartbeatNetworkInterceptor>().first()
+        
+        val onHeartbeatField = HeartbeatNetworkInterceptor::class.java.getDeclaredField("onHeartbeat")
+        onHeartbeatField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val onHeartbeat = onHeartbeatField.get(interceptor) as (String?, String) -> Unit
+
+        // Simulates stale RID mismatch: heartbeat should not be pushed
+        val staleRid = "stale-rid-999"
+        onHeartbeat(staleRid, "keep-alive")
+        sse.flush()
+        drainLoopers()
+        
+        assertFalse(emittedEvents.any { it.type == SseEventType.HEARTBEAT })
+    }
+
+    @Test
+    fun testRetryAfterReconnectionStopsAtMaxAttempts() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig().copy(maxReconnectAttempts = 1.0)
+        
+        val emittedEvents = mutableListOf<SseEvent>()
+        sse.setup(config) { events ->
+            emittedEvents.addAll(events)
+        }
+        drainLoopers()
+        
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        
+        // Attempt 1: 429 with Retry-After (1 second) -> schedules 1st reconnect
+        var currentReqId = reqIdField.get(sse) as String
+        val response1 = Response.Builder()
+            .request(Request.Builder().url(config.url).build())
+            .protocol(Protocol.HTTP_1_1)
+            .code(429)
+            .message("Too Many Requests")
+            .header("Retry-After", "1")
+            .body("".toResponseBody(null))
+            .build()
+        sse.connectionDidFail(Exception("Rate Limited"), response1, currentReqId)
+        drainLoopers()
+        assertEquals(SseState.RECONNECTING, sse.getState())
+        
+        // Advance time to execute delayed reconnect (Retry-After 1000ms + jitter)
+        dispatcher.advanceTimeBy(3000)
+        drainLoopers()
+        
+        // Attempt 2: 429 with Retry-After (reaches maxReconnectAttempts = 1) -> stops
+        currentReqId = reqIdField.get(sse) as String
+        val response2 = Response.Builder()
+            .request(Request.Builder().url(config.url).build())
+            .protocol(Protocol.HTTP_1_1)
+            .code(429)
+            .message("Too Many Requests")
+            .header("Retry-After", "1")
+            .body("".toResponseBody(null))
+            .build()
+        sse.connectionDidFail(Exception("Rate Limited"), response2, currentReqId)
+        drainLoopers()
+        
+        // Max reconnection attempts (1) reached, stops scheduling and transitions to FAILED
         assertFalse(sse.isConnected())
         assertEquals(SseState.FAILED, sse.getState())
+    }
+
+    @Test
+    fun testEmptyIdResetsLastProcessedId() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val currentReqId = reqIdField.get(sse) as String
+        
+        val lastIdField = NitroSse::class.java.getDeclaredField("lastProcessedId")
+        lastIdField.isAccessible = true
+        
+        // 1. Receive event with id "event-1"
+        sse.connectionDidReceiveMessage("event-1", "message", "hello", currentReqId)
+        drainLoopers()
+        assertEquals("event-1", lastIdField.get(sse))
+        
+        // 2. Receive event with empty id -> resets to null per WHATWG SSE spec
+        sse.connectionDidReceiveMessage("", "message", "world", currentReqId)
+        drainLoopers()
+        assertNull(lastIdField.get(sse))
+        
+        // 3. Receive event with null id -> maintains previous state (null)
+        sse.connectionDidReceiveMessage(null, "message", "test", currentReqId)
+        drainLoopers()
+        assertNull(lastIdField.get(sse))
+        
+        // 4. Receive event with new id -> sets new id
+        sse.connectionDidReceiveMessage("event-2", "message", "foo", currentReqId)
+        drainLoopers()
+        assertEquals("event-2", lastIdField.get(sse))
+    }
+
+    @Test
+    fun testUpdateHeadersMergesWithExistingHeaders() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig().copy(headers = mapOf("X-Initial" to "1", "Authorization" to "old"))
+        
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        
+        sse.updateHeaders(mapOf("Authorization" to "new", "Tenant" to "tenant-1"))
+        drainLoopers()
+        
+        val configField = NitroSse::class.java.getDeclaredField("config")
+        configField.isAccessible = true
+        val currentConfig = configField.get(sse) as SseConfig
+        
+        assertEquals("1", currentConfig.headers?.get("X-Initial"))
+        assertEquals("new", currentConfig.headers?.get("Authorization"))
+        assertEquals("tenant-1", currentConfig.headers?.get("Tenant"))
+    }
+
+    @Test
+    fun testLogicalBytesReceivedAccounting() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        
+        sse.setup(config) { _ -> }
+        drainLoopers()
+
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val currentReqId = reqIdField.get(sse) as String
+        
+        assertEquals(0.0, sse.getStats().totalBytesReceived, 0.001)
+        
+        // Push message with data (12 B), id (4 B), type (6 B) -> total 22 B
+        sse.connectionDidReceiveMessage("id-1", "custom", "payload-data", currentReqId)
+        drainLoopers()
+        
+        assertEquals(22.0, sse.getStats().totalBytesReceived, 0.001)
     }
 }

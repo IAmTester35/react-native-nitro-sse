@@ -1,4 +1,3 @@
-import Foundation
 import NitroModules
 
 extension SseConfig {
@@ -18,6 +17,7 @@ extension SseConfig {
         maxRetryIntervalMs: Double?? = nil,
         jitterFactor: Double?? = nil,
         maxReconnectAttempts: Double?? = nil,
+        maxAuthRetries: Double?? = nil,
         autoParseJSON: Bool?? = nil,
         monitorNetwork: Bool?? = nil,
         onBeforeRequest: (() -> Promise<Promise<Dictionary<String, String>>>)?? = nil,
@@ -37,6 +37,7 @@ extension SseConfig {
             maxRetryIntervalMs: maxRetryIntervalMs ?? self.maxRetryIntervalMs,
             jitterFactor: jitterFactor ?? self.jitterFactor,
             maxReconnectAttempts: maxReconnectAttempts ?? self.maxReconnectAttempts,
+            maxAuthRetries: maxAuthRetries ?? self.maxAuthRetries,
             autoParseJSON: autoParseJSON ?? self.autoParseJSON,
             monitorNetwork: monitorNetwork ?? self.monitorNetwork,
             onBeforeRequest: onBeforeRequest ?? self.onBeforeRequest,

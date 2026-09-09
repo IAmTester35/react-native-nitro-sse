@@ -1,6 +1,7 @@
 package com.margelo.nitro.nitrosse
 
 import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -11,7 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * is explicitly configured) to conserve mobile network bandwidth and battery.
  */
 class SseLifecycleManager(
-    private val lifecycleProvider: () -> androidx.lifecycle.Lifecycle,
+    private val lifecycleProvider: () -> Lifecycle,
     private val mainDispatcher: SseDispatcher,
     private val sseDispatcher: SseDispatcher,
     private val onBackground: () -> Unit,
@@ -24,6 +25,9 @@ class SseLifecycleManager(
 
     private val _hasSubscribed = AtomicBoolean(false)
 
+    /**
+     * Registers the lifecycle observer with the application lifecycle provider on the main thread.
+     */
     fun startObserving() {
         if (_hasSubscribed.compareAndSet(false, true)) {
             mainDispatcher.post {
@@ -32,6 +36,9 @@ class SseLifecycleManager(
         }
     }
 
+    /**
+     * Unregisters the lifecycle observer from the application lifecycle provider.
+     */
     fun stopObserving() {
         if (_hasSubscribed.compareAndSet(true, false)) {
             mainDispatcher.post {

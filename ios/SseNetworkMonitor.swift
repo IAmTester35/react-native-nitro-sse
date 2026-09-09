@@ -24,6 +24,11 @@ class SseNetworkMonitor {
         self.onChange = onChange
     }
     
+    /// Synchronously queries whether the active network path is currently satisfied (online).
+    var isPathSatisfied: Bool {
+        return pathMonitor?.currentPath.status == .satisfied
+    }
+    
     /// Starts observing system network changes. Idempotent call.
     func start() {
         guard pathMonitor == nil else { return }
@@ -65,12 +70,13 @@ class SseNetworkMonitor {
         
         print("[NitroSse] Network path changed: status=\(path.status), interface=\(String(describing: interfaceType))")
         
+        // Only trigger an interface change if both the previous and current interfaces are known and differ.
+        // Initial detection (lastPathInterface == nil) must NOT be flagged as an interface change to avoid
+        // falsely triggering an immediate stream restart right after connection startup.
         let interfaceChanged: Bool
         if isSatisfied {
             if let lastInterface = lastPathInterface, let currentInterface = interfaceType {
                 interfaceChanged = lastInterface != currentInterface
-            } else if lastPathInterface == nil && interfaceType != nil {
-                interfaceChanged = true
             } else {
                 interfaceChanged = false
             }

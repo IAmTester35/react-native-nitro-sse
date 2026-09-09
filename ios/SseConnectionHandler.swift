@@ -1,6 +1,5 @@
 import Foundation
 import LDSwiftEventSource
-import NitroModules
 
 /// Delegate protocol for receiving lifecycle and stream events from `SseConnectionHandler`.
 protocol SseConnectionDelegate: AnyObject {
@@ -25,25 +24,39 @@ enum SseConnectionHandler {
     ) -> EventSource {
         let sessionConfig = URLSessionConfiguration.default
         let readTimeout = (config.readTimeoutMs ?? 300000.0) / 1000.0
-        let connectionTimeout = (config.connectionTimeoutMs ?? 15000.0) / 1000.0
+        // Use timeoutIntervalForRequest (resets on incoming chunks) rather than timeoutIntervalForResource.
+        // Setting timeoutIntervalForResource would hard-cap the total lifetime of persistent SSE streams.
         sessionConfig.timeoutIntervalForRequest = readTimeout
-        sessionConfig.timeoutIntervalForResource = connectionTimeout
         
+        let connectionTimeout = (config.connectionTimeoutMs ?? 15000.0) / 1000.0
         let handler = SseHandler(delegate: delegate, attemptVersion: attemptVersion, dispatcher: dispatcher)
         var esConfig = EventSource.Config(handler: handler, url: url)
-        esConfig.urlSessionConfiguration = sessionConfig
-        esConfig.headers = config.headers ?? [:]
-        
-        if let lastId = lastProcessedId, !lastId.isEmpty {
-            esConfig.headers["Last-Event-ID"] = lastId
+        // Prevent LDSwiftEventSource's default 300s idle timeout override.
+        esConfig.idleTimeout = readTimeout
+        // Disable LDSwift internal reconnect; reconnection is coordinated externally by NitroSse.
+        esConfig.connectionErrorHandler = { [weak handler] error in
+            handler?.onError(error: error)
+            return .shutdown
         }
-        
+        esConfig.urlSessionConfiguration = sessionConfig
+        // Prevent initial config headers from overriding the dynamic Last-Event-ID on reconnection.
+        var initialHeaders = config.headers ?? [:]
+        initialHeaders = initialHeaders.filter { $0.key.caseInsensitiveCompare("Last-Event-Id") != .orderedSame }
+        esConfig.headers = initialHeaders
         esConfig.lastEventId = lastProcessedId ?? ""
+        if let lastId = lastProcessedId, !lastId.isEmpty {
+            esConfig.headerTransform = { headers in
+                var transformed = headers
+                transformed["Last-Event-Id"] = lastId
+                return transformed
+            }
+        }
         esConfig.method = config.method?.stringValue.uppercased() ?? "GET"
         esConfig.body = config.body?.data(using: .utf8)
         
         let es = EventSource(config: esConfig)
         handler.source = es
+        handler.startConnectionTimer(timeout: connectionTimeout)
         es.start()
         return es
     }
@@ -58,6 +71,8 @@ private class SseHandler: EventHandler {
     weak var source: EventSource?
     let attemptVersion: Int
     let dispatcher: SseDispatcher
+    private var isConnectedOrFinished: Bool = false
+    private var isTerminalDispatched: Bool = false
     
     init(delegate: SseConnectionDelegate, attemptVersion: Int, dispatcher: SseDispatcher) {
         self.delegate = delegate
@@ -65,27 +80,49 @@ private class SseHandler: EventHandler {
         self.dispatcher = dispatcher
     }
     
-    func onOpened() {
-        guard source != nil else { return }
+    private func dispatchToDelegate(isTerminal: Bool = false, _ action: @escaping (SseConnectionDelegate) -> Void) {
         dispatcher.async { [weak self] in
-            guard let self = self else { return }
-            self.delegate?.connectionDidOpen(attemptVersion: self.attemptVersion)
+            guard let self = self, self.source != nil else { return }
+            if isTerminal {
+                guard !self.isTerminalDispatched else { return }
+                self.isTerminalDispatched = true
+            }
+            self.isConnectedOrFinished = true
+            guard let delegate = self.delegate else { return }
+            action(delegate)
+        }
+    }
+    
+    func startConnectionTimer(timeout: TimeInterval) {
+        guard timeout > 0 else { return }
+        dispatcher.asyncAfter(delay: timeout) { [weak self] in
+            guard let self = self, !self.isConnectedOrFinished, self.source != nil else { return }
+            self.isConnectedOrFinished = true
+            self.isTerminalDispatched = true
+            self.source?.stop()
+            self.source = nil
+            self.delegate?.connectionDidFail(
+                error: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut, userInfo: [NSLocalizedDescriptionKey: "Connection timed out"]),
+                attemptVersion: self.attemptVersion
+            )
+        }
+    }
+    
+    func onOpened() {
+        dispatchToDelegate { delegate in
+            delegate.connectionDidOpen(attemptVersion: self.attemptVersion)
         }
     }
     
     func onClosed() {
-        guard source != nil else { return }
-        dispatcher.async { [weak self] in
-            guard let self = self else { return }
-            self.delegate?.connectionDidClose(attemptVersion: self.attemptVersion)
+        dispatchToDelegate(isTerminal: true) { delegate in
+            delegate.connectionDidClose(attemptVersion: self.attemptVersion)
         }
     }
     
     func onMessage(eventType: String, messageEvent: MessageEvent) {
-        guard source != nil else { return }
-        dispatcher.async { [weak self] in
-            guard let self = self else { return }
-            self.delegate?.connectionDidReceiveMessage(
+        dispatchToDelegate { delegate in
+            delegate.connectionDidReceiveMessage(
                 eventType: eventType,
                 data: messageEvent.data,
                 lastEventId: messageEvent.lastEventId,
@@ -95,20 +132,17 @@ private class SseHandler: EventHandler {
     }
     
     /// Maps native SSE comments (lines starting with ':') to heartbeat events.
-    /// LDSwiftEventSource parses comments natively via `onComment`, avoiding manual byte parsing.
+    /// Normalizes comment by removing single leading space per WHATWG SSE specification for cross-platform parity.
     func onComment(comment: String) {
-        guard source != nil else { return }
-        dispatcher.async { [weak self] in
-            guard let self = self else { return }
-            self.delegate?.connectionDidReceiveComment(comment, attemptVersion: self.attemptVersion)
+        let normalized = comment.hasPrefix(" ") ? String(comment.dropFirst()) : comment
+        dispatchToDelegate { delegate in
+            delegate.connectionDidReceiveComment(normalized, attemptVersion: self.attemptVersion)
         }
     }
     
     func onError(error: Error) {
-        guard source != nil else { return }
-        dispatcher.async { [weak self] in
-            guard let self = self else { return }
-            self.delegate?.connectionDidFail(error: error, attemptVersion: self.attemptVersion)
+        dispatchToDelegate(isTerminal: true) { delegate in
+            delegate.connectionDidFail(error: error, attemptVersion: self.attemptVersion)
         }
     }
 }

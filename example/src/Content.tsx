@@ -3,25 +3,10 @@ import {
   View,
   StyleSheet,
   TouchableOpacity,
-  ScrollView,
-  Platform,
-  SafeAreaView,
+  FlatList,
   StatusBar,
-  ActivityIndicator,
 } from 'react-native';
 import type { SseState } from 'react-native-nitro-sse';
-
-export const COLORS = {
-  background: '#0F172A',
-  card: '#1E293B',
-  primary: '#38BDF8',
-  success: '#10B981',
-  error: '#EF4444',
-  warning: '#F59E0B',
-  text: '#F8FAFC',
-  textDim: '#94A3B8',
-  border: '#334155',
-};
 
 export interface LogEntry {
   id: string;
@@ -33,272 +18,166 @@ export interface LogEntry {
 
 export interface ContentProps {
   logs: LogEntry[];
-  connectionState: SseState;
-  setLogs: (logs: LogEntry[]) => void;
-  startConnection: () => void;
-  stopConnection: () => void;
+  state: SseState;
+  isConnected: boolean;
+  onToggleConnection: () => void;
+  onClearLogs: () => void;
 }
 
-export function Content(props: ContentProps) {
-  const {
-    logs,
-    connectionState,
-    setLogs,
-    startConnection,
-    stopConnection,
-  } = props;
+const TYPE_COLORS: Record<string, string> = {
+  open: '#16A34A',
+  error: '#DC2626',
+  message: '#2563EB',
+  heartbeat: '#D97706',
+  custom: '#8B5CF6',
+};
 
-  const renderLogItem = (item: LogEntry) => {
-    let typeColor = COLORS.textDim;
-    if (item.type === 'open') typeColor = COLORS.success;
-    if (item.type === 'error') typeColor = COLORS.error;
-    if (item.type === 'message') typeColor = COLORS.primary;
-
-    return (
-      <View key={item.id} style={styles.logItem}>
-        <View style={styles.logHeader}>
-          <Text style={styles.logTime}>{item.time}</Text>
-          <View style={[styles.typeBadge, { backgroundColor: typeColor + '20' }]}>
-            <Text style={[styles.typeText, { color: typeColor }]}>
-              {item.type.toUpperCase()}
-            </Text>
-          </View>
-        </View>
-        {item.data ? (
-          <Text style={styles.logData} numberOfLines={2}>
-            {item.data}
-          </Text>
-        ) : null}
-        {item.message ? (
-          <Text style={styles.logMessage} numberOfLines={2}>
-            {item.message}
-          </Text>
-        ) : null}
-      </View>
-    );
-  };
-
+export function Content({
+  logs,
+  state,
+  isConnected,
+  onToggleConnection,
+  onClearLogs,
+}: ContentProps) {
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" />
+    <View style={styles.container}>
+      <StatusBar barStyle="dark-content" />
 
       <View style={styles.header}>
-        <Text style={styles.brandTitle}>
-          Nitro <Text style={{ color: COLORS.primary }}>SSE</Text>
-        </Text>
-        <View style={styles.statusRow}>
-          <View
-            style={[
-              styles.statusDot,
-              {
-                backgroundColor: connectionState === 'open'
-                  ? COLORS.success
-                  : ['connecting', 'reconnecting', 'stale'].includes(connectionState)
-                  ? COLORS.warning
-                  : COLORS.error,
-              },
-            ]}
-          />
-          <Text style={styles.statusText}>
-            {connectionState.toUpperCase()}
-          </Text>
+        <View>
+          <Text style={styles.title}>Nitro SSE</Text>
+          <Text style={styles.status}>{state}</Text>
         </View>
-      </View>
-
-      <View style={styles.mainControls}>
-        {['idle', 'closed', 'failed'].includes(connectionState) ? (
+        <View style={styles.actions}>
           <TouchableOpacity
-            style={[styles.primaryButton, { backgroundColor: COLORS.primary }]}
-            onPress={startConnection}
+            style={[styles.btn, isConnected ? styles.btnStop : styles.btnStart]}
+            onPress={onToggleConnection}
           >
-            <Text style={styles.buttonText}>CONNECT</Text>
+            <Text style={styles.btnText}>{isConnected ? 'Stop' : 'Connect'}</Text>
           </TouchableOpacity>
-        ) : (
-          <TouchableOpacity
-            style={[styles.actionButton, { backgroundColor: COLORS.error + '20' }]}
-            onPress={stopConnection}
-          >
-            <Text style={[styles.actionButtonText, { color: COLORS.error }]}>
-              STOP
-            </Text>
-          </TouchableOpacity>
-        )}
-      </View>
-
-      <View style={styles.logViewer}>
-        <View style={styles.logViewerHeader}>
-          <Text style={styles.logViewerTitle}>STREAM ACTIVITY</Text>
-          <TouchableOpacity onPress={() => setLogs([])}>
-            <Text style={styles.clearText}>CLEAR</Text>
-          </TouchableOpacity>
-        </View>
-
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}
-          indicatorStyle="white"
-        >
-          {logs.length === 0 ? (
-            <View style={styles.emptyState}>
-              {['connecting', 'reconnecting'].includes(connectionState) ? (
-                <ActivityIndicator color={COLORS.primary} />
-              ) : (
-                <Text style={styles.emptyText}>No activity recorded yet.</Text>
-              )}
-            </View>
-          ) : (
-            logs.map(renderLogItem)
+          {logs.length > 0 && (
+            <TouchableOpacity style={styles.btnClear} onPress={onClearLogs}>
+              <Text style={styles.btnClearText}>Clear</Text>
+            </TouchableOpacity>
           )}
-        </ScrollView>
+        </View>
       </View>
-    </SafeAreaView>
+
+      <FlatList
+        data={logs}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={styles.list}
+        ListEmptyComponent={
+          <Text style={styles.emptyText}>No events received</Text>
+        }
+        renderItem={({ item }) => (
+          <View style={styles.logRow}>
+            <Text style={styles.logTime}>{item.time}</Text>
+            <Text
+              style={[
+                styles.logType,
+                { color: TYPE_COLORS[item.type] ?? '#6B7280' },
+              ]}
+            >
+              {item.type}
+            </Text>
+            <Text style={styles.logText} numberOfLines={2}>
+              {item.data ?? item.message}
+            </Text>
+          </View>
+        )}
+      />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    paddingTop: 50,
     flex: 1,
-    backgroundColor: COLORS.background,
+    paddingTop: 60,
+    backgroundColor: '#FFFFFF',
   },
   header: {
-    paddingHorizontal: 20,
-    paddingVertical: 15,
-  },
-  brandTitle: {
-    fontSize: 22,
-    fontWeight: '900',
-    color: COLORS.text,
-    letterSpacing: 1,
-  },
-  statusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 6,
-  },
-  statusText: {
-    color: COLORS.textDim,
-    fontSize: 10,
-    fontWeight: 'bold',
-    letterSpacing: 0.5,
-  },
-  mainControls: {
-    paddingHorizontal: 15,
-    marginBottom: 20,
-  },
-  primaryButton: {
-    height: 50,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  buttonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: 'bold',
-    letterSpacing: 1,
-  },
-  actionButton: {
-    height: 45,
-    borderRadius: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  actionButtonText: {
-    fontSize: 11,
-    fontWeight: 'bold',
-  },
-  logViewer: {
-    flex: 1,
-    backgroundColor: COLORS.card,
-    marginHorizontal: 15,
-    marginBottom: 20,
-    borderRadius: 16,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  logViewerHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 12,
-    backgroundColor: '#00000020',
+    paddingHorizontal: 16,
+    paddingBottom: 16,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    borderBottomColor: '#E5E7EB',
   },
-  logViewerTitle: {
-    color: COLORS.textDim,
-    fontSize: 10,
-    fontWeight: 'bold',
-    letterSpacing: 1,
+  title: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#111827',
   },
-  clearText: {
-    color: COLORS.error,
-    fontSize: 10,
-    fontWeight: 'bold',
+  status: {
+    fontSize: 12,
+    color: '#6B7280',
+    textTransform: 'uppercase',
+    marginTop: 2,
   },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 12,
-  },
-  logItem: {
-    marginBottom: 12,
-    backgroundColor: '#00000030',
-    borderRadius: 8,
-    padding: 10,
-    borderWidth: 0.5,
-    borderColor: '#ffffff10',
-  },
-  logHeader: {
+  actions: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 6,
+  },
+  btn: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  btnStart: {
+    backgroundColor: '#2563EB',
+  },
+  btnStop: {
+    backgroundColor: '#DC2626',
+  },
+  btnText: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  btnClear: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginLeft: 8,
+  },
+  btnClearText: {
+    color: '#6B7280',
+    fontSize: 14,
+  },
+  list: {
+    padding: 16,
+  },
+  logRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#F3F4F6',
   },
   logTime: {
-    color: COLORS.textDim,
-    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }),
-    fontSize: 10,
-  },
-  typeBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  typeText: {
-    fontSize: 8,
-    fontWeight: 'bold',
-  },
-  logData: {
-    color: COLORS.text,
-    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }),
     fontSize: 11,
-    lineHeight: 16,
+    color: '#9CA3AF',
+    fontVariant: ['tabular-nums'],
+    marginRight: 8,
   },
-  logMessage: {
-    color: COLORS.textDim,
+  logType: {
     fontSize: 11,
-    fontStyle: 'italic',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    width: 65,
+    marginRight: 8,
   },
-  emptyState: {
+  logText: {
     flex: 1,
-    height: 200,
-    justifyContent: 'center',
-    alignItems: 'center',
+    fontSize: 12,
+    color: '#1F2937',
   },
   emptyText: {
-    color: COLORS.textDim,
-    fontSize: 12,
+    textAlign: 'center',
+    color: '#9CA3AF',
+    marginTop: 40,
+    fontSize: 14,
   },
 });

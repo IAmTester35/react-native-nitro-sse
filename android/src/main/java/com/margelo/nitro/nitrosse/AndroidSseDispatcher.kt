@@ -1,6 +1,7 @@
 package com.margelo.nitro.nitrosse
 
 import android.os.Handler
+import android.os.Looper
 
 /**
  * Android implementation of [SseDispatcher] delegating execution to an [android.os.Handler].
@@ -23,5 +24,9 @@ class AndroidSseDispatcher(private val handler: Handler) : SseDispatcher {
 
     override fun removeCallbacksAndMessages(token: Any?) {
         handler.removeCallbacksAndMessages(token)
+    }
+
+    override fun isCurrentDispatcher(): Boolean {
+        return Looper.myLooper() == handler.looper
     }
 }

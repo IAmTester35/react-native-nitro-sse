@@ -55,6 +55,13 @@ class TestSseDispatcher : SseDispatcher {
         }
     }
 
+    @Volatile
+    private var executionThread: Thread? = null
+
+    override fun isCurrentDispatcher(): Boolean {
+        return executionThread == Thread.currentThread()
+    }
+
     fun advanceTimeBy(millis: Long) {
         synchronized(lock) {
             currentTimeMillis += millis
@@ -63,15 +70,21 @@ class TestSseDispatcher : SseDispatcher {
     }
     
     fun executePending() {
-        while (true) {
-            val task = synchronized(lock) {
-                if (pendingTasks.isNotEmpty() && pendingTasks.peek()!!.executeAt <= currentTimeMillis) {
-                    pendingTasks.poll()
-                } else {
-                    null
-                }
-            } ?: break
-            task.runnable.run()
+        val prevThread = executionThread
+        executionThread = Thread.currentThread()
+        try {
+            while (true) {
+                val task = synchronized(lock) {
+                    if (pendingTasks.isNotEmpty() && pendingTasks.peek()!!.executeAt <= currentTimeMillis) {
+                        pendingTasks.poll()
+                    } else {
+                        null
+                    }
+                } ?: break
+                task.runnable.run()
+            }
+        } finally {
+            executionThread = prevThread
         }
     }
 }

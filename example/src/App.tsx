@@ -1,105 +1,142 @@
-import { useState, useRef, useEffect } from 'react';
-import { Platform } from 'react-native';
-import { Content, type LogEntry } from './Content';
+import { useState, useCallback } from 'react';
 import {
-  createNitroSse,
-  type SseClient,
-  type SseState,
-} from 'react-native-nitro-sse';
+  SafeAreaView,
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  StatusBar,
+} from 'react-native';
+import { useNitroSse } from 'react-native-nitro-sse';
+import { Content, type LogEntry } from './Content';
+import { SseBenchmarkView } from './SseBenchmarkView';
+import { getDevServerUrl } from './config';
 
-const DEFAULT_URL = Platform.select({
-  android: 'http://10.0.2.2:33333/events',
-  ios: 'http://localhost:33333/events',
-  default: 'http://localhost:33333/events',
-})!;
+type TabMode = 'stream' | 'benchmark';
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState<TabMode>('stream');
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [connectionState, setConnectionState] = useState<SseState>('idle');
-  const sseRef = useRef<SseClient | null>(null);
 
-  const addLog = useRef((type: string, data?: string, message?: string) => {
-    const entry: LogEntry = {
-      id: Math.random().toString(36).substring(7),
-      time: new Date().toLocaleTimeString([], {
-        hour12: false,
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-      }),
-      type,
-      data,
-      message,
-    };
-    setLogs((prev) => [entry, ...prev].slice(0, 100));
-  }).current;
-
-  const startConnection = () => {
-    if (sseRef.current) return;
-
-    try {
-      addLog('system', undefined, 'Initializing connection...');
-
-      const sse = createNitroSse();
-
-      sse.addEventListener('open', () => {
-        addLog('open', undefined, 'Connection established');
-      });
-
-      sse.addEventListener('message', (event) => {
-        addLog('message', event.data);
-      });
-
-      sse.addEventListener('error', (event) => {
-        addLog('error', event.data, event.message);
-      });
-
-      sse.addEventListener('heartbeat', () => {
-        addLog('heartbeat', undefined, 'Keep-alive received');
-      });
-
-      sse.addEventListener('state', (event) => {
-        if (event.state) {
-          setConnectionState(event.state);
-        }
-      });
-
-      sse.setup({
-        url: DEFAULT_URL,
-      });
-
-      sse.start();
-      sseRef.current = sse;
-
-    } catch (e: any) {
-      addLog('error', undefined, e.message);
-    }
-  };
-
-  const stopConnection = () => {
-    if (sseRef.current) {
-      sseRef.current.stop();
-      sseRef.current = null;
-      addLog('system', undefined, 'Connection stopped');
-    }
-  };
-
-  useEffect(() => {
-    return () => {
-      if (sseRef.current) {
-        sseRef.current.stop();
-        sseRef.current = null;
-      }
-    };
+  const addLog = useCallback((type: string, data?: string, message?: string) => {
+    setLogs((prev) => [
+      {
+        id: Math.random().toString(36).slice(2, 9),
+        time: new Date().toTimeString().slice(0, 8),
+        type,
+        data,
+        message,
+      },
+      ...prev.slice(0, 99),
+    ]);
   }, []);
 
+  const { state, isConnected, start, stop } = useNitroSse({
+    url: getDevServerUrl(),
+    autoStart: false,
+    onOpen: () => addLog('open', undefined, 'Connected'),
+    onMessage: (e) => addLog('message', e.data),
+    onError: (e) => addLog('error', e.data, e.message),
+    onHeartbeat: (e) => addLog('heartbeat', undefined, e.message ?? 'Keep-alive'),
+    events: {
+      notification: (e) => addLog('custom', e.data, 'Custom Event: notification'),
+    },
+  });
+
+  const handleToggleConnection = useCallback(() => {
+    if (isConnected) {
+      stop();
+      addLog('system', undefined, 'Disconnected');
+    } else {
+      addLog('system', undefined, 'Connecting...');
+      start();
+    }
+  }, [isConnected, start, stop, addLog]);
+
   return (
-    <Content
-      logs={logs}
-      connectionState={connectionState}
-      setLogs={setLogs}
-      startConnection={startConnection}
-      stopConnection={stopConnection}
-    />
+    <SafeAreaView style={styles.safeArea}>
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+
+      {/* Segmented Tab Navigation */}
+      <View style={styles.tabContainer}>
+        <TouchableOpacity
+          style={[styles.tabButton, activeTab === 'stream' && styles.tabButtonActive]}
+          onPress={() => setActiveTab('stream')}
+        >
+          <Text
+            style={[styles.tabText, activeTab === 'stream' && styles.tabTextActive]}
+          >
+            Live Stream
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.tabButton, activeTab === 'benchmark' && styles.tabButtonActive]}
+          onPress={() => setActiveTab('benchmark')}
+        >
+          <Text
+            style={[styles.tabText, activeTab === 'benchmark' && styles.tabTextActive]}
+          >
+            Benchmark
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.contentArea}>
+        {activeTab === 'stream' ? (
+          <Content
+            logs={logs}
+            state={state}
+            isConnected={isConnected}
+            onToggleConnection={handleToggleConnection}
+            onClearLogs={() => setLogs([])}
+          />
+        ) : (
+          <SseBenchmarkView />
+        )}
+      </View>
+    </SafeAreaView>
   );
 }
+
+const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  tabContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#F3F4F6',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+    gap: 8,
+  },
+  tabButton: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tabButtonActive: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  tabText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#6B7280',
+  },
+  tabTextActive: {
+    color: '#111827',
+  },
+  contentArea: {
+    flex: 1,
+  },
+});

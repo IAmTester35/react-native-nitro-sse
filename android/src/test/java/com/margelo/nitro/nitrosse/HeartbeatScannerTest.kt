@@ -5,16 +5,31 @@ import org.junit.Test
 
 class HeartbeatScanner {
     private var isAtStartOfLine = true
+    private var isReadingComment = false
+    private val commentBuffer = java.io.ByteArrayOutputStream()
+    val comments = mutableListOf<String>()
     var heartbeatCount = 0
         private set
 
     fun scan(bytes: ByteArray, length: Int) {
         for (i in 0 until length) {
             val b = bytes[i]
-            if (isAtStartOfLine && b == ':'.toByte()) {
+            val isNewline = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
+            if (isReadingComment) {
+                if (isNewline) {
+                    isReadingComment = false
+                    val raw = commentBuffer.toString("UTF-8")
+                    comments.add(if (raw.startsWith(" ")) raw.substring(1) else raw)
+                    commentBuffer.reset()
+                } else {
+                    commentBuffer.write(b.toInt())
+                }
+            } else if (isAtStartOfLine && b == ':'.code.toByte()) {
+                isReadingComment = true
+                commentBuffer.reset()
                 heartbeatCount++
             }
-            isAtStartOfLine = (b == '\n'.toByte() || b == '\r'.toByte())
+            isAtStartOfLine = isNewline
         }
     }
 }
@@ -98,5 +113,16 @@ class HeartbeatScannerTest {
         val data = "data: ok\r\n:heartbeat\r\n".toByteArray()
         scanner.scan(data, data.size)
         assertEquals(1, scanner.heartbeatCount)
+    }
+
+    @Test
+    fun testCommentSingleLeadingSpaceDroppedPreservingIndentation() {
+        val scanner = HeartbeatScanner()
+        val data = ": keepalive\n:   indented\n:unspaced\n".toByteArray()
+        scanner.scan(data, data.size)
+        assertEquals(3, scanner.heartbeatCount)
+        assertEquals("keepalive", scanner.comments[0])
+        assertEquals("  indented", scanner.comments[1])
+        assertEquals("unspaced", scanner.comments[2])
     }
 }

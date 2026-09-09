@@ -3,7 +3,7 @@ name: Continuous Release
 on:
   workflow_dispatch:
   workflow_run:
-    workflows: ["CI"]
+    workflows: ['CI']
     branches: [main, beta]
     types:
       - completed
@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success') }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
@@ -32,10 +32,10 @@ jobs:
         run: |
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
-          
+
           # Check if this specific version is already published
           PUBLISHED_VERSION=$(npm view "$NAME@$VERSION" version 2>/dev/null || echo "")
-          
+
           if [ "$PUBLISHED_VERSION" = "$VERSION" ]; then
             echo "Version $VERSION is already published on npm. Skipping."
             echo "changed=false" >> $GITHUB_OUTPUT
@@ -58,13 +58,13 @@ jobs:
 
       - name: Create GitHub Release
         if: steps.check.outputs.changed == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.check.outputs.version }}
           name: Release v${{ steps.check.outputs.version }}
           body_path: RELEASE_NOTES.md
           generate_release_notes: true
-          make_latest: true
+          make_latest: ${{ !contains(steps.check.outputs.version, 'beta') && !contains(steps.check.outputs.version, 'alpha') }}
           draft: false
           prerelease: ${{ contains(steps.check.outputs.version, 'beta') || contains(steps.check.outputs.version, 'alpha') }}
         env:

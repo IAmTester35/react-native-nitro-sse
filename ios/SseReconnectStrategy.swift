@@ -1,7 +1,7 @@
 import Foundation
 
-/// Calculates backoff delays using randomized full jitter exponential backoff to prevent thundering herd spikes on servers.
-/// Encapsulates retry state and HTTP `Retry-After` header parsing rules without thread dependencies.
+/// Calculates backoff delays using randomized full jitter exponential backoff.
+/// Custom implementation guarantees cross-platform parity with Android and enforces maxReconnectAttempts.
 class SseReconnectStrategy {
     private var backoffCounter: Int = 0
     private var currentReconnectAttempts: Int = 0
@@ -52,6 +52,11 @@ class SseReconnectStrategy {
         guard maxReconnectAttempts != -1 else { return false }
         return currentReconnectAttempts >= maxReconnectAttempts
     }
+
+    /// Records an explicit reconnection attempt without altering the backoff exponent.
+    func recordAttempt() {
+        currentReconnectAttempts += 1
+    }
     
     /// Calculates the next reconnection delay in seconds (enforcing a minimum 1.0s floor).
     /// Exponential backoff is applied for errors (`isError == true`), while normal disconnects use the base interval with jitter.
@@ -77,7 +82,8 @@ class SseReconnectStrategy {
         currentReconnectAttempts = 0
     }
     
-    /// Parses `Retry-After` HTTP headers per RFC 7231, accepting either integer seconds or HTTP-date (RFC 1123) formats.
+    /// Parses `Retry-After` HTTP headers per RFC 7231 (integer seconds or RFC 1123 date).
+    /// Fallback to full jitter backoff when response metadata is omitted by underlying client.
     static func extractRetryAfterSeconds(from error: Error) -> TimeInterval? {
         let nsError = error as NSError
         guard let response = nsError.userInfo["response"] as? HTTPURLResponse else { return nil }
