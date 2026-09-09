@@ -15,8 +15,21 @@ class SseDispatchQueueDispatcher: SseDispatcher {
         queue.async(execute: block)
     }
     
-    func asyncAfter(delay: TimeInterval, _ block: @escaping () -> Void) {
-        queue.asyncAfter(deadline: .now() + delay, execute: block)
+    private class WorkItemCancellable: SseCancellable {
+        private let item: DispatchWorkItem
+        init(item: DispatchWorkItem) {
+            self.item = item
+        }
+        func cancel() {
+            item.cancel()
+        }
+    }
+    
+    @discardableResult
+    func asyncAfter(delay: TimeInterval, _ block: @escaping () -> Void) -> SseCancellable? {
+        let workItem = DispatchWorkItem(block: block)
+        queue.asyncAfter(deadline: .now() + delay, execute: workItem)
+        return WorkItemCancellable(item: workItem)
     }
     
     /// Executes block inline if already running on queue to avoid re-entrant deadlocks.
