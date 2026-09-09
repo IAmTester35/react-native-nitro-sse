@@ -36,7 +36,10 @@ apply plugin: "kotlin-android"
 apply from: '../nitrogen/generated/android/nitrosse+autolinking.gradle'
 
 apply plugin: "com.facebook.react"
-apply from: 'jacoco.gradle'
+def jacocoGradle = file('jacoco.gradle')
+if (jacocoGradle.exists()) {
+  apply from: jacocoGradle
+}
 
 android {
   namespace "com.margelo.nitro.nitrosse"
