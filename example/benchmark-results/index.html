@@ -6,14 +6,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Nitro SSE — Benchmark Dashboard</title>
 
-  <!-- Tailwind (CDN, JIT) -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
       theme: {
         extend: {
           fontFamily: {
-            sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', 'Helvetica', 'Arial', 'sans-serif'],
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', '"Helvetica Neue"', 'Arial', 'sans-serif'],
             mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
           },
         },
@@ -21,11 +20,9 @@
     };
   </script>
 
-  <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
   <style>
-    /* The only CSS Tailwind can't express directly: scrollbar polish. Everything else is utilities. */
     #fileList::-webkit-scrollbar {
       width: 6px;
     }
@@ -34,19 +31,26 @@
       background: #cbd5e1;
       border-radius: 3px;
     }
+
+    .chart-shell {
+      background:
+        radial-gradient(circle at 50% 0%, rgba(59, 130, 246, 0.025), transparent 45%),
+        #ffffff;
+    }
   </style>
 </head>
 
 <body class="min-h-full bg-slate-50 font-sans text-slate-900 antialiased">
   <div class="mx-auto max-w-[1600px] p-5 md:p-6">
 
-    <!-- Header -->
     <header class="mb-5 flex flex-wrap items-center justify-between gap-4">
       <div>
         <h1 class="text-[22px] font-bold tracking-tight text-slate-900">Nitro SSE — Benchmark Inspector</h1>
-        <p class="mt-0.5 text-[13px] text-slate-500">Interactive comparison of high-throughput JSI streaming benchmarks
-          across devices &amp; versions.</p>
+        <p class="mt-0.5 text-[13px] text-slate-500">
+          Interactive comparison of high-throughput JSI streaming benchmarks across devices &amp; versions.
+        </p>
       </div>
+
       <div class="flex items-center gap-2.5">
         <label
           class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-[13px] font-semibold text-slate-900 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-100 focus-within:ring-2 focus-within:ring-blue-500 focus-within:ring-offset-1"
@@ -54,6 +58,7 @@
           <span aria-hidden="true">📂</span> Open JSON Files
           <input type="file" id="fileInput" multiple accept=".json" class="hidden" />
         </label>
+
         <button id="refreshBtn"
           class="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-[13px] font-semibold text-slate-900 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-60"
           title="Fetch latest results from local server">
@@ -65,12 +70,12 @@
 
     <div class="grid grid-cols-1 items-start gap-5 lg:grid-cols-[260px_1fr]">
 
-      <!-- Sidebar: Run Selector -->
       <aside class="rounded-[10px] border border-slate-200 bg-white p-3.5 shadow-sm lg:sticky lg:top-5">
         <div class="mb-3 flex items-center justify-between border-b border-slate-200 pb-2">
           <h2 class="text-[13px] font-bold uppercase tracking-wide text-slate-500">
             Runs (<span id="selectedCount">0</span>/<span id="totalCount">0</span>)
           </h2>
+
           <div class="flex gap-1">
             <button id="selectAllBtn"
               class="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500">All</button>
@@ -78,61 +83,90 @@
               class="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500">None</button>
           </div>
         </div>
+
         <div id="fileList" class="flex max-h-[420px] flex-col gap-2 overflow-y-auto lg:max-h-[660px]">
           <div class="p-6 text-center text-[13px] text-slate-500">Loading runs…</div>
         </div>
       </aside>
 
-      <!-- Main: Chart -->
       <main class="flex flex-col gap-4">
-        <div class="w-full rounded-[10px] border border-slate-200 bg-white p-5 shadow-sm">
+        <div class="chart-shell w-full rounded-[10px] border border-slate-200 p-5 shadow-sm">
           <div class="mb-4 flex flex-col gap-3">
+
             <div class="flex flex-wrap items-center justify-between gap-2.5">
-              <h3 id="chartTitle" class="text-base font-bold text-slate-900">Throughput Comparison</h3>
-              <span id="activeRunsIndicator" class="text-xs font-semibold text-slate-500">Comparing 0 runs</span>
+              <div>
+                <h3 id="chartTitle" class="text-base font-bold text-slate-900">Throughput Comparison</h3>
+                <p class="mt-0.5 text-[11px] text-slate-500">
+                  Bars show the measured value. Error whiskers show ±1 standard deviation.
+                </p>
+              </div>
+
+              <div class="flex items-center gap-2">
+                <span
+                  class="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+                  <span class="inline-block h-3.5 w-px bg-slate-900"></span>
+                  <span class="inline-block h-px w-2.5 bg-slate-900"></span>
+                  ±1 StdDev (σ)
+                </span>
+                <span id="activeRunsIndicator" class="text-xs font-semibold text-slate-500">Comparing 0 runs</span>
+              </div>
             </div>
+
             <div id="tabs" class="flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1" role="tablist"
               aria-label="Benchmark metric">
               <button
-                class="tab-btn rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-blue-600 shadow-sm transition-colors"
+                class="tab-btn rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 shadow-sm ring-1 ring-slate-200 transition-colors"
                 data-metric="throughput" role="tab" aria-selected="true">Throughput (ev/s)</button>
+
               <button
-                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/70 hover:text-slate-900"
                 data-metric="dataRate" role="tab" aria-selected="false">Data Rate (KB/s)</button>
+
               <button
-                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/70 hover:text-slate-900"
                 data-metric="latencyP95" role="tab" aria-selected="false">Latency P95 (ms)</button>
+
               <button
-                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/70 hover:text-slate-900"
                 data-metric="latencyAvg" role="tab" aria-selected="false">Latency Avg (ms)</button>
+
               <button
-                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/70 hover:text-slate-900"
                 data-metric="latencyMax" role="tab" aria-selected="false">Latency Max (ms)</button>
+
               <button
-                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/70 hover:text-slate-900"
                 data-metric="batches" role="tab" aria-selected="false">Total Batches</button>
+
               <button
-                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/70 hover:text-slate-900"
                 data-metric="avgBatch" role="tab" aria-selected="false">Avg Batch Size</button>
+
               <button
-                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/70 hover:text-slate-900"
                 data-metric="delivery" role="tab" aria-selected="false">Delivery (%)</button>
+
               <button
-                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/70 hover:text-slate-900"
                 data-metric="churn" role="tab" aria-selected="false">Alloc Churn (KB)</button>
+
               <button
-                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/70 hover:text-slate-900"
                 data-metric="gcs" role="tab" aria-selected="false">Hermes GCs</button>
+
               <button
-                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/70 hover:text-slate-900"
                 data-metric="gcCpu" role="tab" aria-selected="false">GC CPU (ms)</button>
+
               <button
-                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/60 hover:text-slate-900"
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/70 hover:text-slate-900"
                 data-metric="heap" role="tab" aria-selected="false">Final Heap (KB)</button>
             </div>
           </div>
+
           <div class="relative h-[380px] w-full md:h-[480px] lg:h-[580px]">
             <canvas id="benchmarkChart"></canvas>
+
             <div id="chartEmptyState"
               class="pointer-events-none absolute inset-0 hidden flex-col items-center justify-center gap-1 text-center text-slate-400">
               <span class="text-2xl" aria-hidden="true">☐</span>
@@ -146,29 +180,27 @@
   </div>
 
   <script>
-    // Distinct palette for multiple selected runs
+    // Deliberately high-contrast, colorblind-friendlier series palette.
     const COLORS = [
-      '#2563eb', // Blue
-      '#16a34a', // Green
-      '#ea580c', // Orange
-      '#9333ea', // Purple
-      '#0891b2', // Cyan
-      '#e11d48', // Red
-      '#ca8a04', // Amber
+      '#2563EB', // blue
+      '#EA580C', // orange
+      '#16A34A', // green
+      '#7C3AED', // violet
+      '#0891B2', // cyan
+      '#E11D48', // rose
+      '#CA8A04', // amber
     ];
 
-    const TAB_ACTIVE = ['bg-white', 'text-blue-600', 'shadow-sm'];
-    const TAB_INACTIVE = ['text-slate-500', 'hover:bg-white/60', 'hover:text-slate-900'];
+    const TAB_ACTIVE = ['bg-white', 'text-blue-700', 'shadow-sm', 'ring-1', 'ring-slate-200'];
+    const TAB_INACTIVE = ['text-slate-500', 'hover:bg-white/70', 'hover:text-slate-900'];
 
-    // State
     const state = {
-      reports: [], // { id, name, platform, version, timestamp, data, color, checked }
+      reports: [],
       activeMetric: 'throughput',
     };
 
     let chartInstance = null;
 
-    // Elements
     const fileListEl = document.getElementById('fileList');
     const fileInput = document.getElementById('fileInput');
     const refreshBtn = document.getElementById('refreshBtn');
@@ -183,25 +215,27 @@
     const activeRunsIndicator = document.getElementById('activeRunsIndicator');
     const chartEmptyState = document.getElementById('chartEmptyState');
 
-    // Fetch reports from local server endpoint
     async function fetchServerReports() {
       setRefreshLoading(true);
+
       try {
         const res = await fetch('/api/reports');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
         const items = await res.json();
         loadReportItems(items);
       } catch (err) {
-        // Fallback: try default localhost:3100 if opened as file://
         try {
           const fallbackRes = await fetch('http://localhost:3100/api/reports');
+
           if (fallbackRes.ok) {
             const items = await fallbackRes.json();
             loadReportItems(items);
             return;
           }
         } catch (_) { }
-        console.warn('Could not auto-fetch from server. Use "Open JSON Files" button to load reports manually.');
+
+        console.warn('Could not auto-fetch from server. Use "Open JSON Files" to load reports manually.');
         renderFileList();
       } finally {
         setRefreshLoading(false);
@@ -223,6 +257,7 @@
       state.reports = items.map((item, idx) => {
         const data = item.data || item;
         const name = item.filename || `${data.platform || 'device'}-${data.timestamp}`;
+
         return {
           id: name,
           name,
@@ -231,7 +266,7 @@
           timestamp: data.timestamp || Date.now(),
           data,
           color: COLORS[idx % COLORS.length],
-          checked: true, // checked by default
+          checked: true,
         };
       });
 
@@ -239,16 +274,17 @@
       updateView();
     }
 
-    // Handle manual JSON file upload
     fileInput.addEventListener('change', async (e) => {
       const files = Array.from(e.target.files || []);
       if (files.length === 0) return;
 
       const newItems = [];
+
       for (const file of files) {
         try {
           const text = await file.text();
           const json = JSON.parse(text);
+
           newItems.push({
             filename: file.name,
             data: json,
@@ -259,12 +295,10 @@
       }
 
       loadReportItems(newItems);
-      fileInput.value = ''; // allow re-selecting the same file(s) later
+      fileInput.value = '';
     });
 
-    refreshBtn.addEventListener('click', () => {
-      fetchServerReports();
-    });
+    refreshBtn.addEventListener('click', fetchServerReports);
 
     selectAllBtn.addEventListener('click', () => {
       state.reports.forEach((r) => (r.checked = true));
@@ -278,7 +312,6 @@
       updateView();
     });
 
-    // Metric Tabs
     tabBtns.forEach((btn) => {
       btn.addEventListener('click', () => setActiveTab(btn));
     });
@@ -289,15 +322,18 @@
         b.classList.add(...TAB_INACTIVE);
         b.setAttribute('aria-selected', 'false');
       });
+
       btn.classList.remove(...TAB_INACTIVE);
       btn.classList.add(...TAB_ACTIVE);
       btn.setAttribute('aria-selected', 'true');
+
       state.activeMetric = btn.dataset.metric;
       updateChart();
     }
 
     function renderFileList() {
       totalCountEl.textContent = state.reports.length;
+
       const selected = state.reports.filter((r) => r.checked);
       selectedCountEl.textContent = selected.length;
 
@@ -313,33 +349,44 @@
       fileListEl.innerHTML = state.reports
         .map((r, idx) => {
           const cardClasses = r.checked
-            ? 'border-blue-600 bg-blue-50'
+            ? 'border-blue-200 bg-blue-50/70 shadow-[inset_3px_0_0_#2563eb]'
             : 'border-slate-200 bg-white hover:bg-slate-50';
-          const isIOS = r.platform.toLowerCase().includes('ios');
-          const badgeClasses = isIOS ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800';
+
+          const badgeClasses =
+            'border border-slate-200 bg-slate-100 text-slate-700';
+
           return `
             <div
               class="file-card flex cursor-pointer items-start gap-2 rounded-lg border p-2 px-2.5 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${cardClasses}"
               data-id="${r.id}"
               role="checkbox"
               aria-checked="${r.checked}"
-              tabindex="0"
-            >
+              tabindex="0">
+
               <input
                 type="checkbox"
                 id="chk-${idx}"
                 ${r.checked ? 'checked' : ''}
                 data-id="${r.id}"
                 tabindex="-1"
-                class="mt-0.5 h-[15px] w-[15px] cursor-pointer accent-blue-600"
-              />
+                class="mt-0.5 h-[15px] w-[15px] cursor-pointer accent-blue-600" />
+
               <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-1.5 break-all font-mono text-[11px] font-semibold leading-tight" style="color: ${r.checked ? r.color : '#0f172a'}">
-                  <span class="inline-block h-[7px] w-[7px] flex-shrink-0 rounded-full" style="background: ${r.color}"></span>${r.name}
+                <div class="flex items-center gap-1.5 break-all font-mono text-[11px] font-semibold leading-tight text-slate-900">
+                  <span
+                    class="inline-block h-[8px] w-[8px] flex-shrink-0 rounded-full ring-2 ring-white"
+                    style="background:${r.color}">
+                  </span>
+                  <span>${escapeHtml(r.name)}</span>
                 </div>
+
                 <div class="mt-1 flex flex-wrap gap-1">
-                  <span class="rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${badgeClasses}">${r.platform}</span>
-                  <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-slate-600">v${r.version}</span>
+                  <span class="rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${badgeClasses}">
+                    ${escapeHtml(r.platform)}
+                  </span>
+                  <span class="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-bold uppercase text-slate-600">
+                    v${escapeHtml(r.version)}
+                  </span>
                 </div>
               </div>
             </div>
@@ -347,20 +394,23 @@
         })
         .join('');
 
-      // Click + keyboard toggling
       fileListEl.querySelectorAll('.file-card').forEach((card) => {
         const toggle = () => {
           const chk = card.querySelector('input[type="checkbox"]');
           chk.checked = !chk.checked;
+
           const rep = state.reports.find((r) => r.id === chk.dataset.id);
           if (rep) rep.checked = chk.checked;
+
           renderFileList();
           updateView();
         };
+
         card.addEventListener('click', (e) => {
           if (e.target.tagName === 'INPUT') return;
           toggle();
         });
+
         card.addEventListener('keydown', (e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
@@ -373,17 +423,112 @@
         chk.addEventListener('change', () => {
           const rep = state.reports.find((r) => r.id === chk.dataset.id);
           if (rep) rep.checked = chk.checked;
+
           renderFileList();
           updateView();
         });
       });
     }
 
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
     function updateView() {
       const active = state.reports.filter((r) => r.checked);
-      activeRunsIndicator.textContent = `Comparing ${active.length} run${active.length === 1 ? '' : 's'}`;
+
+      activeRunsIndicator.textContent =
+        `Comparing ${active.length} run${active.length === 1 ? '' : 's'}`;
+
       updateChart();
     }
+
+    /*
+     * StdDev rendering:
+     * - White halo guarantees contrast against every bar color.
+     * - Dark center stroke provides the actual σ signal.
+     * - Slightly larger caps improve visibility at normal chart sizes.
+     */
+    const errorBarPlugin = {
+      id: 'errorBarPlugin',
+
+      afterDatasetsDraw(chart) {
+        const {
+          ctx,
+          scales: { y },
+        } = chart;
+
+        chart.data.datasets.forEach((dataset, datasetIndex) => {
+          if (!dataset.errorBars || !Array.isArray(dataset.errorBars)) return;
+
+          const meta = chart.getDatasetMeta(datasetIndex);
+          if (!meta || meta.hidden) return;
+
+          meta.data.forEach((bar, index) => {
+            const stdDev = dataset.errorBars[index];
+            const val = dataset.data[index];
+
+            if (
+              typeof stdDev !== 'number' ||
+              !Number.isFinite(stdDev) ||
+              stdDev <= 0 ||
+              typeof val !== 'number' ||
+              !Number.isFinite(val)
+            ) {
+              return;
+            }
+
+            const x = bar.x;
+            const yTop = y.getPixelForValue(val + stdDev);
+            const yBottom = y.getPixelForValue(Math.max(0, val - stdDev));
+
+            const barWidth = bar.width || 20;
+            const capWidth = Math.min(
+              10,
+              Math.max(5, barWidth * 0.32)
+            );
+
+            ctx.save();
+
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            // White halo
+            ctx.strokeStyle = 'rgba(255,255,255,0.96)';
+            ctx.lineWidth = 5;
+
+            ctx.beginPath();
+            ctx.moveTo(x, yBottom);
+            ctx.lineTo(x, yTop);
+            ctx.moveTo(x - capWidth, yTop);
+            ctx.lineTo(x + capWidth, yTop);
+            ctx.moveTo(x - capWidth, yBottom);
+            ctx.lineTo(x + capWidth, yBottom);
+            ctx.stroke();
+
+            // Dark whisker
+            ctx.strokeStyle = '#0F172A';
+            ctx.lineWidth = 2;
+
+            ctx.beginPath();
+            ctx.moveTo(x, yBottom);
+            ctx.lineTo(x, yTop);
+            ctx.moveTo(x - capWidth, yTop);
+            ctx.lineTo(x + capWidth, yTop);
+            ctx.moveTo(x - capWidth, yBottom);
+            ctx.lineTo(x + capWidth, yBottom);
+            ctx.stroke();
+
+            ctx.restore();
+          });
+        });
+      },
+    };
 
     function updateChart() {
       const active = state.reports.filter((r) => r.checked);
@@ -395,42 +540,114 @@
       if (!chartInstance) {
         chartInstance = new Chart(ctx, {
           type: 'bar',
-          data: { labels: [], datasets: [] },
+          plugins: [errorBarPlugin],
+          data: {
+            labels: [],
+            datasets: [],
+          },
+
           options: {
             responsive: true,
             maintainAspectRatio: false,
+
+            animation: {
+              duration: 220,
+            },
+
             interaction: {
               mode: 'index',
               intersect: false,
             },
+
             plugins: {
               legend: {
                 position: 'top',
+                align: 'start',
                 labels: {
                   boxWidth: 12,
-                  font: { family: '-apple-system', size: 12 },
+                  boxHeight: 12,
+                  padding: 16,
+                  color: '#334155',
+                  usePointStyle: true,
+                  pointStyle: 'rectRounded',
+                  font: {
+                    family: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+                    size: 12,
+                    weight: '600',
+                  },
                 },
               },
+
               tooltip: {
-                backgroundColor: 'rgba(15, 23, 42, 0.9)',
-                padding: 10,
-                cornerRadius: 6,
+                backgroundColor: 'rgba(15, 23, 42, 0.97)',
+                titleColor: '#F8FAFC',
+                bodyColor: '#E2E8F0',
+                borderColor: '#334155',
+                borderWidth: 1,
+                padding: 12,
+                cornerRadius: 8,
+                displayColors: true,
+
+                callbacks: {
+                  label: (context) => {
+                    const dataset = context.dataset;
+                    const val = context.parsed.y;
+                    const std = dataset.errorBars?.[context.dataIndex];
+                    const label = dataset.label ? `${dataset.label}: ` : '';
+
+                    if (
+                      typeof std === 'number' &&
+                      Number.isFinite(std) &&
+                      std > 0
+                    ) {
+                      return `${label}${val.toLocaleString()} ± ${std.toLocaleString()} (σ)`;
+                    }
+
+                    return `${label}${val.toLocaleString()}`;
+                  },
+                },
               },
             },
+
             scales: {
               x: {
-                grid: { display: false },
+                grid: {
+                  display: false,
+                },
+                border: {
+                  display: false,
+                },
                 ticks: {
-                  autoSkip: false, // Ensure all columns are explicitly shown!
+                  autoSkip: false,
                   maxRotation: 45,
                   minRotation: 25,
-                  font: { size: 10, weight: '600' },
+                  color: '#475569',
+                  padding: 7,
+                  font: {
+                    size: 10,
+                    weight: '600',
+                  },
                 },
               },
+
               y: {
                 beginAtZero: true,
-                grid: { color: '#f1f5f9' },
-                ticks: { font: { size: 11 } },
+                grid: {
+                  color: '#E2E8F0',
+                  lineWidth: 1,
+                  drawTicks: false,
+                },
+                border: {
+                  display: false,
+                },
+                ticks: {
+                  color: '#64748B',
+                  padding: 8,
+                  font: {
+                    size: 11,
+                    weight: '500',
+                  },
+                },
               },
             },
           },
@@ -440,13 +657,14 @@
       if (active.length === 0) {
         chartInstance.data.labels = [];
         chartInstance.data.datasets = [];
+        chartInstance.options.scales.y.suggestedMax = undefined;
         chartInstance.update();
         return;
       }
 
-      // Collect all unique scenarios across active runs in exact original order
       const scenarioOrder = [];
       const scenarioSet = new Set();
+
       active.forEach((rep) => {
         (rep.data.results || []).forEach((res) => {
           if (!scenarioSet.has(res.name)) {
@@ -455,9 +673,10 @@
           }
         });
       });
-      const labels = scenarioOrder;
 
+      const labels = scenarioOrder;
       const metric = state.activeMetric;
+
       const titles = {
         throughput: 'Event Throughput (ev/s — Higher is better)',
         dataRate: 'Data Transfer Rate (KB/s — Higher is better)',
@@ -472,12 +691,14 @@
         gcCpu: 'Hermes GC CPU Time (ms — Lower is better)',
         heap: 'Final Heap Size (KB — Memory footprint)',
       };
+
       chartTitleEl.textContent = titles[metric] || 'Benchmark Chart';
 
       const datasets = active.map((rep) => {
         const dataValues = labels.map((label) => {
           const item = (rep.data.results || []).find((r) => r.name === label);
           if (!item) return 0;
+
           if (metric === 'throughput') return item.throughput;
           if (metric === 'dataRate') return item.dataRateKBps ?? 0;
           if (metric === 'latencyP95') return item.latency?.p95Ms ?? 0;
@@ -486,31 +707,96 @@
           if (metric === 'batches') return item.totalBatches ?? 0;
           if (metric === 'avgBatch') return parseFloat(item.avgBatchSize || '1');
           if (metric === 'delivery') return item.deliveryRatePercent ?? 100;
-          if (metric === 'churn') return item.hermesMetrics?.totalAllocatedBytesDeltaKB ?? item.hermesMetrics?.allocatedBytesDeltaKB ?? 0;
+          if (metric === 'churn') {
+            return item.hermesMetrics?.totalAllocatedBytesDeltaKB ??
+              item.hermesMetrics?.allocatedBytesDeltaKB ??
+              0;
+          }
           if (metric === 'gcs') return item.hermesMetrics?.gcCountDelta ?? 0;
           if (metric === 'gcCpu') return item.hermesMetrics?.gcCpuTimeDeltaMs ?? 0;
           if (metric === 'heap') return item.hermesMetrics?.finalHeapSizeKB ?? 0;
+
+          return 0;
+        });
+
+        const errorBars = labels.map((label) => {
+          const item = (rep.data.results || []).find((r) => r.name === label);
+          if (!item) return 0;
+
+          if (metric === 'throughput') {
+            return item.stdDev?.throughput ?? 0;
+          }
+
+          if (metric === 'dataRate') {
+            return item.stdDev?.dataRateKBps ?? 0;
+          }
+
+          if (metric === 'latencyAvg') {
+            return item.stdDev?.latencyAvgMs ?? item.latency?.stdDevMs ?? 0;
+          }
+
+          if (metric === 'latencyP95') {
+            return item.stdDev?.latencyP95Ms ?? 0;
+          }
+
+          if (metric === 'latencyMax') {
+            return item.stdDev?.latencyMaxMs ?? 0;
+          }
+
+          if (metric === 'churn') {
+            return item.stdDev?.totalAllocatedBytesDeltaKB ?? 0;
+          }
+
+          if (metric === 'gcCpu') {
+            return item.stdDev?.gcCpuTimeDeltaMs ?? 0;
+          }
+
           return 0;
         });
 
         return {
           label: `${rep.platform} (v${rep.version})`,
           data: dataValues,
-          backgroundColor: rep.color + 'cc',
+          errorBars,
+
+          // Softer fill makes the dark σ whisker dominant.
+          backgroundColor: rep.color + 'B8',
+
+          // Solid border makes adjacent series easier to distinguish.
           borderColor: rep.color,
-          borderWidth: 1.5,
+          borderWidth: 2,
+
           borderRadius: 4,
-          categoryPercentage: 0.85,
-          barPercentage: 0.9,
+          borderSkipped: false,
+          categoryPercentage: 0.82,
+          barPercentage: 0.86,
         };
       });
+
+      // Reserve headroom for the largest mean + 1σ.
+      const maxWithError = datasets.reduce((max, dataset) => {
+        for (let i = 0; i < dataset.data.length; i++) {
+          const value = dataset.data[i];
+          const std = dataset.errorBars?.[i] ?? 0;
+
+          if (
+            typeof value === 'number' &&
+            Number.isFinite(value)
+          ) {
+            max = Math.max(max, value + (Number.isFinite(std) ? std : 0));
+          }
+        }
+        return max;
+      }, 0);
+
+      chartInstance.options.scales.y.suggestedMax =
+        maxWithError > 0 ? maxWithError * 1.08 : undefined;
 
       chartInstance.data.labels = labels;
       chartInstance.data.datasets = datasets;
       chartInstance.update();
     }
 
-    // Auto-init on page load
     window.addEventListener('DOMContentLoaded', () => {
       fetchServerReports();
     });
