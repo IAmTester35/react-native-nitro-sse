@@ -35,6 +35,17 @@ export interface LatencyMetrics {
   avgMs: number;
   p95Ms: number;
   maxMs: number;
+  stdDevMs?: number;
+}
+
+export interface BenchmarkStdDev {
+  throughput: number;
+  dataRateKBps: number;
+  latencyAvgMs: number;
+  latencyP95Ms: number;
+  latencyMaxMs: number;
+  gcCpuTimeDeltaMs: number;
+  totalAllocatedBytesDeltaKB: number;
 }
 
 export interface BenchmarkResult {
@@ -53,6 +64,13 @@ export interface BenchmarkResult {
   avgBatchSize: string;
   latency: LatencyMetrics;
   hermesMetrics: HermesMetrics;
+  stdDev?: BenchmarkStdDev;
+  runs?: BenchmarkResult[];
+}
+
+export interface BenchmarkMatrixOptions {
+  iterations?: number;
+  warmup?: boolean;
 }
 
 export interface BenchmarkReport {
@@ -61,6 +79,14 @@ export interface BenchmarkReport {
   device: string;
   timestamp: number;
   results: BenchmarkResult[];
+}
+
+export function calcStdDev(values: number[]): number {
+  if (values.length <= 1) return 0;
+  const mean = values.reduce((sum, v) => sum + v, 0) / values.length;
+  const variance =
+    values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / (values.length - 1);
+  return Math.sqrt(variance);
 }
 
 export const DEFAULT_BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
@@ -126,7 +152,7 @@ export const DEFAULT_BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
 
   // Tier 3: 5,000 ev/s (Heavy stress / Burst)
   {
-    name: '5,000 ev/s | No-batch | Raw (Stress Limit)',
+    name: '5,000 ev/s | No-batch | Raw',
     targetRate: 5000,
     batchingIntervalMs: 0,
     autoParseJSON: false,
@@ -169,17 +195,24 @@ export const DEFAULT_BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
  */
 export const getDefaultServerHost = getBenchmarkServerUrl;
 
-let cachedClockOffsetMs: number | null = null;
+export interface ClockCalibration {
+  offsetMs: number;
+  rttMs: number;
+  errorMarginMs: number; // ± RTT / 2
+}
+
+let cachedClockCalibration: ClockCalibration | null = null;
 
 /**
  * Calibrates clock offset between client and benchmark server using Cristian's algorithm.
  * offset = clientTime - (serverTime + RTT / 2)
+ * Maximum error bound is ± RTT / 2.
  */
 export async function calibrateClockOffset(
   serverHost: string = getBenchmarkServerUrl(),
   samples: number = 3
-): Promise<number> {
-  const offsets: number[] = [];
+): Promise<ClockCalibration> {
+  const measurements: { offset: number; rtt: number }[] = [];
   for (let i = 0; i < samples; i++) {
     try {
       const t0 = Date.now();
@@ -189,29 +222,47 @@ export async function calibrateClockOffset(
       if (typeof data?.serverTime === 'number') {
         const rtt = Math.max(0, t1 - t0);
         const clientMid = t0 + Math.round(rtt / 2);
-        offsets.push(clientMid - data.serverTime);
+        measurements.push({
+          offset: clientMid - data.serverTime,
+          rtt,
+        });
       }
     } catch {
       // Ignore network errors during calibration
     }
   }
-  if (offsets.length > 0) {
-    offsets.sort((a, b) => a - b);
-    cachedClockOffsetMs = offsets[Math.floor(offsets.length / 2)] ?? 0;
+  if (measurements.length > 0) {
+    measurements.sort((a, b) => a.offset - b.offset);
+    const median = measurements[Math.floor(measurements.length / 2)]!;
+    cachedClockCalibration = {
+      offsetMs: median.offset,
+      rttMs: median.rtt,
+      errorMarginMs: Math.round((median.rtt / 2) * 10) / 10,
+    };
   } else {
-    cachedClockOffsetMs = 0;
+    cachedClockCalibration = {
+      offsetMs: 0,
+      rttMs: 0,
+      errorMarginMs: 0,
+    };
   }
-  return cachedClockOffsetMs;
+  return cachedClockCalibration;
 }
 
 /**
  * Formats a benchmark result into a readable multi-line summary string.
  */
 export function formatBenchmarkResult(r: BenchmarkResult): string {
+  const tpStr = r.stdDev?.throughput
+    ? `${r.throughput.toLocaleString()} ± ${r.stdDev.throughput}`
+    : r.throughput.toLocaleString();
+  const latAvgStr = r.latency.stdDevMs || r.stdDev?.latencyAvgMs
+    ? `${r.latency.avgMs} ± ${r.latency.stdDevMs || r.stdDev?.latencyAvgMs}ms`
+    : `${r.latency.avgMs}ms`;
   const lines = [
     `[${r.name}]`,
-    `Throughput: ${r.throughput.toLocaleString()} ev/s (${r.dataRateKBps.toLocaleString()} KB/s) | Delivery: ${r.deliveryRatePercent}%`,
-    `Latency: avg ${r.latency.avgMs}ms | p95 ${r.latency.p95Ms}ms | max ${r.latency.maxMs}ms`,
+    `Throughput: ${tpStr} ev/s (${r.dataRateKBps.toLocaleString()} KB/s) | Delivery: ${r.deliveryRatePercent}%`,
+    `Latency: avg ${latAvgStr} | p95 ${r.latency.p95Ms}ms | max ${r.latency.maxMs}ms`,
     `Batches: ${r.totalBatches.toLocaleString()} (avg size: ${r.avgBatchSize})`,
     `Hermes GCs: +${r.hermesMetrics.gcCountDelta} (${r.hermesMetrics.gcCpuTimeDeltaMs}ms CPU)`,
     `Alloc Churn: +${r.hermesMetrics.totalAllocatedBytesDeltaKB.toLocaleString()} KB`,
@@ -227,7 +278,7 @@ export async function runSingleScenario(
   scenario: BenchmarkScenario,
   serverHost: string = getBenchmarkServerUrl()
 ): Promise<BenchmarkResult> {
-  if (cachedClockOffsetMs === null) {
+  if (cachedClockCalibration === null) {
     await calibrateClockOffset(serverHost);
   }
 
@@ -238,6 +289,11 @@ export async function runSingleScenario(
     let startTime = 0;
     let isSettled = false;
     const latencies: number[] = [];
+
+    // Intra-run 1-second sampling buckets for instantaneous throughput stdDev
+    const secondBuckets: number[] = [];
+    let currentSecondBucketCount = 0;
+    let lastSecond = -1;
 
     const initialStats = HermesInternal?.getInstrumentedStats?.();
     const url = `${serverHost}/sse?rate=${scenario.targetRate}&duration=${scenario.durationSec}&size=${scenario.payloadSize ?? 128
@@ -261,18 +317,23 @@ export async function runSingleScenario(
         // ignore teardown errors
       }
 
+      // Close out last second bucket
+      if (currentSecondBucketCount > 0) {
+        secondBuckets.push(currentSecondBucketCount);
+      }
+      const intraThroughputStdDev = Math.round(calcStdDev(secondBuckets));
+
       const safeDurationMs = Math.max(1, Math.round(durationMs));
       const durationSec = safeDurationMs / 1000;
       const throughput = Math.round(eventCount / durationSec);
       const dataRateKBps = Math.round((sseStats.totalBytesReceived / 1024) / durationSec);
       const avgBatchSize = (eventCount / Math.max(1, batchCount)).toFixed(1);
       const expectedEvents = scenario.targetRate * scenario.durationSec;
-      const deliveryRatePercent = Math.min(
-        100,
-        Math.round((eventCount / Math.max(1, expectedEvents)) * 100)
+      const deliveryRatePercent = Number(
+        ((eventCount / Math.max(1, expectedEvents)) * 100).toFixed(1)
       );
 
-      // Latency percentile calculations
+      // Latency percentile & variance calculations
       latencies.sort((a, b) => a - b);
       const avgLatencyMs =
         latencies.length > 0
@@ -281,6 +342,12 @@ export async function runSingleScenario(
       const p95Index = Math.min(latencies.length - 1, Math.floor(latencies.length * 0.95));
       const p95LatencyMs = latencies[p95Index] ?? 0;
       const maxLatencyMs = latencies[latencies.length - 1] ?? 0;
+      const latencyVariance =
+        latencies.length > 1
+          ? latencies.reduce((sum, v) => sum + (v - avgLatencyMs) ** 2, 0) /
+            (latencies.length - 1)
+          : 0;
+      const latencyStdDevMs = Math.round(Math.sqrt(latencyVariance) * 10) / 10;
 
       const initialTotalAlloc =
         initialStats?.js_totalAllocatedBytes ?? initialStats?.js_allocatedBytes ?? 0;
@@ -294,6 +361,11 @@ export async function runSingleScenario(
       const liveAllocatedDeltaKB = Math.round(
         ((finalStats?.js_allocatedBytes ?? 0) - (initialStats?.js_allocatedBytes ?? 0)) / 1024
       );
+
+      // Hermes js_gcCPUTime is in seconds -> convert to milliseconds, round to 2 decimals
+      const rawCpuSecDelta =
+        (finalStats?.js_gcCPUTime ?? 0) - (initialStats?.js_gcCPUTime ?? 0);
+      const gcCpuTimeDeltaMs = Math.round(rawCpuSecDelta * 1000 * 100) / 100;
 
       const result: BenchmarkResult = {
         name: scenario.name,
@@ -313,13 +385,23 @@ export async function runSingleScenario(
           avgMs: avgLatencyMs,
           p95Ms: p95LatencyMs,
           maxMs: maxLatencyMs,
+          stdDevMs: latencyStdDevMs,
         },
         hermesMetrics: {
           gcCountDelta: (finalStats?.js_numGCs ?? 0) - (initialStats?.js_numGCs ?? 0),
-          gcCpuTimeDeltaMs: Math.round(((finalStats?.js_gcCPUTime ?? 0) - (initialStats?.js_gcCPUTime ?? 0)) * 1000) / 1000,
+          gcCpuTimeDeltaMs,
           allocatedBytesDeltaKB: liveAllocatedDeltaKB,
           totalAllocatedBytesDeltaKB: totalAllocatedDeltaKB,
           finalHeapSizeKB: Math.round((finalStats?.js_heapSize ?? 0) / 1024),
+        },
+        stdDev: {
+          throughput: intraThroughputStdDev,
+          dataRateKBps: Math.round((intraThroughputStdDev * (scenario.payloadSize ?? 128)) / 1024),
+          latencyAvgMs: latencyStdDevMs,
+          latencyP95Ms: 0,
+          latencyMaxMs: 0,
+          gcCpuTimeDeltaMs: 0,
+          totalAllocatedBytesDeltaKB: 0,
         },
       };
 
@@ -336,30 +418,64 @@ export async function runSingleScenario(
         autoParseJSON: scenario.autoParseJSON,
       },
       (batch) => {
-        const clockOffset = cachedClockOffsetMs ?? 0;
+        const clockOffset = cachedClockCalibration?.offsetMs ?? 0;
         const now = Date.now() - clockOffset;
-        if (eventCount === 0) {
-          startTime = performance.now();
-        }
-        batchCount++;
-        eventCount += batch.length;
+        let hasDataInBatch = false;
 
-        // Sample latency from events
+        // Filter and sample latency from benchmark data events only
         for (let i = 0; i < batch.length; i++) {
           const item = batch[i];
           if (!item) continue;
+
+          // Exclude protocol lifecycle events (STATE, OPEN, CLOSE)
+          const isCloseEvent =
+            item.event === 'close' ||
+            (typeof item.data === 'string' && item.data.includes('"status":"finished"'));
+          const isStateOrOpen = item.type === 'state' || item.type === 'open';
+          if (isCloseEvent || isStateOrOpen) {
+            continue;
+          }
+
+          if (eventCount === 0) {
+            startTime = performance.now();
+          }
+          eventCount++;
+          hasDataInBatch = true;
+
+          // Intra-run 1-second sampling bucket
+          const elapsedSec = Math.floor((performance.now() - startTime) / 1000);
+          if (elapsedSec > lastSecond) {
+            if (lastSecond >= 0) {
+              secondBuckets.push(currentSecondBucketCount);
+            }
+            currentSecondBucketCount = 0;
+            lastSecond = elapsedSec;
+          }
+          currentSecondBucketCount++;
+
+          // Extract timestamp:
+          // In JSON mode: native AnyMap produces typed object (0 JS parsing overhead).
+          // In Raw mode: use low-allocation indexOf + slice baseline instead of regex.
           let eventTs = 0;
           if (item.parsedData && typeof item.parsedData.ts === 'number') {
             eventTs = item.parsedData.ts;
-          } else if (item.data) {
-            const match = item.data.match(/"ts":(\d+)/);
-            if (match?.[1]) {
-              eventTs = parseInt(match[1], 10);
+          } else if (typeof item.data === 'string') {
+            const tsIdx = item.data.indexOf('"ts":');
+            if (tsIdx !== -1) {
+              const start = tsIdx + 5;
+              const commaIdx = item.data.indexOf(',', start);
+              const braceIdx = item.data.indexOf('}', start);
+              const end = commaIdx !== -1 ? commaIdx : braceIdx !== -1 ? braceIdx : item.data.length;
+              eventTs = parseInt(item.data.slice(start, end), 10);
             }
           }
           if (eventTs > 0) {
             latencies.push(Math.max(0, now - eventTs));
           }
+        }
+
+        if (hasDataInBatch) {
+          batchCount++;
         }
       }
     );
@@ -379,6 +495,7 @@ export async function runSingleScenario(
 
 /**
  * Runs the full benchmark matrix and reports to console + Node.js server.
+ * Supports warmup and multiple iterations with standard deviation aggregation.
  */
 export async function runSseBenchmarkMatrix(
   serverHost: string = getBenchmarkServerUrl(),
@@ -387,14 +504,38 @@ export async function runSseBenchmarkMatrix(
     total: number;
     scenario: string;
     result?: BenchmarkResult;
-  }) => void
+  }) => void,
+  options?: BenchmarkMatrixOptions
 ): Promise<BenchmarkReport> {
   const results: BenchmarkResult[] = [];
   const total = DEFAULT_BENCHMARK_SCENARIOS.length;
+  const iterations = Math.max(1, options?.iterations ?? 1);
+  const shouldWarmup = options?.warmup ?? true;
 
-  console.log(`[Benchmark] Starting SSE benchmark suite against ${serverHost}...`);
-  const initialOffset = await calibrateClockOffset(serverHost);
-  console.log(`[Benchmark] Calibrated client-server clock offset: ${initialOffset}ms`);
+  const cal = await calibrateClockOffset(serverHost);
+  console.log(
+    `[Benchmark] Calibrated client-server clock offset: ${cal.offsetMs}ms (RTT: ${cal.rttMs}ms, uncertainty: ±${cal.errorMarginMs}ms)`
+  );
+
+  // Optional Warmup phase to prime JIT compiler, network socket, and dispatcher threads
+  if (shouldWarmup) {
+    console.log('[Benchmark] Warming up runtime and network pipeline (2s)...');
+    try {
+      await runSingleScenario(
+        {
+          name: 'Warmup',
+          targetRate: 200,
+          batchingIntervalMs: 0,
+          autoParseJSON: false,
+          durationSec: 2,
+        },
+        serverHost
+      );
+    } catch {
+      // Ignore warmup errors
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
 
   for (let i = 0; i < total; i++) {
     const scenario = DEFAULT_BENCHMARK_SCENARIOS[i];
@@ -402,9 +543,94 @@ export async function runSseBenchmarkMatrix(
     onProgress?.({ current: i + 1, total, scenario: scenario.name });
     console.log(`[Benchmark] Running [${i + 1}/${total}]: ${scenario.name}...`);
 
-    const result = await runSingleScenario(scenario, serverHost);
-    results.push(result);
-    onProgress?.({ current: i + 1, total, scenario: scenario.name, result });
+    const scenarioRuns: BenchmarkResult[] = [];
+    for (let it = 0; it < iterations; it++) {
+      if (iterations > 1) {
+        console.log(`  └─ Iteration ${it + 1}/${iterations}...`);
+      }
+      const runResult = await runSingleScenario(scenario, serverHost);
+      scenarioRuns.push(runResult);
+      if (it < iterations - 1) {
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
+
+    // Aggregate metrics across iterations
+    let finalResult: BenchmarkResult;
+    if (scenarioRuns.length === 1) {
+      finalResult = scenarioRuns[0]!;
+    } else {
+      const throughputs = scenarioRuns.map((r) => r.throughput);
+      const dataRates = scenarioRuns.map((r) => r.dataRateKBps);
+      const avgLatencies = scenarioRuns.map((r) => r.latency.avgMs);
+      const p95Latencies = scenarioRuns.map((r) => r.latency.p95Ms);
+      const maxLatencies = scenarioRuns.map((r) => r.latency.maxMs);
+      const gcCpuTimes = scenarioRuns.map((r) => r.hermesMetrics.gcCpuTimeDeltaMs);
+      const allocChurns = scenarioRuns.map(
+        (r) => r.hermesMetrics.totalAllocatedBytesDeltaKB
+      );
+
+      const meanThroughput = Math.round(
+        throughputs.reduce((a, b) => a + b, 0) / iterations
+      );
+      const meanDataRate = Math.round(
+        dataRates.reduce((a, b) => a + b, 0) / iterations
+      );
+      const meanAvgLatency = Math.round(
+        avgLatencies.reduce((a, b) => a + b, 0) / iterations
+      );
+      const meanP95Latency = Math.round(
+        p95Latencies.reduce((a, b) => a + b, 0) / iterations
+      );
+      const peakMaxLatency = Math.max(...maxLatencies);
+      const meanGcCpuTime =
+        Math.round(
+          (gcCpuTimes.reduce((a, b) => a + b, 0) / iterations) * 100
+        ) / 100;
+      const meanAllocChurn = Math.round(
+        allocChurns.reduce((a, b) => a + b, 0) / iterations
+      );
+      const meanBatches = Math.round(
+        scenarioRuns.reduce((a, r) => a + r.totalBatches, 0) / iterations
+      );
+      const meanDelivery = Number(
+        (
+          scenarioRuns.reduce((a, r) => a + r.deliveryRatePercent, 0) / iterations
+        ).toFixed(1)
+      );
+
+      finalResult = {
+        ...scenarioRuns[0]!,
+        throughput: meanThroughput,
+        dataRateKBps: meanDataRate,
+        totalBatches: meanBatches,
+        deliveryRatePercent: meanDelivery,
+        latency: {
+          avgMs: meanAvgLatency,
+          p95Ms: meanP95Latency,
+          maxMs: peakMaxLatency,
+          stdDevMs: Math.round(calcStdDev(avgLatencies) * 10) / 10,
+        },
+        hermesMetrics: {
+          ...scenarioRuns[scenarioRuns.length - 1]!.hermesMetrics,
+          gcCpuTimeDeltaMs: meanGcCpuTime,
+          totalAllocatedBytesDeltaKB: meanAllocChurn,
+        },
+        stdDev: {
+          throughput: Math.round(calcStdDev(throughputs)),
+          dataRateKBps: Math.round(calcStdDev(dataRates)),
+          latencyAvgMs: Math.round(calcStdDev(avgLatencies) * 10) / 10,
+          latencyP95Ms: Math.round(calcStdDev(p95Latencies) * 10) / 10,
+          latencyMaxMs: Math.round(calcStdDev(maxLatencies) * 10) / 10,
+          gcCpuTimeDeltaMs: Math.round(calcStdDev(gcCpuTimes) * 100) / 100,
+          totalAllocatedBytesDeltaKB: Math.round(calcStdDev(allocChurns)),
+        },
+        runs: scenarioRuns,
+      };
+    }
+
+    results.push(finalResult);
+    onProgress?.({ current: i + 1, total, scenario: scenario.name, result: finalResult });
 
     // Cool down between scenarios and attempt GC stabilization
     const globalAny = global as { gc?: () => void };

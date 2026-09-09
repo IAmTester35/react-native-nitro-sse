@@ -151,23 +151,33 @@ const server = http.createServer((req, res) => {
 
         if (Array.isArray(report.results)) {
           console.table(
-            report.results.map((r) => ({
-              'Scenario': r.name,
-              'Target (ev/s)': fmt(r.targetRate),
-              'Actual (ev/s)': fmt(r.throughput),
-              'Data (KB/s)': fmt(r.dataRateKBps ?? 0),
-              'Delivery %': `${r.deliveryRatePercent ?? 100}%`,
-              'Avg Latency': r.latency ? `${r.latency.avgMs} ms` : '-',
-              'P95 Latency': r.latency ? `${r.latency.p95Ms} ms` : '-',
-              'Batches': fmt(r.totalBatches),
-              'Hermes GCs': r.hermesMetrics.gcCountDelta,
-              'GC CPU (ms)': fmt(r.hermesMetrics.gcCpuTimeDeltaMs),
-              'Alloc Churn (KB)': fmt(
-                r.hermesMetrics.totalAllocatedBytesDeltaKB ??
-                  r.hermesMetrics.allocatedBytesDeltaKB
-              ),
-              'Heap (KB)': fmt(r.hermesMetrics.finalHeapSizeKB),
-            }))
+            report.results.map((r) => {
+              const tpStr = r.stdDev?.throughput
+                ? `${fmt(r.throughput)} ± ${r.stdDev.throughput}`
+                : fmt(r.throughput);
+              const latAvgStr = r.latency
+                ? (r.latency.stdDevMs || r.stdDev?.latencyAvgMs)
+                  ? `${r.latency.avgMs} ± ${r.latency.stdDevMs || r.stdDev?.latencyAvgMs} ms`
+                  : `${r.latency.avgMs} ms`
+                : '-';
+              return {
+                'Scenario': r.name,
+                'Target (ev/s)': fmt(r.targetRate),
+                'Actual (ev/s)': tpStr,
+                'Data (KB/s)': fmt(r.dataRateKBps ?? 0),
+                'Delivery %': `${r.deliveryRatePercent ?? 100}%`,
+                'Avg Latency': latAvgStr,
+                'P95 Latency': r.latency ? `${r.latency.p95Ms} ms` : '-',
+                'Batches': fmt(r.totalBatches),
+                'Hermes GCs': r.hermesMetrics.gcCountDelta,
+                'GC CPU (ms)': fmt(r.hermesMetrics.gcCpuTimeDeltaMs),
+                'Alloc Churn (KB)': fmt(
+                  r.hermesMetrics.totalAllocatedBytesDeltaKB ??
+                    r.hermesMetrics.allocatedBytesDeltaKB
+                ),
+                'Heap (KB)': fmt(r.hermesMetrics.finalHeapSizeKB),
+              };
+            })
           );
         } else {
           console.log(JSON.stringify(report, null, 2));
@@ -215,16 +225,27 @@ const server = http.createServer((req, res) => {
     const targetTotal = rate * durationSec;
     const padding = 'x'.repeat(Math.max(1, payloadSize - 50));
 
-    // Chunking logic: at high rates (e.g. 10,000/s), node interval < 5ms is inaccurate
-    const targetIntervalMs = 1000 / rate;
-    const batchPerTick =
-      targetIntervalMs < 10 ? Math.ceil(10 / targetIntervalMs) : 1;
-    const tickIntervalMs = Math.max(5, targetIntervalMs * batchPerTick);
-
     let sent = 0;
-    const timer = setInterval(() => {
+    let timer = null;
+    let isClosed = false;
+    const startTime = performance.now();
+
+    function sendBatch() {
+      if (isClosed) return;
+
+      // Compute how many events should have been sent by now based on true elapsed wall time
+      const elapsed = performance.now() - startTime;
+      const targetByNow = Math.min(
+        targetTotal,
+        Math.round((elapsed / 1000) * rate)
+      );
+      const toSend = Math.min(
+        targetTotal - sent,
+        Math.max(1, targetByNow - sent)
+      );
+
       let buffer = '';
-      for (let i = 0; i < batchPerTick && sent < targetTotal; i++) {
+      for (let i = 0; i < toSend && sent < targetTotal; i++) {
         sent++;
         const payload = JSON.stringify({
           id: sent,
@@ -239,19 +260,30 @@ const server = http.createServer((req, res) => {
       }
 
       if (sent >= targetTotal) {
-        clearInterval(timer);
+        isClosed = true;
         res.write(
           `event: close\ndata: {"status":"finished","total":${sent}}\n\n`
         );
         res.end();
         console.log(
-          `[SSE Server] Stream completed: Sent ${sent}/${targetTotal} events.`
+          `[SSE Server] Stream completed: Sent ${sent}/${targetTotal} events in ${(
+            performance.now() - startTime
+          ).toFixed(1)}ms.`
         );
+        return;
       }
-    }, tickIntervalMs);
+
+      // Dynamic drift compensation: schedule next tick based on expected absolute time
+      const nextExpectedTime = startTime + (sent / rate) * 1000;
+      const delay = Math.max(0, Math.round(nextExpectedTime - performance.now()));
+      timer = setTimeout(sendBatch, delay);
+    }
+
+    sendBatch();
 
     req.on('close', () => {
-      clearInterval(timer);
+      isClosed = true;
+      if (timer) clearTimeout(timer);
       console.log(`[SSE Server] Connection closed by client (Sent: ${sent}).`);
     });
 
