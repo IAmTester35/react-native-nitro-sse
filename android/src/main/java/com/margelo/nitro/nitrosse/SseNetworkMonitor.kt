@@ -7,13 +7,14 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.util.Log
 
-typealias NetworkChangeHandler = (isAvailable: Boolean, capabilities: NetworkCapabilities?) -> Unit
+typealias NetworkChangeHandler = (isAvailable: Boolean, interfaceChanged: Boolean, capabilities: NetworkCapabilities?) -> Unit
 
 /**
  * Monitors system connectivity changes using Android's [ConnectivityManager].
  *
  * Emits network availability and capability updates to enable automatic stream reconnection
  * upon network restoration or interface handovers (e.g. Wi-Fi to cellular transition).
+ * Initial network detection is captured internally without flagging a false interface change.
  */
 class SseNetworkMonitor(
     private val context: Context,
@@ -22,6 +23,7 @@ class SseNetworkMonitor(
 ) {
     private val lock = Any()
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var lastCapabilities: NetworkCapabilities? = null
     
     companion object {
         private const val TAG = "SseNetworkMonitor"
@@ -39,7 +41,31 @@ class SseNetworkMonitor(
 
             val callback = object : ConnectivityManager.NetworkCallback() {
                 private fun dispatchChange(isAvailable: Boolean, capabilities: NetworkCapabilities?) {
-                    dispatcher?.post { onChange(isAvailable, capabilities) } ?: onChange(isAvailable, capabilities)
+                    val interfaceChanged: Boolean
+                    if (isAvailable && capabilities != null) {
+                        val prev = lastCapabilities
+                        if (prev != null) {
+                            val isWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                            val isCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                            val lastWifi = prev.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                            val lastCellular = prev.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                            interfaceChanged = (isWifi && !lastWifi) || (isCellular && !lastCellular)
+                        } else {
+                            interfaceChanged = false
+                        }
+                        lastCapabilities = capabilities
+                    } else {
+                        interfaceChanged = false
+                        if (!isAvailable) {
+                            lastCapabilities = null
+                        }
+                    }
+
+                    if (dispatcher == null || dispatcher.isCurrentDispatcher()) {
+                        onChange(isAvailable, interfaceChanged, capabilities)
+                    } else {
+                        dispatcher.post { onChange(isAvailable, interfaceChanged, capabilities) }
+                    }
                 }
 
                 override fun onAvailable(network: Network) {
@@ -77,6 +103,7 @@ class SseNetworkMonitor(
 
     fun stop() {
         synchronized(lock) {
+            lastCapabilities = null
             val callback = networkCallback ?: return
             try {
                 val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
