@@ -441,19 +441,19 @@ class NitroSse: HybridNitroSseSpec {
                         if !flag.isCompleted {
                             flag.isCompleted = true
                             token.isCancelled = true
-                            let currentConfig = self.config ?? capturedConfig
-                            var mergedHeaders = currentConfig.headers ?? [:]
+                            let baseConfig = self.config ?? capturedConfig
+                            var mergedHeaders = baseConfig.headers ?? [:]
                             for (k, v) in newHeaders {
                                 mergedHeaders[k] = v
                             }
-                            self.config = currentConfig.copyWith(headers: mergedHeaders)
-                            self.performEstablishConnection(attemptVersion: attemptVersion)
+                            let connectionConfig = baseConfig.copyWith(headers: mergedHeaders)
+                            self.performEstablishConnection(attemptVersion: attemptVersion, connectionConfig: connectionConfig)
                         }
                     }
                 }.catch(safeHandleError)
             }.catch(safeHandleError)
         } else {
-            self.performEstablishConnection(attemptVersion: attemptVersion)
+            self.performEstablishConnection(attemptVersion: attemptVersion, connectionConfig: nil)
         }
     }
 
@@ -473,9 +473,10 @@ class NitroSse: HybridNitroSseSpec {
         self.scheduleAutomaticReconnect(isError: true, attemptVersion: attemptVersion)
     }
 
-    private func performEstablishConnection(attemptVersion: Int) {
+    private func performEstablishConnection(attemptVersion: Int, connectionConfig: SseConfig? = nil) {
         dispatcher.assertOnQueue()
-        guard isRunning, let config = config, attemptVersion == self.connectionAttemptVersion else { return }
+        let activeConfig = connectionConfig ?? self.config
+        guard isRunning, let config = activeConfig, attemptVersion == self.connectionAttemptVersion else { return }
         guard let url = URL(string: config.url), let scheme = url.scheme, ["http", "https"].contains(scheme.lowercased()) else {
             print("[NitroSse] Invalid SSE URL: \(config.url)")
             self.failAndStop(message: "Invalid URL: \(config.url)", statusCode: -1)

@@ -3,6 +3,7 @@ package com.margelo.nitro.nitrosse
 import android.os.Build
 import android.os.Looper
 import com.facebook.soloader.SoLoader
+import com.margelo.nitro.core.Promise
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
@@ -597,5 +598,58 @@ class NitroSseCoordinatorTest {
         drainLoopers()
         
         assertEquals(22.0, sse.getStats().totalBytesReceived, 0.001)
+    }
+
+    private fun <T> anyLambda(): T {
+        org.mockito.Mockito.any<T>()
+        @Suppress("UNCHECKED_CAST")
+        return { _: Any? -> } as T
+    }
+
+    @Test
+    fun testOnBeforeRequestHeadersDoNotMutateBaseConfig() {
+        val sse = NitroSse(dispatcher)
+        val initialHeaders = mapOf("X-Base" to "base-val")
+        val config = createMockConfig().copy(headers = initialHeaders)
+        
+        @Suppress("UNCHECKED_CAST")
+        val p1 = org.mockito.Mockito.mock(Promise::class.java) as Promise<Promise<Map<String, String>>>
+        @Suppress("UNCHECKED_CAST")
+        val p2 = org.mockito.Mockito.mock(Promise::class.java) as Promise<Map<String, String>>
+        
+        org.mockito.Mockito.`when`(p1.then(anyLambda())).thenAnswer { invocation ->
+            @Suppress("UNCHECKED_CAST")
+            val cb = invocation.getArgument<(Promise<Map<String, String>>) -> Unit>(0)
+            cb(p2)
+            p1
+        }
+        org.mockito.Mockito.`when`(p1.catch(anyLambda())).thenReturn(p1)
+
+        org.mockito.Mockito.`when`(p2.then(anyLambda())).thenAnswer { invocation ->
+            @Suppress("UNCHECKED_CAST")
+            val cb = invocation.getArgument<(Map<String, String>) -> Unit>(0)
+            cb(mapOf("Authorization" to "Bearer dynamic-token", "X-Temp" to "temp-val"))
+            p2
+        }
+        org.mockito.Mockito.`when`(p2.catch(anyLambda())).thenReturn(p2)
+        
+        val interceptor = { p1 }
+        sse.setup(config, { _ -> }, interceptor)
+        drainLoopers()
+        
+        sse.start()
+        drainLoopers()
+        
+        val configField = NitroSse::class.java.getDeclaredField("config")
+        configField.isAccessible = true
+        val storedConfig = configField.get(sse) as SseConfig
+        
+        // Base config headers should remain strictly untouched
+        assertEquals(mapOf("X-Base" to "base-val"), storedConfig.headers)
+        assertFalse(storedConfig.headers?.containsKey("Authorization") == true)
+        assertFalse(storedConfig.headers?.containsKey("X-Temp") == true)
+        
+        sse.stop()
+        drainLoopers()
     }
 }

@@ -519,6 +519,41 @@ class NitroSseCoordinatorTests: XCTestCase {
         sse.stop()
     }
 
+    func testOnBeforeRequestHeadersDoNotMutateBaseConfig() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let initialHeaders = ["X-Base": "base-val"]
+        let config = createMockConfig().copyWith(headers: initialHeaders)
+        
+        let interceptor = { () -> Promise<Promise<Dictionary<String, String>>> in
+            return Promise<Promise<Dictionary<String, String>>>.async {
+                return Promise<Dictionary<String, String>>.async {
+                    return ["Authorization": "Bearer dynamic-token", "X-Temp": "temp-val"]
+                }
+            }
+        }
+        
+        try! sse.setup(config: config, onEvent: { _ in }, onBeforeRequest: interceptor)
+        dispatcher.executeAllPendingBlocks()
+        
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+        
+        let storedConfigValue = Mirror(reflecting: sse).children.first { $0.label == "config" }?.value
+        let storedConfig = storedConfigValue.flatMap {
+            Mirror(reflecting: $0).children.first?.value as? SseConfig
+        }
+        XCTAssertNotNil(storedConfig)
+        
+        // Base config headers should remain strictly untouched
+        XCTAssertEqual(storedConfig?.headers, ["X-Base": "base-val"])
+        XCTAssertNil(storedConfig?.headers?["Authorization"])
+        XCTAssertNil(storedConfig?.headers?["X-Temp"])
+        
+        sse.stop()
+        dispatcher.executeAllPendingBlocks()
+    }
+
     func testCoordinatorStateTransitions() {
         let dispatcher = MockSseDispatcher()
         let sse = NitroSse(dispatcher: dispatcher)

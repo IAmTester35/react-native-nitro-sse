@@ -329,12 +329,13 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                             if (interceptorCompleted.compareAndSet(false, true)) {
                                 interceptorTimeoutRunnable?.let { sseDispatcher?.removeCallbacks(it) }
                                 interceptorTimeoutRunnable = null
-                                synchronized(this) {
-                                    val mergedHeaders = (config?.headers ?: emptyMap()).toMutableMap()
+                                val connectionConfig = synchronized(this) {
+                                    val base = config ?: return@post
+                                    val mergedHeaders = (base.headers ?: emptyMap()).toMutableMap()
                                     newHeaders.forEach { (k, v) -> mergedHeaders[k] = v }
-                                    config = config?.copy(headers = mergedHeaders)
+                                    base.copy(headers = mergedHeaders)
                                 }
-                                executeConnection(version)
+                                executeConnection(version, connectionConfig)
                             }
                         }
                     }.catch { error ->
@@ -347,7 +348,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 safeHandleError(e)
             }
         } else {
-            executeConnection(version)
+            executeConnection(version, null)
         }
     }
 
@@ -368,19 +369,18 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             
             val isDispatcherDestroyedMsg = t?.message?.contains("Dispatcher has already been destroyed", ignoreCase = true) == true
             if (isDispatcherDestroyedMsg) {
-                Log.w(TAG, "JS Dispatcher destroyed. Disposing NitroSse instance.")
-                this@NitroSse.isDispatcherDestroyed = true
+                Log.w(TAG, "JS Dispatcher destroyed during interceptor error. Disposing NitroSse instance.")
+                this.isDispatcherDestroyed = true
                 dispose()
                 return@post
             }
-
+            
             eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Interceptor Error: ${t?.message}", -1.0, null, null))
-
             scheduleReconnect(true, version)
         }
     }
 
-    private fun executeConnection(version: Int) {
+    private fun executeConnection(version: Int, connectionConfig: SseConfig? = null) {
         val currentConfig: SseConfig
         val currentLastId: String?
         val oldRequestId: String?
@@ -388,7 +388,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         
         synchronized(this) {
             if (!isRunning.get() || config == null || version != connectionAttemptVersion.get()) return
-            currentConfig = config!!
+            currentConfig = connectionConfig ?: config!!
             currentLastId = lastProcessedId
             
             oldRequestId = requestId
