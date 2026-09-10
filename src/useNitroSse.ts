@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { createNitroSse } from './index';
 import type {
   SseClient,
-  SseConfig,
+  SseClientOptions,
   SseEvent,
   SseState,
   SseStats,
@@ -14,7 +14,7 @@ type SseEventMap = object;
 export interface UseNitroSseOptions<
   TEvents extends SseEventMap = Record<string, AnyMap>,
   TMessage = AnyMap
-> extends SseConfig {
+> extends SseClientOptions {
   /**
    * Whether to automatically start streaming on mount or when URL changes.
    * @default true
@@ -221,6 +221,8 @@ export function useNitroSse<
   ]);
 
   const hasBeforeRequest = Boolean(onBeforeRequest);
+  // Track undefined transition to recreate client and purge stale headers (e.g. on logout)
+  const isHeadersUndefined = headers === undefined;
   const configKey = safeSerializeConfig(restConfig);
   const headersKey = safeSerializeConfig(headers);
 
@@ -250,7 +252,7 @@ export function useNitroSse<
       clientRef.current = clientInstance;
       setClient(clientInstance);
 
-      const config: SseConfig = {
+      const config: SseClientOptions = {
         ...restConfigRef.current,
         url: restConfigRef.current.url ?? '',
         ...(headersRef.current !== undefined
@@ -353,8 +355,9 @@ export function useNitroSse<
       clientRef.current = null;
       setClient(null);
     };
+    // Recreate client if headers becomes undefined to purge stale native headers
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [configKey, autoStart, hasBeforeRequest, hasValidUrl]);
+  }, [configKey, autoStart, hasBeforeRequest, hasValidUrl, isHeadersUndefined]);
 
   // Synchronize headers dynamically without reconnecting or tearing down active socket
   const isInitialMount = useRef(true);

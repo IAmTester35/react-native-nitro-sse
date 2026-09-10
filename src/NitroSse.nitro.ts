@@ -33,9 +33,13 @@ export interface SseEvent {
 export interface NitroSse
   extends HybridObject<{ ios: 'swift'; android: 'kotlin' }> {
   /**
-   * Configure SSE and setup event callback.
+   * Configure SSE, event callback, and optional dynamic request interceptor.
    */
-  setup(config: SseConfig, onEvent: (events: SseEvent[]) => void): void;
+  setup(
+    config: SseConfig,
+    onEvent: (events: SseEvent[]) => void,
+    onBeforeRequest?: () => Promise<Record<string, string>>
+  ): void;
 
   /**
    * Start the SSE connection.

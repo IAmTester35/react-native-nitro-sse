@@ -2,6 +2,7 @@ import type { AnyMap } from 'react-native-nitro-modules';
 import type { NitroSse } from './NitroSse.nitro';
 import type {
   SseClient,
+  SseClientOptions,
   SseConfig,
   SseEvent,
   SseListener,
@@ -51,7 +52,7 @@ export function sanitizeHeaders(
  * Throws NitroSseValidationError if essential requirements (e.g. valid URL) are violated.
  * Clamps numeric properties to safe boundaries and warns in __DEV__.
  */
-export function validateConfig(config: SseConfig): SseConfig {
+export function validateConfig(config: SseClientOptions): SseClientOptions {
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     throw new NitroSseValidationError(
       '[NitroSse] Invalid config: Expected a configuration object.',
@@ -333,7 +334,10 @@ export class NitroSseClient implements SseClient {
     }
   }
 
-  setup(config: SseConfig, onEvent?: (events: SseEvent[]) => void): void {
+  setup(
+    config: SseClientOptions,
+    onEvent?: (events: SseEvent[]) => void
+  ): void {
     this._checkDisposed();
 
     if (onEvent !== undefined && typeof onEvent !== 'function') {
@@ -395,12 +399,11 @@ export class NitroSseClient implements SseClient {
         }
       : undefined;
 
+    const pureConfig: SseConfig = { ...validatedConfig };
+    delete (pureConfig as unknown as Record<string, unknown>).onBeforeRequest;
     this._config = {
-      ...validatedConfig,
+      ...pureConfig,
       ...(cleanHeaders !== undefined ? { headers: cleanHeaders } : {}),
-      ...(safeOnBeforeRequest !== undefined
-        ? { onBeforeRequest: safeOnBeforeRequest }
-        : {}),
     };
     this._pendingHeaders = {};
     this._legacyCallback = onEvent;
@@ -438,9 +441,19 @@ export class NitroSseClient implements SseClient {
 
     // Wrap the native setup to dispatch events to typed listeners when native streaming is active
     if (mockConfig?.mode !== 'replace') {
-      this._native.setup(this._config, (events) => {
-        this._dispatchEvents(events);
-      });
+      if (safeOnBeforeRequest !== undefined) {
+        this._native.setup(
+          this._config,
+          (events) => {
+            this._dispatchEvents(events);
+          },
+          safeOnBeforeRequest
+        );
+      } else {
+        this._native.setup(this._config, (events) => {
+          this._dispatchEvents(events);
+        });
+      }
     }
   }
 
