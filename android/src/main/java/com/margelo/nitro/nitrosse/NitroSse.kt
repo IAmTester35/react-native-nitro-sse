@@ -39,6 +39,13 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     private var requestId: String? = null
     
     private val isRunning = AtomicBoolean(false)
+    /**
+     * Indicates whether the underlying React Native JS Dispatcher/CallInvoker has been destroyed
+     * (e.g. during Fast Refresh, bundle reload, or host teardown).
+     * Marked @Volatile to guarantee cross-thread memory visibility between sseDispatcher background
+     * thread, network callbacks, and JS/Main threads without stale CPU cache reads.
+     */
+    @Volatile
     private var isDispatcherDestroyed = false
     private var wasRunningBeforePaused = false
     private val consecutiveAuthErrors = AtomicInteger(0)
@@ -430,6 +437,8 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             val newEventSource = connectionHandler.createEventSource(client!!, request, newRequestId)
             synchronized(this) { eventSource = newEventSource }
         } catch (e: Exception) {
+            // Standard Java Exception catch: handles IllegalArgumentException (URL/headers), NullPointerException,
+            // and IllegalStateException without catching/suppressing fatal JVM errors (e.g. OutOfMemoryError, VirtualMachineError).
             Log.e(TAG, "Failed to create SSE connection request: ${e.message}", e)
             failAndStop("Invalid connection request: ${e.message}", -1.0)
         }
@@ -498,7 +507,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                     return@post
                 }
                 val retries = consecutiveAuthErrors.incrementAndGet()
-                if (retries >= maxRetries) {
+                if (retries > maxRetries) {
                     failAndStop("Auth Error ($statusCode) - Retry limit reached ($maxRetries). Stopping.", statusCode.toDouble())
                     return@post
                 }
@@ -627,8 +636,10 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             isRunning.set(false)
             wasRunningBeforeNetworkLoss = false
             wasRunningBeforePaused = false
-            if (currentState.get() != SseState.FAILED) {
+            if (!isDispatcherDestroyed && currentState.get() != SseState.FAILED) {
                 updateState(SseState.CLOSED)
+            } else if (isDispatcherDestroyed) {
+                currentState.set(SseState.CLOSED)
             }
             connectionAttemptVersion.incrementAndGet() 
             performInternalCleanup()
@@ -651,6 +662,10 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         currentRequestId?.let { NetworkInspector.reportResponseEnd(it, totalBytesReceived.get()) }
     }
 
+    /**
+     * Cleans up timeouts, active socket, and flushes any pending buffered events.
+     * Always invoked within `sseDispatcherThread` execution context (from lifecycle, network, or stop).
+     */
     private fun performInternalCleanup() {
         interceptorTimeoutRunnable?.let { sseDispatcher?.removeCallbacks(it) }
         interceptorTimeoutRunnable = null
