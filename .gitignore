@@ -87,3 +87,5 @@ nitrogen/
 
 secret.txt
 /coverage
+example/benchmark-results/*.json
+*.tsbuildinfo

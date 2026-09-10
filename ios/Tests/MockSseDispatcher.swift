@@ -22,12 +22,26 @@ public class MockSseDispatcher: SseDispatcher {
         }
     }
     
-    public func asyncAfter(delay: TimeInterval, _ block: @escaping () -> Void) {
+    private class MockCancellable: SseCancellable {
+        var isCancelled = false
+        func cancel() {
+            isCancelled = true
+        }
+    }
+    
+    @discardableResult
+    public func asyncAfter(delay: TimeInterval, _ block: @escaping () -> Void) -> SseCancellable? {
+        let cancellable = MockCancellable()
         if executeImmediately && delay <= 0.001 {
             block()
         } else {
-            pendingDelayedBlocks.append((delay: delay, block: block))
+            pendingDelayedBlocks.append((delay: delay, block: {
+                if !cancellable.isCancelled {
+                    block()
+                }
+            }))
         }
+        return cancellable
     }
     
     public func sync<T>(_ block: () throws -> T) rethrows -> T {

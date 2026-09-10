@@ -5,13 +5,15 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import androidx.test.core.app.ApplicationProvider
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -107,11 +109,13 @@ class SseAndroidComponentsTest {
     @Test
     fun testNetworkMonitorCallbacks() {
         var isAvailable = false
+        var interfaceChanged = false
         var capabilities: NetworkCapabilities? = null
 
         val dispatcher = TestSseDispatcher()
-        val monitor = SseNetworkMonitor(context, dispatcher) { available, caps ->
+        val monitor = SseNetworkMonitor(context, dispatcher) { available, changed, caps ->
             isAvailable = available
+            interfaceChanged = changed
             capabilities = caps
         }
 
@@ -123,17 +127,29 @@ class SseAndroidComponentsTest {
 
         val networkCallback = callbacks.first()
 
-        // Simulate network availability transition
+        // Simulate initial network availability: initial snapshot must NOT flag interface change
         val mockNetwork = mock(Network::class.java)
-        val mockCaps = ShadowNetworkCapabilities.newInstance()
+        val wifiCaps = ShadowNetworkCapabilities.newInstance()
+        shadowOf(wifiCaps).addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
         
         networkCallback.onAvailable(mockNetwork)
-        networkCallback.onCapabilitiesChanged(mockNetwork, mockCaps)
+        networkCallback.onCapabilitiesChanged(mockNetwork, wifiCaps)
         
         dispatcher.executePending()
         
         assertTrue(isAvailable)
+        assertFalse("Initial network detection must not be flagged as interface changed", interfaceChanged)
         assertNotNull(capabilities)
+
+        // Simulate interface change from Wi-Fi to Cellular
+        val cellularCaps = ShadowNetworkCapabilities.newInstance()
+        shadowOf(cellularCaps).addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+        networkCallback.onCapabilitiesChanged(mockNetwork, cellularCaps)
+
+        dispatcher.executePending()
+
+        assertTrue(isAvailable)
+        assertTrue("Transport switch from WiFi to Cellular must be flagged as interface changed", interfaceChanged)
 
         // Simulate network disconnect transition
         networkCallback.onLost(mockNetwork)
@@ -141,6 +157,7 @@ class SseAndroidComponentsTest {
         dispatcher.executePending()
         
         assertFalse(isAvailable)
+        assertFalse(interfaceChanged)
         assertNull(capabilities)
 
         monitor.stop()
@@ -154,7 +171,7 @@ class SseAndroidComponentsTest {
         var isAvailable = false
 
         // Verify synchronous execution path when no task dispatcher is provided
-        val monitor = SseNetworkMonitor(context, null) { available, _ ->
+        val monitor = SseNetworkMonitor(context, null) { available, _, _ ->
             isAvailable = available
         }
 

@@ -54,7 +54,7 @@ Because the library interfaces directly with OS-level networking and hardware li
   ```bash
   yarn test:android
   ```
-  *(Navigates to `example/android` and runs Gradle task `:react-native-nitro-sse:testDebugUnitTest`).*
+  _(Navigates to `example/android` and runs Gradle task `:react-native-nitro-sse:testDebugUnitTest`)._
 
 ---
 
@@ -70,19 +70,43 @@ Because the library interfaces directly with OS-level networking and hardware li
   ```bash
   yarn test:ios
   ```
-  *(Invokes `xcodebuild test` on Xcode workspace `example/ios/NitroSseExample.xcworkspace` targeting iPhone 16e Simulator).*
+  _(Invokes `xcodebuild test` on Xcode workspace `example/ios/NitroSseExample.xcworkspace` targeting iPhone 16e Simulator)._
 
 ---
 
 ## 5. CLI Testing Commands Summary
 
-| Task | Command | Description |
-|---|---|---|
-| **TypeScript Typecheck** | `yarn typecheck` | Validates TypeScript types using `tsc --noEmit`. |
-| **ESLint Check** | `yarn lint` | Lints `.ts`, `.tsx`, and `.js` files. |
-| **ESLint Fix** | `yarn lint --fix` | Automatically fixes code formatting and lint errors. |
-| **JS Unit Tests** | `yarn test` | Runs Jest unit tests for JS API & Mocking engine. |
-| **Android Tests** | `yarn test:android` | Runs Kotlin unit tests via Gradle. |
-| **iOS Tests** | `yarn test:ios` | Runs Swift unit tests via `xcodebuild`. |
-| **Full Native Tests** | `yarn test:native` | Runs both `test:android` and `test:ios`. |
-| **Complete CI Workflow** | `yarn ci` | Runs lint + typecheck + JS test + build library + Native tests + Android/iOS build checks. |
+| Task                     | Command             | Description                                                                                |
+| ------------------------ | ------------------- | ------------------------------------------------------------------------------------------ |
+| **TypeScript Typecheck** | `yarn typecheck`    | Validates TypeScript types using `tsc --noEmit`.                                           |
+| **ESLint Check**         | `yarn lint`         | Lints `.ts`, `.tsx`, and `.js` files.                                                      |
+| **ESLint Fix**           | `yarn lint --fix`   | Automatically fixes code formatting and lint errors.                                       |
+| **JS Unit Tests**        | `yarn test`         | Runs Jest unit tests for JS API & Mocking engine.                                          |
+| **Android Tests**        | `yarn test:android` | Runs Kotlin unit tests via Gradle.                                                         |
+| **iOS Tests**            | `yarn test:ios`     | Runs Swift unit tests via `xcodebuild`.                                                    |
+| **Full Native Tests**    | `yarn test:native`  | Runs both `test:android` and `test:ios`.                                                   |
+| **Complete CI Workflow** | `yarn ci`           | Runs lint + typecheck + JS test + build library + Native tests + Android/iOS build checks. |
+
+---
+
+## 6. Canonical Testing URL Convention
+
+All unit, integration, and mock tests across all layers (TypeScript, Kotlin, and Swift) MUST use the canonical test endpoint constant instead of arbitrary or random URLs
+
+```typescript
+// TypeScript (Jest)
+const TEST_URL = 'http://localhost:33333/events';
+```
+
+```kotlin
+// Kotlin (Android JUnit / Robolectric)
+private const val TEST_URL = "http://localhost:33333/events"
+```
+
+```swift
+// Swift (iOS XCTest)
+private let TEST_URL = "http://localhost:33333/events"
+```
+
+- Standardizes test endpoint configurations to match the local mock SSE server (`node example/sse-server.js`).
+- Prevents test flakiness and disparate URL definitions across multi-platform test suites.

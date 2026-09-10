@@ -7,10 +7,8 @@ import kotlin.math.pow
 import kotlin.random.Random
 
 /**
- * Calculates retry backoff intervals for reconnecting failed SSE connections.
- *
- * Employs exponential backoff with randomized jitter to prevent thundering herd pressure on backend
- * servers during outage recovery, and parses standard HTTP `Retry-After` headers.
+ * Calculates retry backoff intervals using randomized jitter exponential backoff.
+ * Maintains mathematical parity with iOS SseReconnectStrategy.
  */
 class SseReconnectStrategy {
     private var retryIntervalMs: Double = 1000.0

@@ -5,6 +5,7 @@ import UIKit
 @testable import NitroSse
 
 class NitroSseTests: XCTestCase {
+    private let TEST_URL = "http://localhost:33333/events"
     
     // MARK: - SseReconnectStrategy Tests
 
@@ -69,6 +70,25 @@ class NitroSseTests: XCTestCase {
         XCTAssertFalse(strategy.hasReachedMaxAttempts(), "Should reset after reset()")
     }
 
+    func testReconnectStrategyRecordAttempt() {
+        let strategy = SseReconnectStrategy()
+        strategy.configure(
+            retryIntervalMs: 1000.0,
+            maxRetryIntervalMs: 30000.0,
+            jitterFactor: 0.0,
+            maxReconnectAttempts: 2.0
+        )
+        
+        XCTAssertFalse(strategy.hasReachedMaxAttempts())
+        strategy.recordAttempt()
+        XCTAssertFalse(strategy.hasReachedMaxAttempts())
+        strategy.recordAttempt()
+        XCTAssertTrue(strategy.hasReachedMaxAttempts(), "Should reach max attempts after 2 explicit recordAttempt calls")
+        
+        strategy.reset()
+        XCTAssertFalse(strategy.hasReachedMaxAttempts(), "Reset should clear attempt counter")
+    }
+
     func testReconnectStrategyValidation() {
         let strategy = SseReconnectStrategy()
         strategy.configure(
@@ -92,7 +112,7 @@ class NitroSseTests: XCTestCase {
 
     func testRetryAfterDateParsing() {
         func createError(withRetryAfter headerValue: String?) -> Error {
-            let url = URL(string: "https://example.com")!
+            let url = URL(string: TEST_URL)!
             var headers: [String: String] = [:]
             if let val = headerValue { headers["Retry-After"] = val }
             
@@ -243,6 +263,14 @@ class NitroSseTests: XCTestCase {
         XCTAssertNil(arrayJson)
     }
 
+    func testJsonParsingNonDictionaryRoots() {
+        XCTAssertNil(SseEventBuffer.parseJsonToAnyMap("\"just a string\""))
+        XCTAssertNil(SseEventBuffer.parseJsonToAnyMap("12345"))
+        XCTAssertNil(SseEventBuffer.parseJsonToAnyMap("true"))
+        XCTAssertNil(SseEventBuffer.parseJsonToAnyMap("null"))
+        XCTAssertNil(SseEventBuffer.parseJsonToAnyMap(""))
+    }
+
     func testEventBufferNoBatching() {
         let buffer = SseEventBuffer()
         let dispatcher = MockSseDispatcher()
@@ -325,7 +353,7 @@ class NitroSseTests: XCTestCase {
     // MARK: - SseConfig+CopyWith Tests
     func testSseConfigCopyWith() {
         let config = SseConfig(
-            url: "https://example.com",
+            url: TEST_URL,
             method: .get,
             headers: ["A": "B"],
             body: nil,
@@ -338,9 +366,9 @@ class NitroSseTests: XCTestCase {
             maxRetryIntervalMs: 30000,
             jitterFactor: 0.5,
             maxReconnectAttempts: nil,
+            maxAuthRetries: 3,
             autoParseJSON: true,
             monitorNetwork: true,
-            onBeforeRequest: nil,
             mock: nil
         )
         
@@ -375,7 +403,7 @@ class NitroSseTests: XCTestCase {
 
     func testConnectionHandlerCreation() {
         let config = SseConfig(
-            url: "https://example.com",
+            url: TEST_URL,
             method: .post,
             headers: ["Test": "Header"],
             body: "test body",
@@ -388,9 +416,9 @@ class NitroSseTests: XCTestCase {
             maxRetryIntervalMs: 30000,
             jitterFactor: 0.5,
             maxReconnectAttempts: nil,
+            maxAuthRetries: 3,
             autoParseJSON: true,
             monitorNetwork: true,
-            onBeforeRequest: nil,
             mock: nil
         )
         
@@ -427,9 +455,9 @@ class NitroSseTests: XCTestCase {
             maxRetryIntervalMs: 30000,
             jitterFactor: 0.5,
             maxReconnectAttempts: nil,
+            maxAuthRetries: 3,
             autoParseJSON: false,
             monitorNetwork: false,
-            onBeforeRequest: nil,
             mock: nil
         )
         let delegate = MockSseConnectionDelegate()
@@ -457,5 +485,110 @@ class NitroSseTests: XCTestCase {
         wait(for: [firstFailure], timeout: 1.0)
         wait(for: [duplicateFailure], timeout: 2.5)
         XCTAssertEqual(delegate.failureCount, 1)
+    }
+
+    func testConnectionHandlerFiltersLastEventIdFromHeaders() {
+        let config = SseConfig(
+            url: TEST_URL,
+            method: .post,
+            headers: [
+                "Last-Event-Id": "stale-header-id",
+                "last-event-id": "lowercase-stale-id",
+                "Authorization": "Bearer token123"
+            ],
+            body: "test-body",
+            backgroundExecution: false,
+            batchingIntervalMs: 0,
+            maxBufferSize: 1000,
+            connectionTimeoutMs: 5000,
+            readTimeoutMs: 60000,
+            retryIntervalMs: 1000,
+            maxRetryIntervalMs: 30000,
+            jitterFactor: 0.5,
+            maxReconnectAttempts: nil,
+            maxAuthRetries: 3,
+            autoParseJSON: false,
+            monitorNetwork: false,
+            mock: nil
+        )
+        
+        let delegate = MockSseConnectionDelegate()
+        let dispatcher = MockSseDispatcher()
+        let eventSource = SseConnectionHandler.createEventSource(
+            url: URL(string: config.url)!,
+            config: config,
+            lastProcessedId: "dynamic-resumed-id",
+            delegate: delegate,
+            attemptVersion: 1,
+            dispatcher: dispatcher
+        )
+        defer { eventSource.stop() }
+        
+        let mirror = Mirror(reflecting: eventSource)
+        if let configProp = mirror.children.first(where: { $0.label == "config" })?.value {
+            let configMirror = Mirror(reflecting: configProp)
+            if let headers = configMirror.children.first(where: { $0.label == "headers" })?.value as? [String: String] {
+                XCTAssertNil(headers["Last-Event-Id"])
+                XCTAssertNil(headers["last-event-id"])
+                XCTAssertEqual(headers["Authorization"], "Bearer token123")
+            }
+            if let lastEventId = configMirror.children.first(where: { $0.label == "lastEventId" })?.value as? String {
+                XCTAssertEqual(lastEventId, "dynamic-resumed-id")
+            }
+            if let method = configMirror.children.first(where: { $0.label == "method" })?.value as? String {
+                XCTAssertEqual(method, "POST")
+            }
+        }
+    }
+
+    // MARK: - SseDispatchQueueDispatcher Tests
+    
+    func testDispatchQueueDispatcherIsCurrentDispatcher() {
+        let queue = DispatchQueue(label: "test.dispatcher.queue")
+        let key = DispatchSpecificKey<Void>()
+        queue.setSpecific(key: key, value: ())
+        let dispatcher = SseDispatchQueueDispatcher(queue: queue, queueKey: key)
+        
+        XCTAssertFalse(dispatcher.isCurrentDispatcher())
+        
+        let expectation = XCTestExpectation(description: "Execute inside queue")
+        dispatcher.async {
+            XCTAssertTrue(dispatcher.isCurrentDispatcher())
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+    }
+    
+    func testDispatchQueueDispatcherSyncReentrancyPreventsDeadlock() {
+        let queue = DispatchQueue(label: "test.dispatcher.reentrancy")
+        let key = DispatchSpecificKey<Void>()
+        queue.setSpecific(key: key, value: ())
+        let dispatcher = SseDispatchQueueDispatcher(queue: queue, queueKey: key)
+        
+        // Calling sync from within dispatcher queue must execute inline without deadlocking
+        let result = dispatcher.sync {
+            return dispatcher.sync {
+                return dispatcher.sync {
+                    return 42
+                }
+            }
+        }
+        XCTAssertEqual(result, 42)
+    }
+    
+    func testDispatchQueueDispatcherAsyncAfter() {
+        let queue = DispatchQueue(label: "test.dispatcher.asyncafter")
+        let key = DispatchSpecificKey<Void>()
+        queue.setSpecific(key: key, value: ())
+        let dispatcher = SseDispatchQueueDispatcher(queue: queue, queueKey: key)
+        
+        let expectation = XCTestExpectation(description: "Delayed execution")
+        let startTime = Date()
+        dispatcher.asyncAfter(delay: 0.05) {
+            let elapsed = Date().timeIntervalSince(startTime)
+            XCTAssertGreaterThanOrEqual(elapsed, 0.04)
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
     }
 }

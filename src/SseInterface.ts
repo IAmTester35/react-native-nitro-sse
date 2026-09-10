@@ -81,6 +81,7 @@ export interface SseConfig {
   /**
    * Initial delay (in ms) for reconnection attempts.
    * Subsequent attempts use exponential backoff.
+   * Note: Native applies a minimum floor of 1000ms.
    * @default 1000
    */
   retryIntervalMs?: number;
@@ -102,8 +103,14 @@ export interface SseConfig {
    */
   maxReconnectAttempts?: number;
   /**
+   * Maximum number of retries when encountering HTTP 401/403 auth errors before stopping.
+   * @default 3
+   */
+  maxAuthRetries?: number;
+  /**
    * Whether to automatically parse message data as JSON in a background native thread.
-   * If true, and parsing succeeds, the result will be available in the 'parsedData' field.
+   * If true and data is a root JSON Object ('{...}'), the parsed result is available in 'parsedData'.
+   * Returns null for JSON arrays or primitives due to Nitro AnyMap object constraints.
    * @default false
    */
   autoParseJSON?: boolean;
@@ -115,16 +122,22 @@ export interface SseConfig {
    */
   monitorNetwork?: boolean;
   /**
+   * Configuration for mock streaming data.
+   * Used for local testing and debugging.
+   */
+  mock?: SseMockConfig;
+}
+
+/**
+ * Public client setup options, combining connection config with dynamic request interceptor.
+ */
+export interface SseClientOptions extends SseConfig {
+  /**
    * Async interceptor called before every connection attempt (including auto-reconnects).
    * Use this to refresh tokens or calculate dynamic headers.
    * Note: This is protected by a native timeout to prevent the app from hanging.
    */
   onBeforeRequest?: () => Promise<Record<string, string>>;
-  /**
-   * Configuration for mock streaming data.
-   * Used for local testing and debugging.
-   */
-  mock?: SseMockConfig;
 }
 
 export type SseMockMode = 'replace' | 'inject';
@@ -189,13 +202,13 @@ export interface SseMockConfig {
 /**
  * Represents a single SSE event.
  */
-export interface SseEvent {
+export interface SseEvent<TData = AnyMap> {
   /** The type of the event. */
   type: SseEventType;
   /** The data payload of the event as a raw string. */
   data?: string;
   /** The parsed JSON data, if autoParseJSON is enabled and parsing succeeds. */
-  parsedData?: AnyMap;
+  parsedData?: TData;
   /** The event ID, if provided. */
   id?: string;
   /** The event name, if provided (internal 'event' field in SSE). */
@@ -227,29 +240,43 @@ export interface SseStats {
 /**
  * Listener for a specific SSE event.
  */
-export type SseListener = (event: SseEvent) => void;
+export type SseListener<TData = AnyMap> = (event: SseEvent<TData>) => void;
 
 /**
  * Public interface for the NitroSse client, supporting typed event listeners.
  */
 export interface SseClient {
+  /** Whether the client instance has been disposed. */
+  readonly isDisposed: boolean;
+
   /**
    * Configure SSE and setup event callback.
-   * @param config The SSE configuration.
+   * @param config The SSE configuration and client options.
    * @param onEvent Optional legacy batch callback for all events.
    */
-  setup(config: SseConfig, onEvent?: (events: SseEvent[]) => void): void;
+  setup(config: SseClientOptions, onEvent?: (events: SseEvent[]) => void): void;
 
   /**
    * Register a listener for a specific event type ('message', 'open', etc.)
    * or a custom SSE event name (from the 'event:' field).
    */
-  addEventListener(type: string, listener: SseListener): void;
+  addEventListener<TData = AnyMap>(
+    type: string,
+    listener: SseListener<TData>
+  ): void;
 
   /**
    * Unregister a listener.
    */
-  removeEventListener(type: string, listener: SseListener): void;
+  removeEventListener<TData = AnyMap>(
+    type: string,
+    listener: SseListener<TData>
+  ): void;
+
+  /**
+   * Unregister all listeners, optionally filtered by event type.
+   */
+  removeAllEventListeners(type?: string): void;
 
   /** Start the connection. */
   start(): void;
@@ -259,7 +286,10 @@ export interface SseClient {
   restart(): void;
   /** Force flush buffered events to JS. */
   flush(): void;
-  /** Check if active. */
+  /**
+   * Check if the client engine is currently running ('connecting', 'open', or 'reconnecting').
+   * Use `getState() === 'open'` to check if the stream is actively open and ready.
+   */
   isConnected(): boolean;
   /** Get stats. */
   getStats(): SseStats;
@@ -271,4 +301,6 @@ export interface SseClient {
   injectMockEvent(event: Partial<SseEvent>): void;
   /** Get current connection state. */
   getState(): SseState;
+  /** Explicitly dispose instance and release native threads/observers. */
+  dispose(): void;
 }

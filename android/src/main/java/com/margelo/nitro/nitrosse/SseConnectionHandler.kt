@@ -51,25 +51,39 @@ class SseConnectionHandler(private val delegate: SseConnectionDelegate) {
 }
 
 /**
- * Network interceptor for byte accounting and SSE heartbeat detection.
- *
- * Scans the raw response stream before OkHttp's EventSource parser runs, because OkHttp
- * discards SSE comment lines (`:`). Sniffing raw bytes at the network layer allows detecting
- * keep-alive signals without modifying the SSE parser interface.
+ * Network interceptor for recording raw wire response metadata for React Native DevTools.
+ * Runs at the network layer to capture true HTTP status, raw wire headers (e.g. Content-Encoding: gzip), and timing.
  */
-internal class HeartbeatNetworkInterceptor(
-    private val totalBytesReceived: AtomicLong,
-    private val onHeartbeat: (requestId: String?) -> Unit
-) : Interceptor {
+internal class InspectorNetworkInterceptor : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         val rid = request.tag(String::class.java)
-
         val response = chain.proceed(request)
-
         rid?.let {
             NetworkInspector.reportResponseStart(it, request, response)
         }
+        return response
+    }
+}
+
+/**
+ * Application interceptor for byte accounting and SSE heartbeat/comment detection.
+ * Inspects decompressed UTF-8 stream before EventSourceReader discards SSE comments (`:`).
+ *
+ * Placed as an OkHttp Application Interceptor (above BridgeInterceptor), allowing OkHttp
+ * to handle transparent gzip/deflate decompression naturally without requiring manual GzipSource
+ * wrapping or disabling compression with 'Accept-Encoding: identity'.
+ */
+internal class HeartbeatInterceptor(
+    private val totalBytesReceived: AtomicLong? = null,
+    private val onHeartbeat: (requestId: String?, comment: String) -> Unit
+) : Interceptor {
+    constructor(onHeartbeat: (requestId: String?, comment: String) -> Unit) : this(null, onHeartbeat)
+
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val rid = request.tag(String::class.java)
+        val response = chain.proceed(request)
 
         val responseBody = response.body
         if (responseBody != null) {
@@ -80,20 +94,34 @@ internal class HeartbeatNetworkInterceptor(
                 private val bufferedSource by lazy {
                     (object : ForwardingSource(responseBody.source()) {
                         private var isAtStartOfLine = true
+                        private var isReadingComment = false
+                        private val commentBuffer = java.io.ByteArrayOutputStream()
 
                         override fun read(sink: Buffer, byteCount: Long): Long {
                             val scratch = Buffer()
                             val bytesRead = super.read(scratch, byteCount)
                             if (bytesRead != -1L) {
-                                totalBytesReceived.addAndGet(bytesRead)
+                                totalBytesReceived?.addAndGet(bytesRead)
                                 try {
-                                    // Scan raw byte buffer for leading ':' character to trigger heartbeat events before OkHttp discards comments
                                     val bytes = scratch.snapshot().toByteArray()
                                     for (b in bytes) {
-                                        if (isAtStartOfLine && b == ':'.code.toByte()) {
-                                            onHeartbeat(rid)
+                                        val isNewline = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
+                                        if (isReadingComment) {
+                                            if (isNewline) {
+                                                isReadingComment = false
+                                                val rawComment = commentBuffer.toString("UTF-8")
+                                                // WHATWG SSE Spec: Remove only a single leading space after ':' if present
+                                                val commentText = if (rawComment.startsWith(" ")) rawComment.substring(1) else rawComment
+                                                commentBuffer.reset()
+                                                onHeartbeat(rid, commentText)
+                                            } else {
+                                                commentBuffer.write(b.toInt())
+                                            }
+                                        } else if (isAtStartOfLine && b == ':'.code.toByte()) {
+                                            isReadingComment = true
+                                            commentBuffer.reset()
                                         }
-                                        isAtStartOfLine = (b == '\n'.code.toByte() || b == '\r'.code.toByte())
+                                        isAtStartOfLine = isNewline
                                     }
                                 } catch (e: Exception) {
                                     // Swallow byte scanning errors to prevent stream reader failure if buffer inspection fails
@@ -112,3 +140,9 @@ internal class HeartbeatNetworkInterceptor(
         return response
     }
 }
+
+@Deprecated(
+    message = "Use HeartbeatInterceptor instead. This interceptor is an OkHttp application interceptor, not a network interceptor.",
+    replaceWith = ReplaceWith("HeartbeatInterceptor")
+)
+internal typealias HeartbeatNetworkInterceptor = HeartbeatInterceptor

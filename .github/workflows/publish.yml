@@ -3,7 +3,7 @@ name: Continuous Release
 on:
   workflow_dispatch:
   workflow_run:
-    workflows: ["CI"]
+    workflows: ['CI']
     branches: [main, beta]
     types:
       - completed
@@ -32,10 +32,10 @@ jobs:
         run: |
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
-          
+
           # Check if this specific version is already published
           PUBLISHED_VERSION=$(npm view "$NAME@$VERSION" version 2>/dev/null || echo "")
-          
+
           if [ "$PUBLISHED_VERSION" = "$VERSION" ]; then
             echo "Version $VERSION is already published on npm. Skipping."
             echo "changed=false" >> $GITHUB_OUTPUT
@@ -64,7 +64,7 @@ jobs:
           name: Release v${{ steps.check.outputs.version }}
           body_path: RELEASE_NOTES.md
           generate_release_notes: true
-          make_latest: true
+          make_latest: ${{ !contains(steps.check.outputs.version, 'beta') && !contains(steps.check.outputs.version, 'alpha') }}
           draft: false
           prerelease: ${{ contains(steps.check.outputs.version, 'beta') || contains(steps.check.outputs.version, 'alpha') }}
         env:

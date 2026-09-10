@@ -12,6 +12,15 @@ import org.json.JSONObject
 object JsonUtils {
     private const val MAX_DEPTH = 500
 
+    private fun convertJsonValue(value: Any?, depth: Int): Any? {
+        return when (value) {
+            is JSONObject -> jsonObjectToMap(value, depth + 1)
+            is JSONArray -> jsonArrayToList(value, depth + 1)
+            JSONObject.NULL -> null
+            else -> value
+        }
+    }
+
     fun jsonObjectToMap(jsonObject: JSONObject, depth: Int = 0): Map<String, Any?> {
         if (depth > MAX_DEPTH) {
             throw IllegalArgumentException("JSON nesting depth limit ($MAX_DEPTH) exceeded")
@@ -20,15 +29,7 @@ object JsonUtils {
         val keys = jsonObject.keys()
         while (keys.hasNext()) {
             val key = keys.next()
-            var value: Any? = jsonObject.get(key)
-            if (value is JSONObject) {
-                value = jsonObjectToMap(value, depth + 1)
-            } else if (value is JSONArray) {
-                value = jsonArrayToList(value, depth + 1)
-            } else if (value == JSONObject.NULL) {
-                value = null
-            }
-            map[key] = value
+            map[key] = convertJsonValue(jsonObject.get(key), depth)
         }
         return map
     }
@@ -39,15 +40,7 @@ object JsonUtils {
         }
         val list = mutableListOf<Any?>()
         for (i in 0 until jsonArray.length()) {
-            var value: Any? = jsonArray.get(i)
-            if (value is JSONObject) {
-                value = jsonObjectToMap(value, depth + 1)
-            } else if (value is JSONArray) {
-                value = jsonArrayToList(value, depth + 1)
-            } else if (value == JSONObject.NULL) {
-                value = null
-            }
-            list.add(value)
+            list.add(convertJsonValue(jsonArray.get(i), depth))
         }
         return list
     }

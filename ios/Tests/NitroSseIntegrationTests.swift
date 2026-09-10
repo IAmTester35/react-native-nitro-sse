@@ -4,6 +4,7 @@ import XCTest
 /// Live HTTP integration tests against an active SSE server (`node example/sse-server.js`).
 /// Set `REQUIRE_INTEGRATION_SERVER=1` in environment to enforce server availability on CI.
 class NitroSseIntegrationTests: XCTestCase {
+    private let TEST_URL = "http://localhost:33333/events"
     
     private func createRealConfig(url: String) -> SseConfig {
         return SseConfig(
@@ -20,16 +21,16 @@ class NitroSseIntegrationTests: XCTestCase {
             maxRetryIntervalMs: 5000,
             jitterFactor: 0.0,
             maxReconnectAttempts: 3,
+            maxAuthRetries: 3,
             autoParseJSON: true,
             monitorNetwork: false,
-            onBeforeRequest: nil,
             mock: nil
         )
     }
 
     func testIntegrationConnectionSuccess() {
         let sse = NitroSse()
-        let config = createRealConfig(url: "http://localhost:33333/events")
+        let config = createRealConfig(url: TEST_URL)
         
         let exp = XCTestExpectation(description: "Wait for events")
         

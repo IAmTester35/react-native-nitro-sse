@@ -3,6 +3,8 @@ package com.margelo.nitro.nitrosse
 import android.util.Log
 import okhttp3.Request
 import okhttp3.Response
+import okio.Buffer
+import java.lang.reflect.Method
 
 /**
  * Reports SSE connection events to the React Native DevTools Network inspector.
@@ -13,31 +15,24 @@ import okhttp3.Response
  */
 object NetworkInspector {
     private const val TAG = "NitroSseNetworkInspector"
-    private var reporterClass: Class<*>? = null
+
+    private val isDebuggingEnabledMethod: Method?
+    private val reportRequestStartMethod: Method?
+    private val reportResponseStartMethod: Method?
+    private val reportResponseEndMethod: Method?
+    private val reportRequestFailedMethod: Method?
 
     init {
-        try {
-            reporterClass = Class.forName("com.facebook.react.modules.network.InspectorNetworkReporter")
-            Log.d(TAG, "InspectorNetworkReporter found. Network tracing is available.")
-        } catch (e: Exception) {
-            Log.d(TAG, "InspectorNetworkReporter not found. Network tracing is disabled.")
-        }
-    }
+        var isDebugging: Method? = null
+        var reqStart: Method? = null
+        var resStart: Method? = null
+        var resEnd: Method? = null
+        var reqFailed: Method? = null
 
-    private fun isEnabled(): Boolean {
-        if (reporterClass == null) return false
-        return try {
-            val method = reporterClass?.getDeclaredMethod("isDebuggingEnabled")
-            method?.invoke(null) as? Boolean ?: false
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    fun reportRequestStart(requestId: String, request: Request) {
-        if (reporterClass == null || !isEnabled()) return
         try {
-            val method = reporterClass?.getDeclaredMethod(
+            val clazz = Class.forName("com.facebook.react.modules.network.InspectorNetworkReporter")
+            isDebugging = clazz.getDeclaredMethod("isDebuggingEnabled")
+            reqStart = clazz.getDeclaredMethod(
                 "reportRequestStart",
                 String::class.java,
                 String::class.java,
@@ -46,19 +41,7 @@ object NetworkInspector {
                 String::class.java,
                 Long::class.javaPrimitiveType
             )
-            val headers = request.headers.toMap()
-            // SSE connection requests do not send request bodies; passing empty body minimizes DevTools memory overhead
-            val body = "" 
-            method?.invoke(null, requestId, request.url.toString(), request.method, headers, body, 0L)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error reporting request start", e)
-        }
-    }
-
-    fun reportResponseStart(requestId: String, request: Request, response: Response) {
-        if (reporterClass == null || !isEnabled()) return
-        try {
-            val method = reporterClass?.getDeclaredMethod(
+            resStart = clazz.getDeclaredMethod(
                 "reportResponseStart",
                 String::class.java,
                 String::class.java,
@@ -66,28 +49,88 @@ object NetworkInspector {
                 Map::class.java,
                 Long::class.javaPrimitiveType
             )
-            val headers = response.headers.toMap()
-            method?.invoke(null, requestId, request.url.toString(), response.code, headers, -1L)
+            resEnd = clazz.getDeclaredMethod(
+                "reportResponseEnd",
+                String::class.java,
+                Long::class.javaPrimitiveType
+            )
+            reqFailed = clazz.getDeclaredMethod(
+                "reportRequestFailed",
+                String::class.java,
+                Boolean::class.javaPrimitiveType
+            )
+            Log.d(TAG, "InspectorNetworkReporter found. Network tracing is available.")
+        } catch (_: Throwable) {
+            Log.d(TAG, "InspectorNetworkReporter not found. Network tracing is disabled.")
+        }
+
+        isDebuggingEnabledMethod = isDebugging
+        reportRequestStartMethod = reqStart
+        reportResponseStartMethod = resStart
+        reportResponseEndMethod = resEnd
+        reportRequestFailedMethod = reqFailed
+    }
+
+    private fun isEnabled(): Boolean {
+        return try {
+            isDebuggingEnabledMethod?.invoke(null) as? Boolean == true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    fun reportRequestStart(requestId: String, request: Request) {
+        if (!isEnabled()) return
+        try {
+            val body = request.body?.let {
+                val buffer = Buffer()
+                it.writeTo(buffer)
+                buffer.readUtf8()
+            } ?: ""
+
+            reportRequestStartMethod?.invoke(
+                null,
+                requestId,
+                request.url.toString(),
+                request.method,
+                request.headers.toMap(),
+                body,
+                0L
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error reporting request start", e)
+        }
+    }
+
+    fun reportResponseStart(requestId: String, request: Request, response: Response) {
+        if (!isEnabled()) return
+        try {
+            reportResponseStartMethod?.invoke(
+                null,
+                requestId,
+                request.url.toString(),
+                response.code,
+                response.headers.toMap(),
+                -1L
+            )
         } catch (e: Exception) {
             Log.e(TAG, "Error reporting response start", e)
         }
     }
 
     fun reportResponseEnd(requestId: String, totalBytes: Long) {
-        if (reporterClass == null || !isEnabled()) return
+        if (!isEnabled()) return
         try {
-            val method = reporterClass?.getDeclaredMethod("reportResponseEnd", String::class.java, Long::class.javaPrimitiveType)
-            method?.invoke(null, requestId, totalBytes)
+            reportResponseEndMethod?.invoke(null, requestId, totalBytes)
         } catch (e: Exception) {
             Log.e(TAG, "Error reporting response end", e)
         }
     }
 
     fun reportRequestFailed(requestId: String, cancelled: Boolean) {
-        if (reporterClass == null || !isEnabled()) return
+        if (!isEnabled()) return
         try {
-            val method = reporterClass?.getDeclaredMethod("reportRequestFailed", String::class.java, Boolean::class.javaPrimitiveType)
-            method?.invoke(null, requestId, cancelled)
+            reportRequestFailedMethod?.invoke(null, requestId, cancelled)
         } catch (e: Exception) {
             Log.e(TAG, "Error reporting request failure", e)
         }

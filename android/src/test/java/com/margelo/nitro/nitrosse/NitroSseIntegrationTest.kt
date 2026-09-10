@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [Build.VERSION_CODES.O], shadows = [ShadowHybridNitroSseSpecCxxPart::class])
 class NitroSseIntegrationTest {
+    private val TEST_URL = "http://localhost:33333/events"
 
     private fun createRealConfig(url: String): SseConfig {
         return SseConfig(
@@ -37,9 +38,9 @@ class NitroSseIntegrationTest {
             5000.0,
             0.0,
             3.0,
+            3.0,
             true,
             false,
-            null,
             null
         )
     }
@@ -52,7 +53,7 @@ class NitroSseIntegrationTest {
     @Test
     fun testIntegrationConnectionSuccess() {
         val sse = NitroSse()
-        val config = createRealConfig("http://localhost:33333/events")
+        val config = createRealConfig(TEST_URL)
 
         val latch = CountDownLatch(1)
         val receivedEvents = mutableListOf<SseEvent>()

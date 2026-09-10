@@ -1,6 +1,6 @@
 ---
 name: react-native-nitro-sse-context
-description: Provides comprehensive architectural context for the react-native-nitro-sse library — a high-performance Server-Sent Events (SSE) solution for React Native powered by Nitro Modules (JSI). ALWAYS use this skill when working in the react-native-nitro-sse repository, or when asked about JSI architecture, TypeScript/Kotlin/Swift code, Nitrogen codegen, event buffering, threading serialization, lifecycle hibernation, network monitoring, or writing/running unit tests for JS/Android/iOS.
+description: Provides architectural context for the react-native-nitro-sse library — a Server-Sent Events (SSE) solution for React Native using Nitro Modules (JSI). Use this skill when working in the react-native-nitro-sse repository, or when asked about JSI architecture, TypeScript/Kotlin/Swift code, Nitrogen codegen, event buffering, threading serialization, lifecycle management, network monitoring, or writing/running unit tests for JS/Android/iOS.
 ---
 
 # react-native-nitro-sse — Project Context
@@ -10,20 +10,20 @@ This file serves as the main entry point for the **react-native-nitro-sse** Cust
 ## 1. Project Overview
 
 - **Project Name:** `react-native-nitro-sse`
-- **Objective:** High-performance Server-Sent Events (SSE) client library for React Native, completely eliminating the legacy asynchronous React Native Bridge via **Nitro Modules (JSI)**. Designed for enterprise/AI streaming applications requiring high throughput, low battery consumption, and maximum stability.
+- **Objective:** Server-Sent Events (SSE) client library for React Native built on **Nitro Modules (JSI)**, supporting background lifecycle management, event batching, and automatic reconnection.
 - **Type:** Open-source React Native Native Module (Library & Workspaces Monorepo).
 - **Author:** IAmTester35 (`maithanhnam141@gmail.com`)
 
 ## 2. Multi-Language Tech Stack
 
-| Component | Main Tech / Library | Role & Key Characteristics |
-|---|---|---|
-| **JS/TS Layer** | TypeScript, React Native | Public interface (`SseClient`), JSI Spec (`NitroSse.nitro.ts`), Mocking Engine (`NitroSseClient.ts`) |
-| **Binding Glue** | Nitro Modules (`nitrogen`) | Code generation CLI creating C++/JSI glue connecting JS to Native Swift/Kotlin |
-| **iOS Native** | Swift, LDSwiftEventSource, Network.framework | Socket streaming, Dispatcher thread safety, NWPathMonitor, UIApplication lifecycle |
-| **Android Native** | Kotlin, OkHttp SSE, ProcessLifecycleOwner | Socket streaming, HandlerThread single-threaded execution, ConnectivityManager |
-| **DevTools** | Objective-C++ (`NitroSseNetworkInspector`), Kotlin (`NetworkInspector`) | Real-time HTTP stream tracing directly in React Native DevTools |
-| **Testing** | Jest (JS), JUnit + Robolectric (Android), XCTest (iOS) | Multi-layered unit testing from JS API down to native logic |
+| Component          | Main Tech / Library                                                     | Role & Key Characteristics                                                                           |
+| ------------------ | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| **JS/TS Layer**    | TypeScript, React Native                                                | Public interface (`SseClient`), JSI Spec (`NitroSse.nitro.ts`), Mocking Engine (`NitroSseClient.ts`) |
+| **Binding Glue**   | Nitro Modules (`nitrogen`)                                              | Code generation CLI creating C++/JSI glue connecting JS to Native Swift/Kotlin                       |
+| **iOS Native**     | Swift, LDSwiftEventSource, Network.framework                            | Socket streaming, Dispatcher thread safety, NWPathMonitor, UIApplication lifecycle                   |
+| **Android Native** | Kotlin, OkHttp SSE, ProcessLifecycleOwner                               | Socket streaming, HandlerThread single-threaded execution, ConnectivityManager                       |
+| **DevTools**       | Objective-C++ (`NitroSseNetworkInspector`), Kotlin (`NetworkInspector`) | Real-time HTTP stream tracing directly in React Native DevTools                                      |
+| **Testing**        | Jest (JS), JUnit + Robolectric (Android), XCTest (iOS)                  | Multi-layered unit testing from JS API down to native logic                                          |
 
 ## 3. Directory Map
 
@@ -61,20 +61,22 @@ react-native-nitro-sse/
 
 ## 4. Core Architectural Principles
 
-1. **Zero-Bridge Latency (JSI)**: JS-Native interactions execute directly via JSI Hybrid Objects, completely bypassing the asynchronous legacy React Native Bridge.
-2. **Single-Threaded Serialization**: All mutable state operations and native network callbacks MUST execute on a dedicated `SseDispatcher` (`DispatchQueue` on iOS, `HandlerThread` on Android) to prevent data races.
-3. **Event Batching & Backpressure (`SseEventBuffer`)**: Automatically batches events based on `batchingIntervalMs` before flushing to JS to reduce JSI bridge overhead. Forces immediate flushing when hitting `maxBufferSize`.
-4. **Mobile Hibernation & Battery Preservation (`SseLifecycleManager`)**: Hibernates connection when app enters background (unless `backgroundExecution: true`) and automatically resumes on foregrounding.
-5. **Proactive Network Monitoring (`SseNetworkMonitor`)**: Tracks network interface changes (WiFi <-> Cellular) to proactively restart streams, preventing stale socket connections.
-6. **Versioned Reconnections**: Employs a `connectionAttemptVersion` counter to discard stale asynchronous callbacks from previous connection cycles.
+1. **JSI Architecture**: JS-native communication executes directly via JSI Hybrid Objects without the asynchronous bridge.
+2. **Single-Threaded Serialization**: Mutable state and native network callbacks execute on a dedicated `SseDispatcher` (`DispatchQueue` on iOS, `HandlerThread` on Android) to avoid race conditions.
+3. **Event Batching (`SseEventBuffer`)**: Batches events based on `batchingIntervalMs` before dispatching to JS. Flushes immediately when reaching `maxBufferSize`.
+4. **Lifecycle Management (`SseLifecycleManager`)**: Pauses connection when app enters background (unless `backgroundExecution: true`) and resumes on foreground.
+5. **Network Monitoring (`SseNetworkMonitor`)**: Listens to interface changes (WiFi <-> Cellular) to reconnect inactive streams.
+6. **Versioned Reconnections**: Uses a `connectionAttemptVersion` counter to ignore callbacks from previous connection attempts.
+7. **Canonical Testing Endpoint**: All test suites (JS/TS, Android, iOS) standardize on `const TEST_URL = 'http://localhost:33333/events'` matching `example/sse-server.js` instead of arbitrary URLs.
 
 ## 5. Reference Documentation (Progressive Disclosure)
 
-| Document | When to Read |
-|---|---|
-| [`references/architecture.md`](references/architecture.md) | Understanding JSI bindings, Threading Dispatchers, Backpressure buffer, Lifecycle & DevTools inspector. |
-| [`references/conventions.md`](references/conventions.md) | Adding or modifying code in TS, Kotlin, or Swift. Covers thread-safety & error handling conventions. |
+| Document                                                                       | When to Read                                                                                                            |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| [`references/architecture.md`](references/architecture.md)                     | Understanding JSI bindings, Threading Dispatchers, Backpressure buffer, Lifecycle & DevTools inspector.                 |
+| [`references/conventions.md`](references/conventions.md)                       | Adding or modifying code in TS, Kotlin, or Swift. Covers thread-safety & error handling conventions.                    |
 | [`references/native-implementations.md`](references/native-implementations.md) | Working deeply with iOS native components (LDSwiftEventSource/GCD) or Android native components (OkHttp/HandlerThread). |
-| [`references/testing-guide.md`](references/testing-guide.md) | Writing new unit tests for Jest, JUnit (Android), or XCTest (iOS) and running test suites. |
-| [`references/workflows.md`](references/workflows.md) | Running codegen (`nitrogen`), starting the example app, running CI checks, or releasing packages. |
-| [`references/troubleshooting.md`](references/troubleshooting.md) | Resolving Nitrogen version drift, `JS Dispatcher destroyed` crashes, HandlerThread leaks, or iOS background expiration. |
+| [`references/testing-guide.md`](references/testing-guide.md)                   | Writing new unit tests for Jest, JUnit (Android), or XCTest (iOS) and running test suites.                              |
+| [`references/workflows.md`](references/workflows.md)                           | Running codegen (`nitrogen`), starting the example app, running CI checks, or releasing packages.                       |
+| [`references/troubleshooting.md`](references/troubleshooting.md)               | Resolving Nitrogen version drift, `JS Dispatcher destroyed` crashes, HandlerThread leaks, or iOS background expiration. |
+| [`references/sse-benchmark.md`](references/sse-benchmark.md)                   | Running high-throughput SSE benchmarks, clock sync, diagnosing event coalescing, latency & GC profiling.                |

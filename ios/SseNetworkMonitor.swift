@@ -24,6 +24,11 @@ class SseNetworkMonitor {
         self.onChange = onChange
     }
     
+    /// Synchronously queries whether the active network path is currently satisfied (online).
+    var isPathSatisfied: Bool {
+        return pathMonitor?.currentPath.status == .satisfied
+    }
+    
     /// Starts observing system network changes. Idempotent call.
     func start() {
         guard pathMonitor == nil else { return }

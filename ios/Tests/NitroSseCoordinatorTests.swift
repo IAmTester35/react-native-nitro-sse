@@ -3,10 +3,11 @@ import NitroModules
 @testable import NitroSse
 
 class NitroSseCoordinatorTests: XCTestCase {
+    private let TEST_URL = "http://localhost:33333/events"
     
     private func createMockConfig(maxReconnectAttempts: Double = 2) -> SseConfig {
         return SseConfig(
-            url: "http://localhost:9999/dummy",
+            url: TEST_URL,
             method: .get,
             headers: [:],
             body: nil,
@@ -19,11 +20,138 @@ class NitroSseCoordinatorTests: XCTestCase {
             maxRetryIntervalMs: 30000,
             jitterFactor: 0.0,
             maxReconnectAttempts: maxReconnectAttempts,
+            maxAuthRetries: 3,
             autoParseJSON: false,
             monitorNetwork: false,
-            onBeforeRequest: nil,
             mock: nil
         )
+    }
+
+    func testRequestInterceptorIsNotEmbeddedInCopiedConfig() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        var interceptorCalls = 0
+        let config = createMockConfig()
+        let interceptor = { () -> Promise<Promise<Dictionary<String, String>>> in
+            interceptorCalls += 1
+            return Promise<Promise<Dictionary<String, String>>>.async {
+                return Promise<Dictionary<String, String>>.async { [:] }
+            }
+        }
+
+        try! sse.setup(config: config, onEvent: { _ in }, onBeforeRequest: interceptor)
+        for index in 0..<10 {
+            try! sse.updateHeaders(headers: ["X-Test": "\(index)"])
+        }
+
+        let storedConfigValue = Mirror(reflecting: sse).children.first { $0.label == "config" }?.value
+        let storedConfig = storedConfigValue.flatMap {
+            Mirror(reflecting: $0).children.first?.value as? SseConfig
+        }
+        XCTAssertNotNil(storedConfig)
+
+        let storedInterceptor = Mirror(reflecting: sse).children.first { $0.label == "requestInterceptor" }?.value
+        XCTAssertNotNil(storedInterceptor, "requestInterceptor should be stored separately on NitroSse instance")
+
+        try! sse.start()
+        XCTAssertEqual(interceptorCalls, 1)
+        sse.stop()
+    }
+
+    func testDisposeReleasesRequestInterceptorAndConfigAndIsIdempotent() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        let interceptor = { () -> Promise<Promise<Dictionary<String, String>>> in
+            return Promise<Promise<Dictionary<String, String>>>.async {
+                return Promise<Dictionary<String, String>>.async { [:] }
+            }
+        }
+
+        try! sse.setup(config: config, onEvent: { _ in }, onBeforeRequest: interceptor)
+
+        let storedInterceptorBefore = Mirror(reflecting: sse).children.first { $0.label == "requestInterceptor" }?.value
+        XCTAssertNotNil(storedInterceptorBefore)
+
+        let storedConfigBefore = Mirror(reflecting: sse).children.first { $0.label == "config" }?.value
+        XCTAssertNotNil(storedConfigBefore)
+
+        sse.dispose()
+
+        let storedInterceptorAfter = Mirror(reflecting: sse).children.first { $0.label == "requestInterceptor" }?.value
+        let unwrappedInterceptor = storedInterceptorAfter.flatMap { Mirror(reflecting: $0).children.first?.value }
+        XCTAssertNil(unwrappedInterceptor, "requestInterceptor should be nil after dispose")
+
+        let storedConfigAfter = Mirror(reflecting: sse).children.first { $0.label == "config" }?.value
+        let unwrappedConfig = storedConfigAfter.flatMap { Mirror(reflecting: $0).children.first?.value }
+        XCTAssertNil(unwrappedConfig, "config should be nil after dispose")
+
+        // Idempotency check: calling dispose() second time must not crash
+        sse.dispose()
+    }
+
+    func testSetupReplacesOrClearsRequestInterceptor() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+
+        var interceptorACalls = 0
+        let interceptorA = { () -> Promise<Promise<Dictionary<String, String>>> in
+            interceptorACalls += 1
+            return Promise<Promise<Dictionary<String, String>>>.async {
+                return Promise<Dictionary<String, String>>.async { [:] }
+            }
+        }
+
+        var interceptorBCalls = 0
+        let interceptorB = { () -> Promise<Promise<Dictionary<String, String>>> in
+            interceptorBCalls += 1
+            return Promise<Promise<Dictionary<String, String>>>.async {
+                return Promise<Dictionary<String, String>>.async { [:] }
+            }
+        }
+
+        // Setup with A
+        try! sse.setup(config: config, onEvent: { _ in }, onBeforeRequest: interceptorA)
+        try! sse.start()
+        XCTAssertEqual(interceptorACalls, 1)
+        sse.stop()
+
+        // Setup with B replaces A
+        try! sse.setup(config: config, onEvent: { _ in }, onBeforeRequest: interceptorB)
+        try! sse.start()
+        XCTAssertEqual(interceptorACalls, 1, "A should not be called again")
+        XCTAssertEqual(interceptorBCalls, 1, "B should be called")
+        sse.stop()
+
+        // Setup without interceptor clears previous interceptor
+        try! sse.setup(config: config, onEvent: { _ in })
+        try! sse.start()
+        XCTAssertEqual(interceptorACalls, 1)
+        XCTAssertEqual(interceptorBCalls, 1)
+        sse.stop()
+
+        sse.dispose()
+    }
+
+    func testRestartAndStopInlineWhenAlreadyOnDispatcher() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+
+        try! sse.setup(config: config, onEvent: { _ in })
+        try! sse.start()
+        XCTAssertTrue(sse.isConnected())
+
+        // Execute while current dispatcher queue is active: must execute inline without deadlocking or pending queue
+        dispatcher.sync {
+            sse.restart()
+            XCTAssertTrue(sse.isConnected())
+            sse.stop()
+            XCTAssertFalse(sse.isConnected())
+        }
+
+        sse.dispose()
     }
 
     func testCoordinatorLifecycleStartStop() {
@@ -106,6 +234,130 @@ class NitroSseCoordinatorTests: XCTestCase {
         XCTAssertTrue(emittedEvents.contains { $0.type == .error && $0.message?.contains("400") == true })
     }
 
+    func testCoordinatorHandlesFatalError404() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        
+        var emittedEvents: [SseEvent] = []
+        try! sse.setup(config: config) { events in
+            emittedEvents.append(contentsOf: events)
+        }
+        try! sse.start()
+        
+        let error = NSError(domain: "NSURLErrorDomain", code: 404, userInfo: nil)
+        sse.connectionDidFail(error: error, attemptVersion: sse.connectionAttemptVersion)
+        
+        sse.flush()
+        
+        XCTAssertFalse(sse.isConnected())
+        XCTAssertEqual(try! sse.getState(), .failed)
+        XCTAssertTrue(emittedEvents.contains { $0.type == .error && $0.message?.contains("404") == true })
+    }
+
+    func testCoordinatorHandlesFatalError405() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        
+        try! sse.setup(config: config) { _ in }
+        try! sse.start()
+        
+        let error = NSError(domain: "NSURLErrorDomain", code: 405, userInfo: nil)
+        sse.connectionDidFail(error: error, attemptVersion: sse.connectionAttemptVersion)
+        sse.flush()
+        
+        XCTAssertFalse(sse.isConnected())
+        XCTAssertEqual(try! sse.getState(), .failed)
+    }
+
+    func testCoordinatorHandlesFatalError410() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        
+        try! sse.setup(config: config) { _ in }
+        try! sse.start()
+        
+        let error = NSError(domain: "NSURLErrorDomain", code: 410, userInfo: nil)
+        sse.connectionDidFail(error: error, attemptVersion: sse.connectionAttemptVersion)
+        sse.flush()
+        
+        XCTAssertFalse(sse.isConnected())
+        XCTAssertEqual(try! sse.getState(), .failed)
+    }
+
+    func testCoordinatorHandlesFatalError422() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        
+        try! sse.setup(config: config) { _ in }
+        try! sse.start()
+        
+        let error = NSError(domain: "NSURLErrorDomain", code: 422, userInfo: nil)
+        sse.connectionDidFail(error: error, attemptVersion: sse.connectionAttemptVersion)
+        sse.flush()
+        
+        XCTAssertFalse(sse.isConnected())
+        XCTAssertEqual(try! sse.getState(), .failed)
+    }
+
+    func testCoordinatorHandlesTimeout408Reconnecting() {
+        let dispatcher = MockSseDispatcher()
+        dispatcher.executeImmediately = false
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        
+        try! sse.setup(config: config) { _ in }
+        dispatcher.executeAllPendingBlocks()
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+        
+        let error = NSError(domain: "NSURLErrorDomain", code: 408, userInfo: nil)
+        sse.connectionDidFail(error: error, attemptVersion: sse.connectionAttemptVersion)
+        dispatcher.executeAllPendingBlocks()
+        
+        XCTAssertEqual(try! sse.getState(), .reconnecting)
+    }
+
+    func testCoordinatorHandlesServerError500Reconnecting() {
+        let dispatcher = MockSseDispatcher()
+        dispatcher.executeImmediately = false
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        
+        try! sse.setup(config: config) { _ in }
+        dispatcher.executeAllPendingBlocks()
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+        
+        let error = NSError(domain: "NSURLErrorDomain", code: 500, userInfo: nil)
+        sse.connectionDidFail(error: error, attemptVersion: sse.connectionAttemptVersion)
+        dispatcher.executeAllPendingBlocks()
+        
+        XCTAssertEqual(try! sse.getState(), .reconnecting)
+    }
+
+    func testCoordinatorEmitsHeartbeatWithCommentPayload() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        
+        var emittedEvents: [SseEvent] = []
+        try! sse.setup(config: config) { events in
+            emittedEvents.append(contentsOf: events)
+        }
+        try! sse.start()
+        
+        sse.connectionDidReceiveComment("keepalive-comment", attemptVersion: sse.connectionAttemptVersion)
+        sse.flush()
+        
+        let heartbeat = emittedEvents.first(where: { $0.type == .heartbeat })
+        XCTAssertNotNil(heartbeat)
+        XCTAssertEqual(heartbeat?.message, "keepalive-comment")
+    }
+
     func testCoordinatorHandlesNoContent204() {
         let dispatcher = MockSseDispatcher()
         let sse = NitroSse(dispatcher: dispatcher)
@@ -162,7 +414,7 @@ class NitroSseCoordinatorTests: XCTestCase {
         dispatcher.executeAllPendingBlocks()
         
         // Construct standard HTTP 429 response containing Retry-After headers.
-        let url = URL(string: "http://localhost:9999/dummy")!
+        let url = URL(string: TEST_URL)!
         let response = HTTPURLResponse(url: url, statusCode: 429, httpVersion: nil, headerFields: ["Retry-After": "5", "retry-after": "5"])!
         let error = NSError(domain: "NSURLErrorDomain", code: 429, userInfo: ["response": response])
         
@@ -241,17 +493,17 @@ class NitroSseCoordinatorTests: XCTestCase {
         dispatcher.executeImmediately = false
         
         let sse = NitroSse(dispatcher: dispatcher)
-        var config = createMockConfig()
+        let config = createMockConfig()
         
-        config = config.copyWith(onBeforeRequest: {
+        let interceptor = { () -> Promise<Promise<Dictionary<String, String>>> in
             return Promise<Promise<Dictionary<String, String>>>.async {
                 return Promise<Dictionary<String, String>>.async {
                     return ["Authorization": "Bearer token"]
                 }
             }
-        })
+        }
         
-        try! sse.setup(config: config) { _ in }
+        try! sse.setup(config: config, onEvent: { _ in }, onBeforeRequest: interceptor)
         dispatcher.executeAllPendingBlocks()
         
         try! sse.start()
@@ -265,6 +517,41 @@ class NitroSseCoordinatorTests: XCTestCase {
         XCTAssertNotNil(retryBlock, "Should have scheduled a reconnect for 401 because interceptor is provided")
         
         sse.stop()
+    }
+
+    func testOnBeforeRequestHeadersDoNotMutateBaseConfig() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let initialHeaders = ["X-Base": "base-val"]
+        let config = createMockConfig().copyWith(headers: initialHeaders)
+        
+        let interceptor = { () -> Promise<Promise<Dictionary<String, String>>> in
+            return Promise<Promise<Dictionary<String, String>>>.async {
+                return Promise<Dictionary<String, String>>.async {
+                    return ["Authorization": "Bearer dynamic-token", "X-Temp": "temp-val"]
+                }
+            }
+        }
+        
+        try! sse.setup(config: config, onEvent: { _ in }, onBeforeRequest: interceptor)
+        dispatcher.executeAllPendingBlocks()
+        
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+        
+        let storedConfigValue = Mirror(reflecting: sse).children.first { $0.label == "config" }?.value
+        let storedConfig = storedConfigValue.flatMap {
+            Mirror(reflecting: $0).children.first?.value as? SseConfig
+        }
+        XCTAssertNotNil(storedConfig)
+        
+        // Base config headers should remain strictly untouched
+        XCTAssertEqual(storedConfig?.headers, ["X-Base": "base-val"])
+        XCTAssertNil(storedConfig?.headers?["Authorization"])
+        XCTAssertNil(storedConfig?.headers?["X-Temp"])
+        
+        sse.stop()
+        dispatcher.executeAllPendingBlocks()
     }
 
     func testCoordinatorStateTransitions() {
@@ -386,5 +673,26 @@ class NitroSseCoordinatorTests: XCTestCase {
         
         XCTAssertFalse(sse.isConnected())
         XCTAssertEqual(try! sse.getState(), .failed)
+    }
+
+    func testUpdateHeadersMergesWithExistingHeaders() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig().copyWith(headers: ["X-Initial": "1", "Authorization": "old"])
+        
+        try! sse.setup(config: config) { _ in }
+        dispatcher.executeAllPendingBlocks()
+        
+        try! sse.updateHeaders(headers: ["Authorization": "new", "Tenant": "tenant-1"])
+        dispatcher.executeAllPendingBlocks()
+        
+        let mirror = Mirror(reflecting: sse)
+        if let configProp = mirror.children.first(where: { $0.label == "config" })?.value as? SseConfig {
+            XCTAssertEqual(configProp.headers?["X-Initial"], "1")
+            XCTAssertEqual(configProp.headers?["Authorization"], "new")
+            XCTAssertEqual(configProp.headers?["Tenant"], "tenant-1")
+        } else {
+            XCTFail("Could not access config property on NitroSse")
+        }
     }
 }
