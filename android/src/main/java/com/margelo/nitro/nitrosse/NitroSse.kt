@@ -10,6 +10,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.sse.EventSource
 import com.margelo.nitro.NitroModules
+import com.margelo.nitro.core.Promise
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -53,8 +54,10 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     private var lastErrorTime: Double? = null
     private var lastErrorCode: String? = null
     private var wasRunningBeforeNetworkLoss = false
-    private var lastNetworkCapabilities: NetworkCapabilities? = null
     private var interceptorTimeoutRunnable: Runnable? = null
+    private val isDisposed = AtomicBoolean(false)
+    /// Dynamic request interceptor decoupled from SseConfig (v3.0)
+    private var requestInterceptor: (() -> Promise<Promise<Map<String, String>>>)? = null
 
     private lateinit var eventBuffer: SseEventBuffer
     private val reconnectStrategy = SseReconnectStrategy()
@@ -68,9 +71,14 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         private const val DEFAULT_MAX_AUTH_RETRIES = 3
     }
 
-    override fun setup(config: SseConfig, onEvent: (events: Array<SseEvent>) -> Unit) {
+    override fun setup(
+        config: SseConfig,
+        onEvent: (events: Array<SseEvent>) -> Unit,
+        onBeforeRequest: (() -> Promise<Promise<Map<String, String>>>)?
+    ) {
         synchronized(this) {
             this.config = config
+            this.requestInterceptor = onBeforeRequest
             
             if (sseDispatcher == null) {
                 sseDispatcherThread = android.os.HandlerThread("NitroSseThread").apply { start() }
@@ -79,6 +87,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
 
             if (!::eventBuffer.isInitialized) {
                 eventBuffer = SseEventBuffer(onEvent, sseDispatcher)
+                eventBuffer.onFlushError = { e -> handleRuntimeOrFlushError(e) }
             } else {
                 eventBuffer.setCallback(onEvent)
             }
@@ -99,7 +108,8 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                     // Enables transparent socket-level retry on route failures (multiple IP fallback, transient resets)
                     // before bubbling up to full SSE stream reconnect.
                     .retryOnConnectionFailure(true)
-                    .addNetworkInterceptor(HeartbeatNetworkInterceptor { heartbeatRid, comment ->
+                    .addNetworkInterceptor(InspectorNetworkInterceptor())
+                    .addInterceptor(HeartbeatInterceptor { heartbeatRid, comment ->
                         sseDispatcher?.post {
                             // Guard keep-alive signals by active request ID to ignore residual bytes from closed/closing sockets
                             val currentRid = synchronized(this@NitroSse) { requestId }
@@ -129,32 +139,38 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 )
                 lifecycleManager?.startObserving()
             }
+            if (config.monitorNetwork != false) {
+                sseDispatcher?.post {
+                    startNetworkMonitoring()
+                }
+            } else {
+                sseDispatcher?.post {
+                    networkMonitor?.stop()
+                    networkMonitor = null
+                }
+            }
         }
+    }
 
-        if (config.monitorNetwork != false) {
-            sseDispatcher?.post {
-                startNetworkMonitoring()
-            }
-        } else {
-            sseDispatcher?.post {
-                networkMonitor?.stop()
-                networkMonitor = null
-            }
-        }
+    /**
+     * Convenience overload for setup without onBeforeRequest.
+     */
+    fun setup(config: SseConfig, onEvent: (events: Array<SseEvent>) -> Unit) {
+        setup(config, onEvent, null)
     }
 
     private fun startNetworkMonitoring() {
         val context = NitroModules.applicationContext ?: return
         if (networkMonitor == null) {
-            networkMonitor = SseNetworkMonitor(context, sseDispatcher) { isAvailable, capabilities ->
-                handleNetworkChange(isAvailable, capabilities)
+            networkMonitor = SseNetworkMonitor(context, sseDispatcher) { isAvailable, interfaceChanged, capabilities ->
+                handleNetworkChange(isAvailable, interfaceChanged, capabilities)
             }
         }
         networkMonitor?.start()
     }
 
-    private fun handleNetworkChange(isAvailable: Boolean, capabilities: NetworkCapabilities?) {
-        Log.d(TAG, "Network change: available=$isAvailable")
+    private fun handleNetworkChange(isAvailable: Boolean, interfaceChanged: Boolean, capabilities: NetworkCapabilities?) {
+        Log.d(TAG, "Network change: available=$isAvailable, interfaceChanged=$interfaceChanged")
         if (isAvailable && capabilities != null) {
             if (wasRunningBeforeNetworkLoss) {
                 Log.d(TAG, "Network restored. Resuming stream.")
@@ -164,19 +180,10 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 } else {
                     start()
                 }
-            } else if (isRunning.get() && lastNetworkCapabilities != null) {
-                val isWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                val isCellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
-                
-                val lastWifi = lastNetworkCapabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ?: false
-                val lastCellular = lastNetworkCapabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ?: false
-                
-                if ((isWifi && !lastWifi) || (isCellular && !lastCellular)) {
-                    Log.d(TAG, "Network interface changed. Restarting stream.")
-                    restart()
-                }
+            } else if (isRunning.get() && interfaceChanged) {
+                Log.d(TAG, "Network interface changed. Restarting stream.")
+                restart()
             }
-            lastNetworkCapabilities = capabilities
         } else if (!isAvailable) {
             if (isRunning.get()) {
                 Log.d(TAG, "Network lost. Hibernating.")
@@ -186,7 +193,6 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 connectionAttemptVersion.incrementAndGet()
                 performInternalCleanup()
             }
-            lastNetworkCapabilities = null
         }
     }
 
@@ -293,7 +299,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         
         val currentConfig = synchronized(this) { config } ?: return
         // Asynchronously await JS onBeforeRequest interceptor before creating EventSource.
-        val interceptor = currentConfig.onBeforeRequest
+        val interceptor = synchronized(this) { requestInterceptor }
         
         if (interceptor != null) {
             val interceptorCompleted = AtomicBoolean(false)
@@ -345,6 +351,15 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         }
     }
 
+    private fun handleRuntimeOrFlushError(t: Throwable?) {
+        val isDispatcherDestroyedMsg = t?.message?.contains("Dispatcher has already been destroyed", ignoreCase = true) == true
+        if (isDispatcherDestroyedMsg) {
+            Log.w(TAG, "JS Dispatcher destroyed during event flush. Disposing NitroSse instance.")
+            this.isDispatcherDestroyed = true
+            dispose()
+        }
+    }
+
     private fun handleInterceptorError(t: Throwable?, version: Int) {
         interceptorTimeoutRunnable?.let { sseDispatcher?.removeCallbacks(it) }
         interceptorTimeoutRunnable = null
@@ -353,9 +368,9 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             
             val isDispatcherDestroyedMsg = t?.message?.contains("Dispatcher has already been destroyed", ignoreCase = true) == true
             if (isDispatcherDestroyedMsg) {
-                Log.w(TAG, "JS Dispatcher destroyed. Stopping SSE stream.")
+                Log.w(TAG, "JS Dispatcher destroyed. Disposing NitroSse instance.")
                 this@NitroSse.isDispatcherDestroyed = true
-                stopInternal()
+                dispose()
                 return@post
             }
 
@@ -402,11 +417,6 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             currentLastId?.let { 
                 if (it.isNotEmpty()) requestBuilder.header("Last-Event-ID", it) 
             }
-
-            // Explicitly set identity encoding after custom headers to prevent OkHttp from requesting gzip.
-            // If gzipped, HeartbeatNetworkInterceptor intercepts raw compressed bytes before decompression,
-            // corrupting byte-level comment scanning for keep-alive events (':').
-            requestBuilder.header("Accept-Encoding", "identity")
 
             if (currentConfig.method == HttpMethod.POST) {
                 val body = currentConfig.body?.toRequestBody("application/json".toMediaType()) ?: "".toRequestBody()
@@ -482,8 +492,8 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             val maxRetries = synchronized(this@NitroSse) { config?.maxAuthRetries?.toInt() ?: DEFAULT_MAX_AUTH_RETRIES }
             // Handle 401/403 with async token refresh up to maxAuthRetries.
             if (statusCode == 401 || statusCode == 403) {
-                val currentConfig = synchronized(this@NitroSse) { config }
-                if (currentConfig?.onBeforeRequest == null) {
+                val hasInterceptor = synchronized(this@NitroSse) { requestInterceptor != null }
+                if (!hasInterceptor) {
                     failAndStop("Auth Error ($statusCode) - No interceptor provided. Stopping.", statusCode.toDouble())
                     return@post
                 }
@@ -592,14 +602,19 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
 
     override fun restart() {
         synchronized(this) { config } ?: return
-        stopInternal()
-        isRunning.set(true)
-        val version = connectionAttemptVersion.incrementAndGet()
-        updateState(SseState.RECONNECTING)
-        sseDispatcher?.post {
+        val task = {
+            stopInternal()
+            isRunning.set(true)
+            val version = connectionAttemptVersion.incrementAndGet()
+            updateState(SseState.RECONNECTING)
             reconnectStrategy.reset()
             requestId = null
             performConnection(version)
+        }
+        if (sseDispatcher?.isCurrentDispatcher() == true) {
+            task()
+        } else {
+            sseDispatcher?.post(task)
         }
     }
 
@@ -608,15 +623,20 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     }
 
     override fun stop() {
-        isRunning.set(false)
-        wasRunningBeforeNetworkLoss = false
-        wasRunningBeforePaused = false
-        if (currentState.get() != SseState.FAILED) {
-            updateState(SseState.CLOSED)
-        }
-        connectionAttemptVersion.incrementAndGet() 
-        sseDispatcher?.post {
+        val task = {
+            isRunning.set(false)
+            wasRunningBeforeNetworkLoss = false
+            wasRunningBeforePaused = false
+            if (currentState.get() != SseState.FAILED) {
+                updateState(SseState.CLOSED)
+            }
+            connectionAttemptVersion.incrementAndGet() 
             performInternalCleanup()
+        }
+        if (sseDispatcher?.isCurrentDispatcher() == true) {
+            task()
+        } else {
+            sseDispatcher?.post(task)
         }
     }
 
@@ -647,10 +667,21 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
      * Synchronously cleans up active network sockets, timers, and lifecycle observers.
      */
     override fun dispose() {
+        if (!isDisposed.compareAndSet(false, true)) {
+            return
+        }
         Log.d(TAG, "Disposing NitroSse instance and cleaning up resources...")
         
         isRunning.set(false)
         connectionAttemptVersion.incrementAndGet()
+        
+        synchronized(this) {
+            requestInterceptor = null
+            config = null
+        }
+        
+        interceptorTimeoutRunnable?.let { sseDispatcher?.removeCallbacks(it) }
+        interceptorTimeoutRunnable = null
         
         if (::eventBuffer.isInitialized) {
             eventBuffer.clearCallback()

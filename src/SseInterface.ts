@@ -122,16 +122,22 @@ export interface SseConfig {
    */
   monitorNetwork?: boolean;
   /**
+   * Configuration for mock streaming data.
+   * Used for local testing and debugging.
+   */
+  mock?: SseMockConfig;
+}
+
+/**
+ * Public client setup options, combining connection config with dynamic request interceptor.
+ */
+export interface SseClientOptions extends SseConfig {
+  /**
    * Async interceptor called before every connection attempt (including auto-reconnects).
    * Use this to refresh tokens or calculate dynamic headers.
    * Note: This is protected by a native timeout to prevent the app from hanging.
    */
   onBeforeRequest?: () => Promise<Record<string, string>>;
-  /**
-   * Configuration for mock streaming data.
-   * Used for local testing and debugging.
-   */
-  mock?: SseMockConfig;
 }
 
 export type SseMockMode = 'replace' | 'inject';
@@ -240,12 +246,15 @@ export type SseListener<TData = AnyMap> = (event: SseEvent<TData>) => void;
  * Public interface for the NitroSse client, supporting typed event listeners.
  */
 export interface SseClient {
+  /** Whether the client instance has been disposed. */
+  readonly isDisposed: boolean;
+
   /**
    * Configure SSE and setup event callback.
-   * @param config The SSE configuration.
+   * @param config The SSE configuration and client options.
    * @param onEvent Optional legacy batch callback for all events.
    */
-  setup(config: SseConfig, onEvent?: (events: SseEvent[]) => void): void;
+  setup(config: SseClientOptions, onEvent?: (events: SseEvent[]) => void): void;
 
   /**
    * Register a listener for a specific event type ('message', 'open', etc.)

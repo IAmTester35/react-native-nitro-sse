@@ -32,7 +32,10 @@ class NitroSse: HybridNitroSseSpec {
     
     private var eventSource: EventSource?
     private var config: SseConfig?
+    /// Dynamic request interceptor decoupled from SseConfig (v3.0) to prevent JSI closure re-wrapping and retain leaks.
+    private var requestInterceptor: (() -> Promise<Promise<Dictionary<String, String>>>)?
     private var isRunning: Bool = false
+    private var isDisposed: Bool = false
     private var isDispatcherDestroyed: Bool = false
     internal var connectionAttemptVersion: Int = 0
     private var requestId: String? = nil
@@ -67,19 +70,26 @@ class NitroSse: HybridNitroSseSpec {
     /// Synchronously cleans up all active network sockets, timers, and lifecycle observers.
     func dispose() {
         let cleanup = {
+            guard !self.isDisposed else { return }
+            self.isDisposed = true
             self.stopInternal(emitClosed: false)
+            self.requestInterceptor = nil
+            self.config = nil
+            self.currentInterceptorToken?.isCancelled = true
+            self.currentInterceptorToken = nil
             self.eventBuffer.clearCallback()
             self.eventBuffer.clear()
             self.networkMonitor?.stop()
             self.networkMonitor = nil
+            // Serialized on dispatcher to prevent race conditions with background execution
+            self.lifecycleManager?.stopObserving()
+            self.lifecycleManager = nil
         }
         if dispatcher.isCurrentDispatcher() {
             cleanup()
         } else {
             dispatcher.sync(cleanup)
         }
-        lifecycleManager?.stopObserving()
-        lifecycleManager = nil
     }
 
     deinit {
@@ -90,9 +100,16 @@ class NitroSse: HybridNitroSseSpec {
     // MARK: - HybridNitroSseSpec
 
     /// Configures the SSE client parameters, event buffer, backoff strategy, and lifecycle observers.
-    func setup(config: SseConfig, onEvent: @escaping ((_ events: [SseEvent]) -> Void)) throws {
+    /// In v3.0, `onBeforeRequest` is decoupled from `SseConfig` to keep `SseConfig` as a pure data struct,
+    /// preventing closure re-wrapping and retain leaks across `copyWith` calls.
+    func setup(
+        config: SseConfig,
+        onEvent: @escaping ((_ events: [SseEvent]) -> Void),
+        onBeforeRequest: (() -> Promise<Promise<Dictionary<String, String>>>)? = nil
+    ) throws {
         dispatcher.async {
             self.config = config
+            self.requestInterceptor = onBeforeRequest
             
             self.eventBuffer.configure(
                 batchingIntervalMs: config.batchingIntervalMs ?? 0,
@@ -215,9 +232,14 @@ class NitroSse: HybridNitroSseSpec {
 
     /// Stops active network streaming and invalidates pending reconnection timers by incrementing attempt version.
     func stop() {
-        dispatcher.async {
+        let task = {
             self.connectionAttemptVersion += 1
             self.stopInternal()
+        }
+        if dispatcher.isCurrentDispatcher() {
+            task()
+        } else {
+            dispatcher.async(task)
         }
     }
 
@@ -230,7 +252,7 @@ class NitroSse: HybridNitroSseSpec {
 
     /// Teardown existing connection and initiate a new request attempt.
     func restart() {
-        dispatcher.async {
+        let task = {
             guard self.config != nil else { return }
             self.stopInternal(emitClosed: false)
             self.isRunning = true
@@ -238,6 +260,11 @@ class NitroSse: HybridNitroSseSpec {
             self.connectionAttemptVersion += 1
             self.updateState(.reconnecting)
             self.establishConnection(attemptVersion: self.connectionAttemptVersion)
+        }
+        if dispatcher.isCurrentDispatcher() {
+            task()
+        } else {
+            dispatcher.async(task)
         }
     }
 
@@ -370,7 +397,7 @@ class NitroSse: HybridNitroSseSpec {
         dispatcher.assertOnQueue()
         guard isRunning, let config = config, attemptVersion == self.connectionAttemptVersion else { return }
 
-        if let interceptor = config.onBeforeRequest {
+        if let interceptor = self.requestInterceptor {
             self.currentInterceptorToken?.isCancelled = true
             let token = InterceptorCancellationToken()
             self.currentInterceptorToken = token
@@ -437,9 +464,9 @@ class NitroSse: HybridNitroSseSpec {
         // react-native-nitro-modules throws a generic std::runtime_error from C++ when the Dispatcher is destroyed.
         // Message inspection is required as no specialized exception type is surfaced to Swift.
         if desc.contains("Dispatcher has already been destroyed") {
-            print("[NitroSse] JS Dispatcher destroyed. Stopping SSE stream.")
+            print("[NitroSse] JS Dispatcher destroyed. Disposing NitroSse instance.")
             self.isDispatcherDestroyed = true
-            self.stopInternal()
+            self.dispose()
             return
         }
         self.eventBuffer.push(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Interceptor Error: \(error.localizedDescription)", statusCode: -1, retry: nil, state: nil))
@@ -633,7 +660,7 @@ extension NitroSse: SseConnectionDelegate {
         // HTTP 401/403 Auth errors trigger token refresh via onBeforeRequest interceptor up to maxAuthRetries.
         let limit = Int(self.config?.maxAuthRetries ?? Double(Self.defaultMaxAuthRetries))
         if statusCode == 401 || statusCode == 403 {
-            if self.config?.onBeforeRequest == nil {
+            if self.requestInterceptor == nil {
                 self.failAndStop(message: "Auth Error (\(statusCode)) - No interceptor provided. Stopping.", statusCode: Double(statusCode))
                 return
             }

@@ -23,9 +23,135 @@ class NitroSseCoordinatorTests: XCTestCase {
             maxAuthRetries: 3,
             autoParseJSON: false,
             monitorNetwork: false,
-            onBeforeRequest: nil,
             mock: nil
         )
+    }
+
+    func testRequestInterceptorIsNotEmbeddedInCopiedConfig() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        var interceptorCalls = 0
+        let config = createMockConfig()
+        let interceptor = { () -> Promise<Promise<Dictionary<String, String>>> in
+            interceptorCalls += 1
+            return Promise<Promise<Dictionary<String, String>>>.async {
+                return Promise<Dictionary<String, String>>.async { [:] }
+            }
+        }
+
+        try! sse.setup(config: config, onEvent: { _ in }, onBeforeRequest: interceptor)
+        for index in 0..<10 {
+            try! sse.updateHeaders(headers: ["X-Test": "\(index)"])
+        }
+
+        let storedConfigValue = Mirror(reflecting: sse).children.first { $0.label == "config" }?.value
+        let storedConfig = storedConfigValue.flatMap {
+            Mirror(reflecting: $0).children.first?.value as? SseConfig
+        }
+        XCTAssertNotNil(storedConfig)
+
+        let storedInterceptor = Mirror(reflecting: sse).children.first { $0.label == "requestInterceptor" }?.value
+        XCTAssertNotNil(storedInterceptor, "requestInterceptor should be stored separately on NitroSse instance")
+
+        try! sse.start()
+        XCTAssertEqual(interceptorCalls, 1)
+        sse.stop()
+    }
+
+    func testDisposeReleasesRequestInterceptorAndConfigAndIsIdempotent() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+        let interceptor = { () -> Promise<Promise<Dictionary<String, String>>> in
+            return Promise<Promise<Dictionary<String, String>>>.async {
+                return Promise<Dictionary<String, String>>.async { [:] }
+            }
+        }
+
+        try! sse.setup(config: config, onEvent: { _ in }, onBeforeRequest: interceptor)
+
+        let storedInterceptorBefore = Mirror(reflecting: sse).children.first { $0.label == "requestInterceptor" }?.value
+        XCTAssertNotNil(storedInterceptorBefore)
+
+        let storedConfigBefore = Mirror(reflecting: sse).children.first { $0.label == "config" }?.value
+        XCTAssertNotNil(storedConfigBefore)
+
+        sse.dispose()
+
+        let storedInterceptorAfter = Mirror(reflecting: sse).children.first { $0.label == "requestInterceptor" }?.value
+        let unwrappedInterceptor = storedInterceptorAfter.flatMap { Mirror(reflecting: $0).children.first?.value }
+        XCTAssertNil(unwrappedInterceptor, "requestInterceptor should be nil after dispose")
+
+        let storedConfigAfter = Mirror(reflecting: sse).children.first { $0.label == "config" }?.value
+        let unwrappedConfig = storedConfigAfter.flatMap { Mirror(reflecting: $0).children.first?.value }
+        XCTAssertNil(unwrappedConfig, "config should be nil after dispose")
+
+        // Idempotency check: calling dispose() second time must not crash
+        sse.dispose()
+    }
+
+    func testSetupReplacesOrClearsRequestInterceptor() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+
+        var interceptorACalls = 0
+        let interceptorA = { () -> Promise<Promise<Dictionary<String, String>>> in
+            interceptorACalls += 1
+            return Promise<Promise<Dictionary<String, String>>>.async {
+                return Promise<Dictionary<String, String>>.async { [:] }
+            }
+        }
+
+        var interceptorBCalls = 0
+        let interceptorB = { () -> Promise<Promise<Dictionary<String, String>>> in
+            interceptorBCalls += 1
+            return Promise<Promise<Dictionary<String, String>>>.async {
+                return Promise<Dictionary<String, String>>.async { [:] }
+            }
+        }
+
+        // Setup with A
+        try! sse.setup(config: config, onEvent: { _ in }, onBeforeRequest: interceptorA)
+        try! sse.start()
+        XCTAssertEqual(interceptorACalls, 1)
+        sse.stop()
+
+        // Setup with B replaces A
+        try! sse.setup(config: config, onEvent: { _ in }, onBeforeRequest: interceptorB)
+        try! sse.start()
+        XCTAssertEqual(interceptorACalls, 1, "A should not be called again")
+        XCTAssertEqual(interceptorBCalls, 1, "B should be called")
+        sse.stop()
+
+        // Setup without interceptor clears previous interceptor
+        try! sse.setup(config: config, onEvent: { _ in })
+        try! sse.start()
+        XCTAssertEqual(interceptorACalls, 1)
+        XCTAssertEqual(interceptorBCalls, 1)
+        sse.stop()
+
+        sse.dispose()
+    }
+
+    func testRestartAndStopInlineWhenAlreadyOnDispatcher() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig()
+
+        try! sse.setup(config: config, onEvent: { _ in })
+        try! sse.start()
+        XCTAssertTrue(sse.isConnected())
+
+        // Execute while current dispatcher queue is active: must execute inline without deadlocking or pending queue
+        dispatcher.sync {
+            sse.restart()
+            XCTAssertTrue(sse.isConnected())
+            sse.stop()
+            XCTAssertFalse(sse.isConnected())
+        }
+
+        sse.dispose()
     }
 
     func testCoordinatorLifecycleStartStop() {
@@ -367,17 +493,17 @@ class NitroSseCoordinatorTests: XCTestCase {
         dispatcher.executeImmediately = false
         
         let sse = NitroSse(dispatcher: dispatcher)
-        var config = createMockConfig()
+        let config = createMockConfig()
         
-        config = config.copyWith(onBeforeRequest: {
+        let interceptor = { () -> Promise<Promise<Dictionary<String, String>>> in
             return Promise<Promise<Dictionary<String, String>>>.async {
                 return Promise<Dictionary<String, String>>.async {
                     return ["Authorization": "Bearer token"]
                 }
             }
-        })
+        }
         
-        try! sse.setup(config: config) { _ in }
+        try! sse.setup(config: config, onEvent: { _ in }, onBeforeRequest: interceptor)
         dispatcher.executeAllPendingBlocks()
         
         try! sse.start()

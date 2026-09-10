@@ -10,7 +10,6 @@ import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import okio.Buffer
 import okio.ForwardingSource
-import okio.GzipSource
 import okio.buffer
 import java.util.concurrent.atomic.AtomicLong
 
@@ -52,10 +51,30 @@ class SseConnectionHandler(private val delegate: SseConnectionDelegate) {
 }
 
 /**
- * Network interceptor for byte accounting and SSE heartbeat/comment detection.
- * Sniffs raw stream before EventSourceReader discards SSE comments (`:`).
+ * Network interceptor for recording raw wire response metadata for React Native DevTools.
+ * Runs at the network layer to capture true HTTP status, raw wire headers (e.g. Content-Encoding: gzip), and timing.
  */
-internal class HeartbeatNetworkInterceptor(
+internal class InspectorNetworkInterceptor : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val rid = request.tag(String::class.java)
+        val response = chain.proceed(request)
+        rid?.let {
+            NetworkInspector.reportResponseStart(it, request, response)
+        }
+        return response
+    }
+}
+
+/**
+ * Application interceptor for byte accounting and SSE heartbeat/comment detection.
+ * Inspects decompressed UTF-8 stream before EventSourceReader discards SSE comments (`:`).
+ *
+ * Placed as an OkHttp Application Interceptor (above BridgeInterceptor), allowing OkHttp
+ * to handle transparent gzip/deflate decompression naturally without requiring manual GzipSource
+ * wrapping or disabling compression with 'Accept-Encoding: identity'.
+ */
+internal class HeartbeatInterceptor(
     private val totalBytesReceived: AtomicLong? = null,
     private val onHeartbeat: (requestId: String?, comment: String) -> Unit
 ) : Interceptor {
@@ -64,28 +83,16 @@ internal class HeartbeatNetworkInterceptor(
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         val rid = request.tag(String::class.java)
-
         val response = chain.proceed(request)
-
-        rid?.let {
-            NetworkInspector.reportResponseStart(it, request, response)
-        }
 
         val responseBody = response.body
         if (responseBody != null) {
-            val isGzip = "gzip".equals(response.header("Content-Encoding"), ignoreCase = true)
-            val rawSource = if (isGzip) {
-                GzipSource(responseBody.source())
-            } else {
-                responseBody.source()
-            }
-
             val countingBody = object : ResponseBody() {
                 override fun contentType() = responseBody.contentType()
-                override fun contentLength() = if (isGzip) -1L else responseBody.contentLength()
+                override fun contentLength() = responseBody.contentLength()
 
                 private val bufferedSource by lazy {
-                    (object : ForwardingSource(rawSource) {
+                    (object : ForwardingSource(responseBody.source()) {
                         private var isAtStartOfLine = true
                         private var isReadingComment = false
                         private val commentBuffer = java.io.ByteArrayOutputStream()
@@ -128,12 +135,14 @@ internal class HeartbeatNetworkInterceptor(
 
                 override fun source() = bufferedSource
             }
-            val responseBuilder = response.newBuilder().body(countingBody)
-            if (isGzip) {
-                responseBuilder.removeHeader("Content-Encoding").removeHeader("Content-Length")
-            }
-            return responseBuilder.build()
+            return response.newBuilder().body(countingBody).build()
         }
         return response
     }
 }
+
+@Deprecated(
+    message = "Use HeartbeatInterceptor instead. This interceptor is an OkHttp application interceptor, not a network interceptor.",
+    replaceWith = ReplaceWith("HeartbeatInterceptor")
+)
+internal typealias HeartbeatNetworkInterceptor = HeartbeatInterceptor

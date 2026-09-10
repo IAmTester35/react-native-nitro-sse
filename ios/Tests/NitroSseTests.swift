@@ -369,7 +369,6 @@ class NitroSseTests: XCTestCase {
             maxAuthRetries: 3,
             autoParseJSON: true,
             monitorNetwork: true,
-            onBeforeRequest: nil,
             mock: nil
         )
         
@@ -420,7 +419,6 @@ class NitroSseTests: XCTestCase {
             maxAuthRetries: 3,
             autoParseJSON: true,
             monitorNetwork: true,
-            onBeforeRequest: nil,
             mock: nil
         )
         
@@ -460,7 +458,6 @@ class NitroSseTests: XCTestCase {
             maxAuthRetries: 3,
             autoParseJSON: false,
             monitorNetwork: false,
-            onBeforeRequest: nil,
             mock: nil
         )
         let delegate = MockSseConnectionDelegate()
@@ -512,7 +509,6 @@ class NitroSseTests: XCTestCase {
             maxAuthRetries: 3,
             autoParseJSON: false,
             monitorNetwork: false,
-            onBeforeRequest: nil,
             mock: nil
         )
         

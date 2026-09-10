@@ -55,11 +55,11 @@ class HeartbeatNetworkInterceptorTest {
                 .setBody(sseStream)
         )
 
-        val interceptor = HeartbeatNetworkInterceptor(totalBytesReceived) { rid, comment ->
+        val interceptor = HeartbeatInterceptor(totalBytesReceived) { rid, comment ->
             heartbeats.add(rid to comment)
         }
         val client = OkHttpClient.Builder()
-            .addNetworkInterceptor(interceptor)
+            .addInterceptor(interceptor)
             .build()
 
         val request = Request.Builder()
@@ -101,11 +101,11 @@ class HeartbeatNetworkInterceptorTest {
                 .setBody(compressedBuffer)
         )
 
-        val interceptor = HeartbeatNetworkInterceptor(totalBytesReceived) { rid, comment ->
+        val interceptor = HeartbeatInterceptor(totalBytesReceived) { rid, comment ->
             heartbeats.add(rid to comment)
         }
         val client = OkHttpClient.Builder()
-            .addNetworkInterceptor(interceptor)
+            .addInterceptor(interceptor)
             .build()
 
         val request = Request.Builder()
@@ -114,7 +114,7 @@ class HeartbeatNetworkInterceptorTest {
 
         val response = client.newCall(request).execute()
 
-        // Content-Encoding header should have been stripped by interceptor to reflect decompressed body
+        // Content-Encoding header is stripped by OkHttp's BridgeInterceptor during transparent decompression
         assertNull(response.header("Content-Encoding"))
 
         val bodyContent = response.body?.string()
@@ -133,11 +133,11 @@ class HeartbeatNetworkInterceptorTest {
                 .setBody(dataOnly)
         )
 
-        val interceptor = HeartbeatNetworkInterceptor(totalBytesReceived) { rid, comment ->
+        val interceptor = HeartbeatInterceptor(totalBytesReceived) { rid, comment ->
             heartbeats.add(rid to comment)
         }
         val client = OkHttpClient.Builder()
-            .addNetworkInterceptor(interceptor)
+            .addInterceptor(interceptor)
             .build()
 
         val request = Request.Builder().url(server.url("/events")).build()

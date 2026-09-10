@@ -265,10 +265,10 @@ describe('useNitroSse Hook Tests', () => {
     flushEffects();
 
     const setupCall = mockNative.setup.mock.calls[0];
-    const passedConfig = setupCall[0];
+    const passedInterceptor = setupCall[2];
 
-    expect(typeof passedConfig.onBeforeRequest).toBe('function');
-    const headers = await passedConfig.onBeforeRequest();
+    expect(typeof passedInterceptor).toBe('function');
+    const headers = await passedInterceptor();
     expect(onBeforeRequest).toHaveBeenCalledTimes(1);
     expect(headers).toEqual({ Authorization: 'Bearer token' });
   });
@@ -281,8 +281,8 @@ describe('useNitroSse Hook Tests', () => {
     flushEffects();
 
     expect(mockNative.setup).toHaveBeenCalledTimes(1);
-    const initialConfig = mockNative.setup.mock.calls[0][0];
-    expect(initialConfig.onBeforeRequest).toBeUndefined();
+    const initialInterceptor = mockNative.setup.mock.calls[0][2];
+    expect(initialInterceptor).toBeUndefined();
 
     // Re-render when auth token is available and interceptor is provided
     const onBeforeRequest = jest
@@ -296,9 +296,9 @@ describe('useNitroSse Hook Tests', () => {
     flushEffects();
 
     expect(mockNative.setup).toHaveBeenCalledTimes(2);
-    const updatedConfig = mockNative.setup.mock.calls[1][0];
-    expect(typeof updatedConfig.onBeforeRequest).toBe('function');
-    const headers = await updatedConfig.onBeforeRequest();
+    const updatedInterceptor = mockNative.setup.mock.calls[1][2];
+    expect(typeof updatedInterceptor).toBe('function');
+    const headers = await updatedInterceptor();
     expect(headers).toEqual({ Authorization: 'Bearer auth-token' });
   });
 
@@ -541,10 +541,10 @@ describe('useNitroSse Hook Tests', () => {
     flushEffects();
 
     const setupCall = mockNative.setup.mock.calls[0];
-    const passedConfig = setupCall[0];
-    expect(typeof passedConfig.onBeforeRequest).toBe('function');
+    const passedInterceptor = setupCall[2];
+    expect(typeof passedInterceptor).toBe('function');
 
-    const headers = await passedConfig.onBeforeRequest();
+    const headers = await passedInterceptor();
     expect(headers).toEqual({});
   });
 
@@ -1143,8 +1143,7 @@ describe('useNitroSse Hook Tests', () => {
     flushEffects();
 
     expect(mockNative.setup).toHaveBeenCalledTimes(1);
-    const registeredInterceptor =
-      mockNative.setup.mock.calls[0][0].onBeforeRequest;
+    const registeredInterceptor = mockNative.setup.mock.calls[0][2];
     expect(typeof registeredInterceptor).toBe('function');
 
     // Re-render with new interceptor function (hasBeforeRequest is true -> no re-setup)
@@ -1331,6 +1330,33 @@ describe('useNitroSse Hook Tests', () => {
         'Authorization': 'Bearer token-v2',
         'X-App-Version': '1.0',
       });
+    });
+
+    it('should recreate native client and remove stale headers when headers becomes undefined', () => {
+      useHookHarness({
+        url: TEST_URL,
+        headers: { Authorization: 'Bearer token-v1' },
+      });
+      flushEffects();
+
+      expect(mockNative.setup).toHaveBeenCalledTimes(1);
+      expect(mockNative.dispose).not.toHaveBeenCalled();
+
+      // Update headers to undefined
+      useHookHarness({
+        url: TEST_URL,
+        headers: undefined,
+      });
+      flushEffects();
+
+      // Client should be recreated instead of calling updateHeaders
+      expect(mockNative.dispose).toHaveBeenCalledTimes(1);
+      expect(mockNative.setup).toHaveBeenCalledTimes(2);
+      expect(mockNative.updateHeaders).not.toHaveBeenCalled();
+
+      // New setup config should have undefined headers, removing stale Authorization
+      const secondSetupConfig = mockNative.setup.mock.calls[1][0];
+      expect(secondSetupConfig.headers).toBeUndefined();
     });
 
     it('should expose isReady flag accurately reflecting client readiness', () => {
@@ -1522,9 +1548,11 @@ describe('useNitroSse Hook Tests', () => {
 
       it('should sanitize dirty headers returned from onBeforeRequest interceptor', async () => {
         let interceptor: any;
-        mockNative.setup.mockImplementation((cfg: any) => {
-          interceptor = cfg.onBeforeRequest;
-        });
+        mockNative.setup.mockImplementation(
+          (_cfg: any, _onEvt: any, onBeforeReq: any) => {
+            interceptor = onBeforeReq;
+          }
+        );
 
         useHookHarness({
           url: TEST_URL,
@@ -1553,9 +1581,11 @@ describe('useNitroSse Hook Tests', () => {
           .spyOn(console, 'warn')
           .mockImplementation(() => {});
         let interceptor: any;
-        mockNative.setup.mockImplementation((cfg: any) => {
-          interceptor = cfg.onBeforeRequest;
-        });
+        mockNative.setup.mockImplementation(
+          (_cfg: any, _onEvt: any, onBeforeReq: any) => {
+            interceptor = onBeforeReq;
+          }
+        );
 
         useHookHarness({
           url: TEST_URL,

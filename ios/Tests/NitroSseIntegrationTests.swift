@@ -24,7 +24,6 @@ class NitroSseIntegrationTests: XCTestCase {
             maxAuthRetries: 3,
             autoParseJSON: true,
             monitorNetwork: false,
-            onBeforeRequest: nil,
             mock: nil
         )
     }

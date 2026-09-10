@@ -1,4 +1,5 @@
 import http from 'node:http';
+import zlib from 'node:zlib';
 
 const PORT = 33333;
 
@@ -198,6 +199,53 @@ const server = http.createServer((req, res) => {
     req.on('close', () => {
       console.log('Client disconnected');
       clearInterval(interval);
+    });
+    return;
+  }
+
+  // Route: /events-gzip
+  if (pathname === '/events-gzip') {
+    res.writeHead(200, {
+      ...CORS_HEADERS,
+      'Content-Type': 'text/event-stream',
+      'Content-Encoding': 'gzip',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    const gzip = zlib.createGzip({ flush: zlib.constants.Z_SYNC_FLUSH });
+    gzip.pipe(res);
+
+    gzip.write('retry: 3000\n\n');
+    gzip.write('event: open\ndata: {"status": "connected", "compressed": true}\n\n');
+
+    let count = 0;
+    const interval = setInterval(() => {
+      count++;
+      if (count % 3 === 0) {
+        gzip.write(': heartbeat\n\n');
+      }
+
+      const payload = JSON.stringify({
+        message: `Gzip Event #${count}`,
+        method: req.method,
+        timestamp: new Date().toISOString(),
+      });
+
+      gzip.write(`id: ${count}\n`);
+      gzip.write('event: message\n');
+      gzip.write(`data: ${payload}\n\n`);
+
+      if (count >= 10) {
+        clearInterval(interval);
+        gzip.end();
+      }
+    }, 1000);
+
+    req.on('close', () => {
+      clearInterval(interval);
+      gzip.end();
     });
     return;
   }

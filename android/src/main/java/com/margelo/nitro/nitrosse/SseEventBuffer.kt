@@ -16,6 +16,8 @@ class SseEventBuffer(
     @Volatile
     private var onFlush: (Array<SseEvent>) -> Unit = onFlush
 
+    var onFlushError: ((Exception) -> Unit)? = null
+
     private val eventBuffer = mutableListOf<SseEvent>()
     private val isFlushPending = AtomicBoolean(false)
     
@@ -95,6 +97,7 @@ class SseEventBuffer(
             onFlush(eventsToEmit)
         } catch (e: Exception) {
             Log.e("SseEventBuffer", "Error invoking onFlush: ${e.message}")
+            onFlushError?.invoke(e)
         }
     }
 
