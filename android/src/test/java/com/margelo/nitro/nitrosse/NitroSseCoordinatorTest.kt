@@ -652,4 +652,52 @@ class NitroSseCoordinatorTest {
         sse.stop()
         drainLoopers()
     }
+
+    @Test
+    fun testCoordinatorRetriesUpToMaxAuthRetries() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig().copy(maxAuthRetries = 3.0, maxReconnectAttempts = 10.0)
+        
+        @Suppress("UNCHECKED_CAST")
+        val p1 = org.mockito.Mockito.mock(Promise::class.java) as Promise<Promise<Map<String, String>>>
+        val interceptor = { p1 }
+        
+        sse.setup(config, { _ -> }, interceptor)
+        drainLoopers()
+        
+        sse.start()
+        drainLoopers()
+        
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+
+        val errorResponse = createResponse(401, "Unauthorized")
+        
+        // 1st error -> Retry 1
+        reqIdField.set(sse, "test-req-id")
+        sse.connectionDidFail(Exception("Auth Error 1"), errorResponse, "test-req-id")
+        drainLoopers()
+        assertEquals(SseState.RECONNECTING, sse.getState())
+        
+        // 2nd error -> Retry 2
+        reqIdField.set(sse, "test-req-id")
+        sse.connectionDidFail(Exception("Auth Error 2"), errorResponse, "test-req-id")
+        drainLoopers()
+        assertEquals(SseState.RECONNECTING, sse.getState())
+        
+        // 3rd error -> Retry 3 (MUST still be RECONNECTING because maxAuthRetries=3 allows 3 retries)
+        reqIdField.set(sse, "test-req-id")
+        sse.connectionDidFail(Exception("Auth Error 3"), errorResponse, "test-req-id")
+        drainLoopers()
+        assertEquals(SseState.RECONNECTING, sse.getState())
+        
+        // 4th error -> Exceeded 3 retries, now FAILED
+        reqIdField.set(sse, "test-req-id")
+        sse.connectionDidFail(Exception("Auth Error 4"), errorResponse, "test-req-id")
+        drainLoopers()
+        assertEquals(SseState.FAILED, sse.getState())
+        
+        sse.stop()
+        drainLoopers()
+    }
 }

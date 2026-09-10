@@ -36,6 +36,7 @@ class NitroSse: HybridNitroSseSpec {
     private var requestInterceptor: (() -> Promise<Promise<Dictionary<String, String>>>)?
     private var isRunning: Bool = false
     private var isDisposed: Bool = false
+    /// Indicates whether the JS Dispatcher/CallInvoker has been destroyed to prevent invoking dead callbacks.
     private var isDispatcherDestroyed: Bool = false
     internal var connectionAttemptVersion: Int = 0
     private var requestId: String? = nil
@@ -70,6 +71,8 @@ class NitroSse: HybridNitroSseSpec {
     /// Synchronously cleans up all active network sockets, timers, and lifecycle observers.
     func dispose() {
         let cleanup = {
+            // Note: Thread safety on isDisposed is guaranteed without atomics because cleanup is serialized
+            // on the underlying serial DispatchQueue (`dispatcher.sync`), acting as a mutex.
             guard !self.isDisposed else { return }
             self.isDisposed = true
             self.stopInternal(emitClosed: false)
@@ -201,6 +204,9 @@ class NitroSse: HybridNitroSseSpec {
                     print("[NitroSse] start() invoked while reconnecting. Resetting backoff and retrying immediately.")
                     self.reconnectStrategy.reset()
                     self.consecutiveAuthErrors = 0
+                    // Note: Incrementing connectionAttemptVersion invalidates in-flight callbacks from the prior attempt.
+                    // `establishConnection` will cancel `currentInterceptorToken`. If an older JS interceptor Promise is still
+                    // running in JS runtime, its eventual completion will be dropped when comparing versions.
                     self.connectionAttemptVersion += 1
                     self.updateState(.connecting)
                     self.establishConnection(attemptVersion: self.connectionAttemptVersion)
@@ -583,6 +589,8 @@ extension NitroSse: SseConnectionDelegate {
         self.consecutiveAuthErrors = 0
         self.updateState(.open)
         
+        // Note: WHATWG SSE spec does not expose HTTP response headers to client JS event listeners (`open` event only carries statusCode).
+        // LDSwiftEventSource does not expose HTTPURLResponse to `EventHandler.onOpened()`, so headers are reported empty to DevTools Inspector.
         NitroSseNetworkInspector.reportResponseStart(
             self.requestId,
             url: self.config?.url,
@@ -667,7 +675,7 @@ extension NitroSse: SseConnectionDelegate {
             }
 
             self.consecutiveAuthErrors += 1
-            if self.consecutiveAuthErrors >= limit {
+            if self.consecutiveAuthErrors > limit {
                 self.failAndStop(message: "Auth Error (\(statusCode)) - Retry limit reached (\(limit)). Stopping.", statusCode: Double(statusCode))
                 return
             }
