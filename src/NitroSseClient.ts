@@ -47,6 +47,63 @@ export function sanitizeHeaders(
   return clean;
 }
 
+const SENSITIVE_HEADER_REGEX =
+  /^(authorization|cookie|proxy-authorization|x-api-key|api-key)$/i;
+
+/**
+ * Checks whether a URL points to a loopback/local address (localhost, 127.0.0.1, [::1]).
+ */
+function isLoopbackUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase();
+    return (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '[::1]' ||
+      hostname === '::1' ||
+      hostname.endsWith('.localhost')
+    );
+  } catch {
+    const lower = url.toLowerCase();
+    return (
+      lower.includes('://localhost') ||
+      lower.includes('://127.0.0.1') ||
+      lower.includes('://[::1]')
+    );
+  }
+}
+
+/**
+ * Warns in development when credential headers are transmitted over insecure cleartext HTTP (non-loopback).
+ */
+export function warnInsecureCredentials(
+  url?: string,
+  headers?: Record<string, unknown>
+): void {
+  if (typeof __DEV__ === 'undefined' || !__DEV__) return;
+  if (
+    !url ||
+    typeof url !== 'string' ||
+    !headers ||
+    typeof headers !== 'object'
+  )
+    return;
+
+  const trimmedUrl = url.trim();
+  const lowerUrl = trimmedUrl.toLowerCase();
+  if (lowerUrl.startsWith('http://') && !isLoopbackUrl(trimmedUrl)) {
+    const hasSensitiveHeader = Object.keys(headers).some((key) =>
+      SENSITIVE_HEADER_REGEX.test(key.trim())
+    );
+    if (hasSensitiveHeader) {
+      console.warn(
+        `[NitroSse] Security Warning: Sensitive credential header(s) detected over an insecure, unencrypted HTTP connection ("${trimmedUrl}"). Transmitting credentials over plaintext HTTP is vulnerable to interception and token theft. Use HTTPS in production.`
+      );
+    }
+  }
+}
+
 /**
  * Defensively validates and normalizes the SSE configuration object.
  * Throws NitroSseValidationError if essential requirements (e.g. valid URL) are violated.
@@ -112,6 +169,10 @@ export function validateConfig(config: SseClientOptions): SseClientOptions {
         { received: config.headers }
       );
     }
+    warnInsecureCredentials(
+      trimmedUrl,
+      config.headers as Record<string, unknown>
+    );
   }
 
   let lowerMethod: 'get' | 'post' | undefined;
@@ -375,6 +436,10 @@ export class NitroSseClient implements SseClient {
           try {
             const h = await rawOnBeforeRequest();
             if (h && typeof h === 'object' && !Array.isArray(h)) {
+              warnInsecureCredentials(
+                validatedConfig.url,
+                h as Record<string, unknown>
+              );
               return sanitizeHeaders(h);
             }
             if (
@@ -616,6 +681,7 @@ export class NitroSseClient implements SseClient {
       this._pendingHeaders = { ...this._pendingHeaders, ...clean };
       this._driver.updateHeaders(clean);
     } else {
+      warnInsecureCredentials(this._config.url, clean);
       this._config.headers = { ...this._config.headers, ...clean };
       this._driver.updateHeaders(this._config.headers);
     }

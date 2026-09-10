@@ -1903,6 +1903,65 @@ describe('NitroSseModule Unit Tests', () => {
           });
         });
       });
+
+      it('should emit security warning when credential headers are sent over unencrypted HTTP (non-loopback)', async () => {
+        jest.isolateModules(async () => {
+          const { createNitroSse } = require('../index');
+          const client = createNitroSse();
+          const warnSpy = jest
+            .spyOn(console, 'warn')
+            .mockImplementation(() => {});
+
+          // Insecure HTTP with credential header -> should warn
+          client.setup({
+            url: 'http://api.example.com/events',
+            headers: {
+              Authorization: 'Bearer secret-token',
+            },
+          });
+          expect(warnSpy).toHaveBeenCalledWith(
+            expect.stringContaining(
+              '[NitroSse] Security Warning: Sensitive credential header(s) detected'
+            )
+          );
+
+          warnSpy.mockClear();
+
+          // HTTPS with credential header -> should NOT warn
+          client.setup({
+            url: 'https://api.example.com/events',
+            headers: {
+              Authorization: 'Bearer secret-token',
+            },
+          });
+          expect(warnSpy).not.toHaveBeenCalled();
+
+          // Loopback HTTP with credential header -> should NOT warn
+          client.setup({
+            url: 'http://localhost:33333/events',
+            headers: {
+              Authorization: 'Bearer secret-token',
+            },
+          });
+          expect(warnSpy).not.toHaveBeenCalled();
+
+          // updateHeaders with credentials over insecure HTTP -> should warn
+          client.setup({
+            url: 'http://api.insecure.com/events',
+          });
+          warnSpy.mockClear();
+          client.updateHeaders({
+            Cookie: 'session=xyz',
+          });
+          expect(warnSpy).toHaveBeenCalledWith(
+            expect.stringContaining(
+              '[NitroSse] Security Warning: Sensitive credential header(s) detected'
+            )
+          );
+
+          warnSpy.mockRestore();
+        });
+      });
     });
   });
 });
