@@ -1904,8 +1904,8 @@ describe('NitroSseModule Unit Tests', () => {
         });
       });
 
-      it('should emit security warning when credential headers are sent over unencrypted HTTP (non-loopback)', async () => {
-        jest.isolateModules(async () => {
+      it('should emit security warning when credential headers are sent over unencrypted HTTP (non-loopback)', () => {
+        jest.isolateModules(() => {
           const { createNitroSse } = require('../index');
           const client = createNitroSse();
           const warnSpy = jest
@@ -1945,6 +1945,23 @@ describe('NitroSseModule Unit Tests', () => {
           });
           expect(warnSpy).not.toHaveBeenCalled();
 
+          // Issue 6: Android Emulator loopback HTTP (10.0.2.2 & 10.0.3.3) -> should NOT warn
+          client.setup({
+            url: 'http://10.0.2.2:3000/events',
+            headers: {
+              Authorization: 'Bearer secret-token',
+            },
+          });
+          expect(warnSpy).not.toHaveBeenCalled();
+
+          client.setup({
+            url: 'http://10.0.3.3:8080/events',
+            headers: {
+              Authorization: 'Bearer secret-token',
+            },
+          });
+          expect(warnSpy).not.toHaveBeenCalled();
+
           // updateHeaders with credentials over insecure HTTP -> should warn
           client.setup({
             url: 'http://api.insecure.com/events',
@@ -1960,6 +1977,24 @@ describe('NitroSseModule Unit Tests', () => {
           );
 
           warnSpy.mockRestore();
+        });
+      });
+
+      it('Issue 2: should emit close event to addEventListener("close") when native emits state closed', () => {
+        jest.isolateModules(() => {
+          const { createNitroSse } = require('../index');
+          const NitroSseModule = createNitroSse();
+          const closeListener = jest.fn();
+          NitroSseModule.addEventListener('close', closeListener);
+
+          NitroSseModule.setup({ url: TEST_URL });
+          const nativeCallback = mockNative.setup.mock.calls[0][1];
+
+          nativeCallback([{ type: 'state', state: 'closed' }]);
+
+          expect(closeListener).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'close' })
+          );
         });
       });
     });

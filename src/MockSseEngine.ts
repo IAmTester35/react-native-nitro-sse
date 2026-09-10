@@ -108,8 +108,6 @@ export class MockSseEngine {
           }
           if (mode === 'replace') {
             this._setMockState('closed');
-            const closeEvent: SseEvent = { type: 'close', statusCode: 200 };
-            this._emitEvents([closeEvent]);
           }
           return;
         }

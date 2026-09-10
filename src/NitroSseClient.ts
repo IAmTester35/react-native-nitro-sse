@@ -62,6 +62,8 @@ function isLoopbackUrl(url: string): boolean {
       hostname === '127.0.0.1' ||
       hostname === '[::1]' ||
       hostname === '::1' ||
+      hostname === '10.0.2.2' ||
+      hostname === '10.0.3.3' ||
       hostname.endsWith('.localhost')
     );
   } catch {
@@ -69,7 +71,9 @@ function isLoopbackUrl(url: string): boolean {
     return (
       lower.includes('://localhost') ||
       lower.includes('://127.0.0.1') ||
-      lower.includes('://[::1]')
+      lower.includes('://[::1]') ||
+      lower.includes('://10.0.2.2') ||
+      lower.includes('://10.0.3.3')
     );
   }
 }
@@ -613,6 +617,13 @@ export class NitroSseClient implements SseClient {
       }
       if (event.event && event.event !== event.type) {
         this._emit(event.event, event);
+      }
+      if (event.type === 'state' && event.state === 'closed') {
+        this._emit('close', {
+          type: 'close',
+          statusCode: event.statusCode ?? 200,
+          state: 'closed',
+        });
       }
     }
   }
