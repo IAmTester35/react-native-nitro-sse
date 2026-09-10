@@ -1,5 +1,27 @@
 # Changelog
 
+## 3.0.0-beta.3 (2026-09-10)
+
+### Breaking Changes
+
+- **Native Spec (`HybridNitroSse.setup`)**: Decoupled `onBeforeRequest` from `SseConfig` into a 3rd argument in native `setup()`. `SseConfig` is now a pure POD struct, eliminating closure retain cycles and memory leaks on iOS.
+
+### Features
+
+- **TypeScript API**: Added `SseClientOptions` extending `SseConfig` with `onBeforeRequest` to preserve 100% backward compatibility for JS/React developers.
+
+### Fixes & Improvements
+
+- **Lifecycle & Memory**: Made `dispose()` idempotent and reentrant-safe across iOS and Android, immediately releasing interceptor closures, configuration, and timers.
+- **Teardown on Destroyed Dispatcher**: Trigger full `dispose()` when encountering `"Dispatcher has already been destroyed"` during interceptor execution or event flush.
+- **Threading**: Optimized `restart()` and `stop()` to run inline when already on the dispatcher thread, preventing redundant queue dispatch.
+- **Transparent Gzip (Android)**: Switched from `Accept-Encoding: identity` to OkHttp application interceptor for transparent Gzip decompression while preserving SSE comment and heartbeat extraction.
+- **DevTools Tracing**: Extracted `InspectorNetworkInterceptor` to record raw wire headers and status independently of stream decoding.
+- **Network Monitor**: Encapsulated network state inside `SseNetworkMonitor` to prevent false reconnection triggers during initial startup.
+- **React Hook (`useNitroSse`)**: Recreates the client instance when `headers` transitions to `undefined` to clear stale native headers.
+
+---
+
 ## 3.0.0-beta.1 (2026-09-08)
 
 ### Breaking Changes
