@@ -332,14 +332,44 @@ describe('NitroSseModule Unit Tests', () => {
       expect(mockNative.setup).toHaveBeenCalledWith(
         expect.objectContaining({
           url: TEST_URL,
-          onBeforeRequest: expect.any(Function),
         }),
+        expect.any(Function),
         expect.any(Function)
       );
-      const passedInterceptor =
-        mockNative.setup.mock.calls[0][0].onBeforeRequest;
+      const passedInterceptor = mockNative.setup.mock.calls[0][2];
       expect(typeof passedInterceptor).toBe('function');
     });
+  });
+
+  it('should clear or replace onBeforeRequest in subsequent setup calls', async () => {
+    const { createNitroSse } = require('../index');
+    const client = createNitroSse();
+
+    const interceptorA = jest.fn().mockResolvedValue({ 'X-Auth': 'A' });
+    const interceptorB = jest.fn().mockResolvedValue({ 'X-Auth': 'B' });
+
+    // Setup with A
+    client.setup({ url: TEST_URL, onBeforeRequest: interceptorA });
+    expect(mockNative.setup).toHaveBeenCalledTimes(1);
+    const passedA = mockNative.setup.mock.calls[0][2];
+    expect(typeof passedA).toBe('function');
+    await passedA();
+    expect(interceptorA).toHaveBeenCalledTimes(1);
+
+    // Setup with B replaces A
+    client.setup({ url: TEST_URL, onBeforeRequest: interceptorB });
+    expect(mockNative.setup).toHaveBeenCalledTimes(2);
+    const passedB = mockNative.setup.mock.calls[1][2];
+    expect(typeof passedB).toBe('function');
+    await passedB();
+    expect(interceptorA).toHaveBeenCalledTimes(1);
+    expect(interceptorB).toHaveBeenCalledTimes(1);
+
+    // Setup without interceptor clears it
+    client.setup({ url: TEST_URL });
+    expect(mockNative.setup).toHaveBeenCalledTimes(3);
+    const passedC = mockNative.setup.mock.calls[2][2];
+    expect(passedC).toBeUndefined();
   });
 
   it('should dispatch events to typed listeners', () => {
@@ -1540,8 +1570,7 @@ describe('NitroSseModule Unit Tests', () => {
             'X-Good': 'val',
           }),
         });
-        let passedInterceptor =
-          mockNative.setup.mock.calls.slice(-1)[0][0].onBeforeRequest;
+        let passedInterceptor = mockNative.setup.mock.calls.slice(-1)[0][2];
         let res = await passedInterceptor();
         expect(res).toEqual({
           'Authorization': 'Bearer secret',
@@ -1552,8 +1581,7 @@ describe('NitroSseModule Unit Tests', () => {
           url: TEST_URL,
           onBeforeRequest: async () => 'invalid-string' as any,
         });
-        passedInterceptor =
-          mockNative.setup.mock.calls.slice(-1)[0][0].onBeforeRequest;
+        passedInterceptor = mockNative.setup.mock.calls.slice(-1)[0][2];
         res = await passedInterceptor();
         expect(res).toEqual({});
         expect(warnSpy).toHaveBeenCalledWith(

@@ -41,7 +41,6 @@ class NitroSseIntegrationTest {
             3.0,
             true,
             false,
-            null,
             null
         )
     }

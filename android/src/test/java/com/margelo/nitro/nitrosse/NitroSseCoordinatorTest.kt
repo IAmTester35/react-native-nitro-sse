@@ -46,7 +46,6 @@ class NitroSseCoordinatorTest {
             3.0,
             false,
             false,
-            null,
             null
         )
     }
@@ -343,9 +342,9 @@ class NitroSseCoordinatorTest {
         val clientField = NitroSse::class.java.getDeclaredField("client")
         clientField.isAccessible = true
         val client = clientField.get(sse) as okhttp3.OkHttpClient
-        val interceptor = client.networkInterceptors.filterIsInstance<HeartbeatNetworkInterceptor>().first()
+        val interceptor = client.interceptors.filterIsInstance<HeartbeatInterceptor>().first()
         
-        val onHeartbeatField = HeartbeatNetworkInterceptor::class.java.getDeclaredField("onHeartbeat")
+        val onHeartbeatField = HeartbeatInterceptor::class.java.getDeclaredField("onHeartbeat")
         onHeartbeatField.isAccessible = true
         @Suppress("UNCHECKED_CAST")
         val onHeartbeat = onHeartbeatField.get(interceptor) as (String?, String) -> Unit
@@ -448,9 +447,9 @@ class NitroSseCoordinatorTest {
         val clientField = NitroSse::class.java.getDeclaredField("client")
         clientField.isAccessible = true
         val client = clientField.get(sse) as okhttp3.OkHttpClient
-        val interceptor = client.networkInterceptors.filterIsInstance<HeartbeatNetworkInterceptor>().first()
+        val interceptor = client.interceptors.filterIsInstance<HeartbeatInterceptor>().first()
         
-        val onHeartbeatField = HeartbeatNetworkInterceptor::class.java.getDeclaredField("onHeartbeat")
+        val onHeartbeatField = HeartbeatInterceptor::class.java.getDeclaredField("onHeartbeat")
         onHeartbeatField.isAccessible = true
         @Suppress("UNCHECKED_CAST")
         val onHeartbeat = onHeartbeatField.get(interceptor) as (String?, String) -> Unit
