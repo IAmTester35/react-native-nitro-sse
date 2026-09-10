@@ -215,7 +215,7 @@ sse.start();
 - **`addEventListener(type, listener)`**: Subscribes to an event type (`'message'`, `'open'`, `'close'`, `'error'`, `'heartbeat'`, `'state'`, or custom event name).
 - **`removeEventListener(type, listener)`**: Unsubscribes a specific listener.
 - **`removeAllEventListeners(type?)`**: Unregisters all listeners (or listeners for a given event type).
-- **`dispose()`**: Closes connection and releases native resources. Subsequent calls throw `NitroSseDisposedError`.
+- **`dispose()`**: Closes connection and releases native resources. Idempotent and safe to call multiple times.
 
 </details>
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0-beta.3 (2026-09-10)
+## 3.0.0 (2026-09-11)
 
 ### Breaking Changes
 
@@ -16,6 +16,8 @@
 - **Teardown on Destroyed Dispatcher**: Trigger full `dispose()` when encountering `"Dispatcher has already been destroyed"` during interceptor execution or event flush.
 - **Threading**: Optimized `restart()` and `stop()` to run inline when already on the dispatcher thread, preventing redundant queue dispatch.
 - **Transparent Gzip (Android)**: Switched from `Accept-Encoding: identity` to OkHttp application interceptor for transparent Gzip decompression while preserving SSE comment and heartbeat extraction.
+- **Interceptor Headers Scoping**: Isolated dynamic headers from `onBeforeRequest` to the active connection attempt, preventing them from mutating base `config.headers` across reconnections.
+- **Security Warning**: Added development-time security warning when sending sensitive credential headers (`Authorization`, `Cookie`, `X-Api-Key`) over unencrypted HTTP (non-loopback).
 - **DevTools Tracing**: Extracted `InspectorNetworkInterceptor` to record raw wire headers and status independently of stream decoding.
 - **Network Monitor**: Encapsulated network state inside `SseNetworkMonitor` to prevent false reconnection triggers during initial startup.
 - **React Hook (`useNitroSse`)**: Recreates the client instance when `headers` transitions to `undefined` to clear stale native headers.
