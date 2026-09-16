@@ -62,9 +62,12 @@ Because the library interfaces directly with OS-level networking and hardware li
 
 - **File Location**: `ios/Tests/`
 - **Test Suite List**:
+  - `NitroSseWireProtocolTests.swift`: Tests WHATWG Server-Sent Events HTTP framing, multi-line data, comments, ID reset/null handling, retry directives, and UTF-8 multibyte chunk buffering.
+  - `SseConnectionHandlerTests.swift`: Tests native `URLSessionDataDelegate` connection, response headers, `text/event-stream` validation, HTTP 204/429 status codes, and `stop()` cancellation.
+  - `MockURLProtocol.swift`: In-memory `URLProtocol` for deterministic, offline HTTP/SSE simulation without real socket servers.
   - `NitroSseTests.swift`: Tests state transitions, config parameter validation (`testReconnectStrategyValidation`, `testEventBufferMaxBufferSizeValidation`), header updates, restarts, flushing, and error retries in Swift.
   - `NitroSseCoordinatorTests.swift`: Tests coordination between `SseEventBuffer`, `SseReconnectStrategy`, `SseNetworkMonitor`, and `SseLifecycleManager`.
-  - `NitroSseIntegrationTests.swift`: Integration tests simulating socket streams with LDSwiftEventSource.
+  - `NitroSseIntegrationTests.swift`: Live HTTP integration tests simulating socket streams against local test server.
   - `MockSseDispatcher.swift`: Synchronous mock dispatcher to test async logic on main/test threads without thread leaks.
 - **Execution Command**:
   ```bash

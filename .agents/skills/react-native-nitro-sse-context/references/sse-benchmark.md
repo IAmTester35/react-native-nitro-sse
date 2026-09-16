@@ -44,7 +44,7 @@ The benchmark system consists of two coordinated components:
 
 ## 2. Standard Benchmark Scenarios
 
-The suite evaluates 13 distinct scenarios to test throughput limits, JSI bridge overhead, batching efficiency, and memory stability:
+The suite evaluates 14 distinct scenarios to test throughput limits, JSI bridge overhead, batching efficiency, and memory stability:
 
 | #   | Scenario                          | Target Rate | Payload    | Batching Mode    | Primary Focus                                     |
 | --- | --------------------------------- | ----------- | ---------- | ---------------- | ------------------------------------------------- |
@@ -57,10 +57,11 @@ The suite evaluates 13 distinct scenarios to test throughput limits, JSI bridge 
 | 6   | 1,000 ev/s \| 50ms Batch \| Raw   | 1,000 ev/s  | 128 B text | 50ms window      | High-efficiency batching (~50 ev/batch)           |
 | 7   | 1,000 ev/s \| 50ms Batch \| JSON  | 1,000 ev/s  | 128 B JSON | 50ms window      | Batching + parsing throughput                     |
 | 8   | 5,000 ev/s \| No-batch \| Raw     | 5,000 ev/s  | 128 B text | Disabled (`0ms`) | High-frequency raw JSI bridge without batching    |
-| 9   | 5,000 ev/s \| 50ms Batch \| Raw   | 5,000 ev/s  | 128 B text | 50ms window      | High-throughput streaming (~250 ev/batch)         |
-| 10  | 5,000 ev/s \| 50ms Batch \| JSON  | 5,000 ev/s  | 128 B JSON | 50ms window      | High-throughput JSON streaming                    |
-| 11  | 10,000 ev/s \| 50ms Batch \| Raw  | 10,000 ev/s | 128 B text | 50ms window      | **Extreme throughput** (~500 ev/batch, >1.2 MB/s) |
-| 12  | 10,000 ev/s \| 50ms Batch \| JSON | 10,000 ev/s | 128 B JSON | 50ms window      | Extreme throughput with JSON serialization        |
+| 9   | 5,000 ev/s \| No-batch \| JSON    | 5,000 ev/s  | 128 B JSON | Disabled (`0ms`) | High-frequency JSON JSI bridge without batching   |
+| 10  | 5,000 ev/s \| 50ms Batch \| Raw   | 5,000 ev/s  | 128 B text | 50ms window      | High-throughput streaming (~250 ev/batch)         |
+| 11  | 5,000 ev/s \| 50ms Batch \| JSON  | 5,000 ev/s  | 128 B JSON | 50ms window      | High-throughput JSON streaming                    |
+| 12  | 10,000 ev/s \| 50ms Batch \| Raw  | 10,000 ev/s | 128 B text | 50ms window      | **Extreme throughput** (~500 ev/batch, >1.2 MB/s) |
+| 13  | 10,000 ev/s \| 50ms Batch \| JSON | 10,000 ev/s | 128 B JSON | 50ms window      | Extreme throughput with JSON serialization        |
 
 ---
 
@@ -162,13 +163,12 @@ In the example app UI, trigger the benchmark suite.
 - **Root Cause:** Timer not cancelled on out-of-band or forced flushes. If a flush occurred, the pending `postDelayed` runnable remained active and fired shortly thereafter (~25ms interval).
 - **Solution:** Call `dispatcher.removeCallbacks(flushRunnable)` before any manual or scheduled flush to guarantee clean window intervals.
 
-### Anomaly D: Android Reports +15% More Bytes Than iOS
+### Anomaly D: Android Counted Retained `lastEventId` on Terminal Close Event
 
-- **Root Cause:** Android counted wire bytes (including HTTP headers, chunk delimiters, and gzip framing via OkHttp interceptor), while iOS counted logical UTF-8 string bytes (`data + type + id + comment`).
-- **Solution:** Standardize on **logical UTF-8 byte accounting** across all platforms in `NitroSse.kt` and `NitroSse.swift`:
-  ```kotlin
-  val bytes = event.data.toByteArray(Charsets.UTF_8).size +
-              event.eventType.toByteArray(Charsets.UTF_8).size +
-              event.id.toByteArray(Charsets.UTF_8).size
-  totalBytesReceived.addAndGet(bytes.toLong())
-  ```
+- **Root Cause:** When stream finishes, server emits `event: close\ndata: {"status":"finished","total":N}` without an `id:` line. Per WHATWG SSE, `lastEventId` buffer retains the final numeric event ID (`400`, `4000`, `20000`, `40000`). iOS checked `lastEventId != self.lastProcessedId` and did NOT count bytes for retained ID. Android unconditionally counted `idSize = id.length`, resulting in +3 bytes (400), +4 bytes (4000), +5 bytes (20000/40000).
+- **Solution:** In `NitroSse.kt`, guard `idSize` with `val isNewId = !id.isNullOrEmpty() && id != this@NitroSse.lastProcessedId` matching iOS logic.
+
+### Anomaly E: Negative Values in `allocatedBytesDeltaKB`
+
+- **Root Cause:** `js_allocatedBytes` measures instantaneous live heap (retained objects). When Hermes GC fires mid-run (`gcCountDelta >= 1`), it sweeps pre-existing dead objects present before `initialStats` was recorded. The post-run heap (`finalStats.js_allocatedBytes`) is therefore smaller than the uncollected initial heap, yielding a negative delta (`final - initial < 0`).
+- **Solution:** Distinguish between **Alloc Churn** (`totalAllocatedBytesDeltaKB`, monotonic >= 0) which measures total memory allocated, and **Live Heap Δ** (`liveHeapDeltaKB` / `allocatedBytesDeltaKB`) which measures net retained heap growth. Use zero-allocation latency histograms to prevent test harness allocations from skewing GC telemetry.

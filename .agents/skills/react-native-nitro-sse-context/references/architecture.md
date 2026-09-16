@@ -16,7 +16,7 @@ Unlike legacy EventSource libraries running over the asynchronous React Native B
        ┌──────┴────────────────────────┐
        ▼                               ▼
 [ Swift (iOS) ]                [ Kotlin (Android) ]
-LDSwiftEventSource             OkHttp SSE
+URLSession (Native)            OkHttp SSE
 DispatchQueue (.utility)       HandlerThread ("NitroSseThread")
 ```
 
