@@ -18,6 +18,7 @@ export type SseEventType =
   | 'message'
   | 'error'
   | 'close'
+  // TODO(breaking-change): Decouple 'heartbeat' from SseEventType into an opt-in callback (onHeartbeat) to eliminate high-frequency JSI bridge overhead.
   | 'heartbeat'
   | 'state';
 

@@ -17,6 +17,7 @@ export class MockSseEngine {
   private _mockIndex: number = 0;
   private _mockState?: SseState;
   private _totalBytesReceived: number = 0;
+  private _lastProcessedId: string | null = null;
 
   constructor(config: SseMockConfig, emitEvents: (events: SseEvent[]) => void) {
     this._config = config;
@@ -69,6 +70,7 @@ export class MockSseEngine {
     } = this._config;
     this._mockIndex = 0;
     this._totalBytesReceived = 0;
+    this._lastProcessedId = null;
 
     // Validate and normalize eventsPerSecond (must be a finite positive number, default to 1)
     let validatedEventsPerSecond = Number(eventsPerSecond);
@@ -156,8 +158,13 @@ export class MockSseEngine {
       if (batch.length > 0) {
         for (const ev of batch) {
           const dataLen = ev.data ? ev.data.length : 0;
-          const evLen = ev.event ? ev.event.length : 0;
-          const idLen = ev.id ? ev.id.length : 0;
+          const evLen =
+            ev.event && ev.event !== 'message' ? ev.event.length : 0;
+          const idLen =
+            ev.id && ev.id !== this._lastProcessedId ? ev.id.length : 0;
+          if (ev.id !== undefined) {
+            this._lastProcessedId = ev.id === '' ? null : ev.id;
+          }
           this._totalBytesReceived += Math.max(1, dataLen + evLen + idLen);
         }
         if (mode === 'replace') {
