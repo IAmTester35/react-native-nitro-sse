@@ -26,14 +26,18 @@ export interface BenchmarkScenario {
 export interface HermesMetrics {
   gcCountDelta: number;
   gcCpuTimeDeltaMs: number;
-  allocatedBytesDeltaKB: number;
-  totalAllocatedBytesDeltaKB: number;
+  allocatedBytesDeltaKB: number; // Net live heap change (final - initial). Can be negative when GC collects pre-existing garbage.
+  liveHeapDeltaKB?: number; // Clear alias for allocatedBytesDeltaKB
+  totalAllocatedBytesDeltaKB: number; // True monotonic allocation churn (always >= 0)
+  bytesPerEvent?: number; // Average bytes allocated per event
   finalHeapSizeKB: number;
 }
 
 export interface LatencyMetrics {
   avgMs: number;
+  p50Ms?: number;
   p95Ms: number;
+  p99Ms?: number;
   maxMs: number;
   stdDevMs?: number;
 }
@@ -42,10 +46,13 @@ export interface BenchmarkStdDev {
   throughput: number;
   dataRateKBps: number;
   latencyAvgMs: number;
+  latencyP50Ms?: number;
   latencyP95Ms: number;
+  latencyP99Ms?: number;
   latencyMaxMs: number;
   gcCpuTimeDeltaMs: number;
   totalAllocatedBytesDeltaKB: number;
+  bytesPerEvent?: number;
 }
 
 export interface BenchmarkResult {
@@ -159,6 +166,13 @@ export const DEFAULT_BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     durationSec: 4,
   },
   {
+    name: '5,000 ev/s | No-batch | JSON',
+    targetRate: 5000,
+    batchingIntervalMs: 0,
+    autoParseJSON: true,
+    durationSec: 4,
+  },
+  {
     name: '5,000 ev/s | 50ms Batch | Raw',
     targetRate: 5000,
     batchingIntervalMs: 50,
@@ -259,13 +273,19 @@ export function formatBenchmarkResult(r: BenchmarkResult): string {
   const latAvgStr = r.latency.stdDevMs || r.stdDev?.latencyAvgMs
     ? `${r.latency.avgMs} ± ${r.latency.stdDevMs || r.stdDev?.latencyAvgMs}ms`
     : `${r.latency.avgMs}ms`;
+  const p50Str = typeof r.latency.p50Ms === 'number' ? `p50 ${r.latency.p50Ms}ms | ` : '';
+  const p99Str = typeof r.latency.p99Ms === 'number' ? ` | p99 ${r.latency.p99Ms}ms` : '';
+  const bytesPerEvStr = typeof r.hermesMetrics.bytesPerEvent === 'number'
+    ? ` (${r.hermesMetrics.bytesPerEvent} B/ev)`
+    : '';
+
   const lines = [
     `[${r.name}]`,
     `Throughput: ${tpStr} ev/s (${r.dataRateKBps.toLocaleString()} KB/s) | Delivery: ${r.deliveryRatePercent}%`,
-    `Latency: avg ${latAvgStr} | p95 ${r.latency.p95Ms}ms | max ${r.latency.maxMs}ms`,
+    `Latency: ${p50Str}avg ${latAvgStr} | p95 ${r.latency.p95Ms}ms${p99Str} | max ${r.latency.maxMs}ms`,
     `Batches: ${r.totalBatches.toLocaleString()} (avg size: ${r.avgBatchSize})`,
     `Hermes GCs: +${r.hermesMetrics.gcCountDelta} (${r.hermesMetrics.gcCpuTimeDeltaMs}ms CPU)`,
-    `Alloc Churn: +${r.hermesMetrics.totalAllocatedBytesDeltaKB.toLocaleString()} KB`,
+    `Alloc Churn: +${r.hermesMetrics.totalAllocatedBytesDeltaKB.toLocaleString()} KB${bytesPerEvStr}`,
     `Live Heap Δ: ${r.hermesMetrics.allocatedBytesDeltaKB >= 0 ? '+' : ''}${r.hermesMetrics.allocatedBytesDeltaKB} KB | Final: ${r.hermesMetrics.finalHeapSizeKB} KB`,
   ];
   return lines.join('\n');
@@ -288,7 +308,14 @@ export async function runSingleScenario(
     let batchCount = 0;
     let startTime = 0;
     let isSettled = false;
-    const latencies: number[] = [];
+
+    // Zero-allocation fixed-size latency histogram (0ms to 1000ms+, bucket 1000 holds >= 1000ms)
+    // Eliminates unbounded array growth (up to 40k pushes) that artificially pollutes Hermes GC heap metrics.
+    const LATENCY_BUCKETS = 1001;
+    const latencyHistogram = new Uint32Array(LATENCY_BUCKETS);
+    let latencyCount = 0;
+    let latencySum = 0;
+    let maxLatencyMs = 0;
 
     // Intra-run 1-second sampling buckets for instantaneous throughput stdDev
     const secondBuckets: number[] = [];
@@ -333,20 +360,38 @@ export async function runSingleScenario(
         ((eventCount / Math.max(1, expectedEvents)) * 100).toFixed(1)
       );
 
-      // Latency percentile & variance calculations
-      latencies.sort((a, b) => a - b);
+      // Latency percentile & variance calculations computed in O(1000) from histogram (zero allocations)
       const avgLatencyMs =
-        latencies.length > 0
-          ? Math.round(latencies.reduce((sum, v) => sum + v, 0) / latencies.length)
-          : 0;
-      const p95Index = Math.min(latencies.length - 1, Math.floor(latencies.length * 0.95));
-      const p95LatencyMs = latencies[p95Index] ?? 0;
-      const maxLatencyMs = latencies[latencies.length - 1] ?? 0;
+        latencyCount > 0 ? Math.round(latencySum / latencyCount) : 0;
+      const p50Target = Math.floor(latencyCount * 0.50);
+      const p95Target = Math.floor(latencyCount * 0.95);
+      const p99Target = Math.floor(latencyCount * 0.99);
+
+      let p50LatencyMs = 0;
+      let p95LatencyMs = 0;
+      let p99LatencyMs = 0;
+      let accum = 0;
+      let varianceSum = 0;
+
+      for (let b = 0; b < LATENCY_BUCKETS; b++) {
+        const count = latencyHistogram[b] ?? 0;
+        if (count === 0) continue;
+        varianceSum += count * (b - avgLatencyMs) ** 2;
+        const prevAccum = accum;
+        accum += count;
+        if (prevAccum <= p50Target && accum > p50Target) {
+          p50LatencyMs = b;
+        }
+        if (prevAccum <= p95Target && accum > p95Target) {
+          p95LatencyMs = b;
+        }
+        if (prevAccum <= p99Target && accum > p99Target) {
+          p99LatencyMs = b;
+        }
+      }
+
       const latencyVariance =
-        latencies.length > 1
-          ? latencies.reduce((sum, v) => sum + (v - avgLatencyMs) ** 2, 0) /
-            (latencies.length - 1)
-          : 0;
+        latencyCount > 1 ? varianceSum / (latencyCount - 1) : 0;
       const latencyStdDevMs = Math.round(Math.sqrt(latencyVariance) * 10) / 10;
 
       const initialTotalAlloc =
@@ -361,6 +406,11 @@ export async function runSingleScenario(
       const liveAllocatedDeltaKB = Math.round(
         ((finalStats?.js_allocatedBytes ?? 0) - (initialStats?.js_allocatedBytes ?? 0)) / 1024
       );
+
+      const bytesPerEvent =
+        eventCount > 0
+          ? Math.round((totalAllocatedDeltaKB * 1024) / eventCount)
+          : 0;
 
       // Hermes js_gcCPUTime is in seconds -> convert to milliseconds, round to 2 decimals
       const rawCpuSecDelta =
@@ -383,7 +433,9 @@ export async function runSingleScenario(
         avgBatchSize,
         latency: {
           avgMs: avgLatencyMs,
+          p50Ms: p50LatencyMs,
           p95Ms: p95LatencyMs,
+          p99Ms: p99LatencyMs,
           maxMs: maxLatencyMs,
           stdDevMs: latencyStdDevMs,
         },
@@ -391,17 +443,22 @@ export async function runSingleScenario(
           gcCountDelta: (finalStats?.js_numGCs ?? 0) - (initialStats?.js_numGCs ?? 0),
           gcCpuTimeDeltaMs,
           allocatedBytesDeltaKB: liveAllocatedDeltaKB,
+          liveHeapDeltaKB: liveAllocatedDeltaKB,
           totalAllocatedBytesDeltaKB: totalAllocatedDeltaKB,
+          bytesPerEvent,
           finalHeapSizeKB: Math.round((finalStats?.js_heapSize ?? 0) / 1024),
         },
         stdDev: {
           throughput: intraThroughputStdDev,
           dataRateKBps: Math.round((intraThroughputStdDev * (scenario.payloadSize ?? 128)) / 1024),
           latencyAvgMs: latencyStdDevMs,
+          latencyP50Ms: 0,
           latencyP95Ms: 0,
+          latencyP99Ms: 0,
           latencyMaxMs: 0,
           gcCpuTimeDeltaMs: 0,
           totalAllocatedBytesDeltaKB: 0,
+          bytesPerEvent: 0,
         },
       };
 
@@ -455,22 +512,40 @@ export async function runSingleScenario(
 
           // Extract timestamp:
           // In JSON mode: native AnyMap produces typed object (0 JS parsing overhead).
-          // In Raw mode: use low-allocation indexOf + slice baseline instead of regex.
+          // In Raw mode: zero-allocation integer char-code scanning (avoids creating 40,000 substring allocations in heap).
           let eventTs = 0;
           if (item.parsedData && typeof item.parsedData.ts === 'number') {
             eventTs = item.parsedData.ts;
           } else if (typeof item.data === 'string') {
             const tsIdx = item.data.indexOf('"ts":');
             if (tsIdx !== -1) {
-              const start = tsIdx + 5;
-              const commaIdx = item.data.indexOf(',', start);
-              const braceIdx = item.data.indexOf('}', start);
-              const end = commaIdx !== -1 ? commaIdx : braceIdx !== -1 ? braceIdx : item.data.length;
-              eventTs = parseInt(item.data.slice(start, end), 10);
+              let idx = tsIdx + 5;
+              const len = item.data.length;
+              while (idx < len && item.data.charCodeAt(idx) === 32) {
+                idx++;
+              }
+              let num = 0;
+              while (idx < len) {
+                const code = item.data.charCodeAt(idx);
+                if (code >= 48 && code <= 57) {
+                  num = num * 10 + (code - 48);
+                  idx++;
+                } else {
+                  break;
+                }
+              }
+              eventTs = num;
             }
           }
           if (eventTs > 0) {
-            latencies.push(Math.max(0, now - eventTs));
+            const lat = Math.max(0, now - eventTs);
+            const bucket = Math.min(LATENCY_BUCKETS - 1, lat);
+            latencyHistogram[bucket] = (latencyHistogram[bucket] ?? 0) + 1;
+            latencyCount++;
+            latencySum += lat;
+            if (lat > maxLatencyMs) {
+              maxLatencyMs = lat;
+            }
           }
         }
 
@@ -563,11 +638,16 @@ export async function runSseBenchmarkMatrix(
       const throughputs = scenarioRuns.map((r) => r.throughput);
       const dataRates = scenarioRuns.map((r) => r.dataRateKBps);
       const avgLatencies = scenarioRuns.map((r) => r.latency.avgMs);
+      const p50Latencies = scenarioRuns.map((r) => r.latency.p50Ms ?? r.latency.avgMs);
       const p95Latencies = scenarioRuns.map((r) => r.latency.p95Ms);
+      const p99Latencies = scenarioRuns.map((r) => r.latency.p99Ms ?? r.latency.maxMs);
       const maxLatencies = scenarioRuns.map((r) => r.latency.maxMs);
       const gcCpuTimes = scenarioRuns.map((r) => r.hermesMetrics.gcCpuTimeDeltaMs);
       const allocChurns = scenarioRuns.map(
         (r) => r.hermesMetrics.totalAllocatedBytesDeltaKB
+      );
+      const bytesPerEvents = scenarioRuns.map(
+        (r) => r.hermesMetrics.bytesPerEvent ?? 0
       );
 
       const meanThroughput = Math.round(
@@ -579,8 +659,14 @@ export async function runSseBenchmarkMatrix(
       const meanAvgLatency = Math.round(
         avgLatencies.reduce((a, b) => a + b, 0) / iterations
       );
+      const meanP50Latency = Math.round(
+        p50Latencies.reduce((a, b) => a + b, 0) / iterations
+      );
       const meanP95Latency = Math.round(
         p95Latencies.reduce((a, b) => a + b, 0) / iterations
+      );
+      const meanP99Latency = Math.round(
+        p99Latencies.reduce((a, b) => a + b, 0) / iterations
       );
       const peakMaxLatency = Math.max(...maxLatencies);
       const meanGcCpuTime =
@@ -589,6 +675,9 @@ export async function runSseBenchmarkMatrix(
         ) / 100;
       const meanAllocChurn = Math.round(
         allocChurns.reduce((a, b) => a + b, 0) / iterations
+      );
+      const meanBytesPerEvent = Math.round(
+        bytesPerEvents.reduce((a, b) => a + b, 0) / iterations
       );
       const meanBatches = Math.round(
         scenarioRuns.reduce((a, r) => a + r.totalBatches, 0) / iterations
@@ -607,7 +696,9 @@ export async function runSseBenchmarkMatrix(
         deliveryRatePercent: meanDelivery,
         latency: {
           avgMs: meanAvgLatency,
+          p50Ms: meanP50Latency,
           p95Ms: meanP95Latency,
+          p99Ms: meanP99Latency,
           maxMs: peakMaxLatency,
           stdDevMs: Math.round(calcStdDev(avgLatencies) * 10) / 10,
         },
@@ -615,15 +706,19 @@ export async function runSseBenchmarkMatrix(
           ...scenarioRuns[scenarioRuns.length - 1]!.hermesMetrics,
           gcCpuTimeDeltaMs: meanGcCpuTime,
           totalAllocatedBytesDeltaKB: meanAllocChurn,
+          bytesPerEvent: meanBytesPerEvent,
         },
         stdDev: {
           throughput: Math.round(calcStdDev(throughputs)),
           dataRateKBps: Math.round(calcStdDev(dataRates)),
           latencyAvgMs: Math.round(calcStdDev(avgLatencies) * 10) / 10,
+          latencyP50Ms: Math.round(calcStdDev(p50Latencies) * 10) / 10,
           latencyP95Ms: Math.round(calcStdDev(p95Latencies) * 10) / 10,
+          latencyP99Ms: Math.round(calcStdDev(p99Latencies) * 10) / 10,
           latencyMaxMs: Math.round(calcStdDev(maxLatencies) * 10) / 10,
           gcCpuTimeDeltaMs: Math.round(calcStdDev(gcCpuTimes) * 100) / 100,
           totalAllocatedBytesDeltaKB: Math.round(calcStdDev(allocChurns)),
+          bytesPerEvent: Math.round(calcStdDev(bytesPerEvents)),
         },
         runs: scenarioRuns,
       };

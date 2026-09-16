@@ -166,8 +166,10 @@ const server = http.createServer((req, res) => {
                 'Actual (ev/s)': tpStr,
                 'Data (KB/s)': fmt(r.dataRateKBps ?? 0),
                 'Delivery %': `${r.deliveryRatePercent ?? 100}%`,
-                'Avg Latency': latAvgStr,
-                'P95 Latency': r.latency ? `${r.latency.p95Ms} ms` : '-',
+                'Avg Lat': latAvgStr,
+                'P50 Lat': r.latency?.p50Ms != null ? `${r.latency.p50Ms} ms` : '-',
+                'P95 Lat': r.latency ? `${r.latency.p95Ms} ms` : '-',
+                'P99 Lat': r.latency?.p99Ms != null ? `${r.latency.p99Ms} ms` : '-',
                 'Batches': fmt(r.totalBatches),
                 'Hermes GCs': r.hermesMetrics.gcCountDelta,
                 'GC CPU (ms)': fmt(r.hermesMetrics.gcCpuTimeDeltaMs),
@@ -175,6 +177,8 @@ const server = http.createServer((req, res) => {
                   r.hermesMetrics.totalAllocatedBytesDeltaKB ??
                     r.hermesMetrics.allocatedBytesDeltaKB
                 ),
+                'Bytes/ev': r.hermesMetrics.bytesPerEvent != null ? fmt(r.hermesMetrics.bytesPerEvent) : '-',
+                'Live Heap Δ': fmt(r.hermesMetrics.liveHeapDeltaKB ?? r.hermesMetrics.allocatedBytesDeltaKB),
                 'Heap (KB)': fmt(r.hermesMetrics.finalHeapSizeKB),
               };
             })
