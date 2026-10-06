@@ -666,8 +666,31 @@ export class NitroSseClient implements SseClient {
   getStats(): SseStats {
     if (this._isDisposed) {
       return {
+        rawBytesReceived: 0,
+        decompressedBytesReceived: undefined,
         totalBytesReceived: 0,
+        chunksReceived: 0,
+        lastStatusCode: undefined,
+        totalEventsReceived: 0,
+        commentsReceived: 0,
+        linesParsed: 0,
+        parseErrors: 0,
+        serverRetryDelayMs: undefined,
+        connectedAt: undefined,
+        timeToFirstByteMs: undefined,
+        lastEventTime: undefined,
+        lastHeartbeatTime: undefined,
+        maxEventGapMs: 0,
+        eventsBuffered: 0,
+        peakBufferedEvents: 0,
+        bufferFlushCount: 0,
+        bufferOverflowCount: 0,
+        connectionAttempts: 0,
         reconnectCount: 0,
+        lastReconnectDelayMs: undefined,
+        disconnectReason: 'user_stop',
+        lastErrorTime: undefined,
+        lastErrorCode: undefined,
       };
     }
     return this._driver.getStats();

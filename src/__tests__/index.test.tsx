@@ -1222,10 +1222,13 @@ describe('NitroSseModule Unit Tests', () => {
           expect(client.isDisposed).toBe(true);
           expect(client.isConnected()).toBe(false);
           expect(client.getState()).toBe('closed');
-          expect(client.getStats()).toEqual({
-            totalBytesReceived: 0,
-            reconnectCount: 0,
-          });
+          expect(client.getStats()).toEqual(
+            expect.objectContaining({
+              totalBytesReceived: 0,
+              reconnectCount: 0,
+              disconnectReason: 'user_stop',
+            })
+          );
 
           expect(() => client.start()).toThrow(
             'Cannot perform operation on a disposed NitroSseClient instance'
