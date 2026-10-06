@@ -121,6 +121,29 @@ class NitroSseJsonTest {
     }
 
     @Test
+    fun testParseJsonToMapWithWhitespaceAndNBSP() {
+        val ordinary = JsonUtils.parseJsonToMap("   \n\t {\"key\": \"value\"} \r\n ")
+        org.junit.Assert.assertNotNull(ordinary)
+        assertEquals("value", ordinary!!["key"])
+
+        val nbsp = JsonUtils.parseJsonToMap("\u00A0{\"key\": \"value\"}")
+        org.junit.Assert.assertNotNull(nbsp)
+        assertEquals("value", nbsp!!["key"])
+
+        val mixed = JsonUtils.parseJsonToMap("  \t \u00A0  {\"key\": \"value\"}\u00A0")
+        org.junit.Assert.assertNotNull(mixed)
+        assertEquals("value", mixed!!["key"])
+
+        // Non-object roots with NBSP return null
+        assertNull(JsonUtils.parseJsonToMap("\u00A0[\"val\"]"))
+        assertNull(JsonUtils.parseJsonToMap("\u00A012345"))
+        assertNull(JsonUtils.parseJsonToMap("\u00A0\u00A0"))
+        assertNull(JsonUtils.parseJsonToAnyMap("\u00A0[\"val\"]"))
+        assertNull(JsonUtils.parseJsonToAnyMap("\u00A012345"))
+        assertNull(JsonUtils.parseJsonToAnyMap("\u00A0\u00A0"))
+    }
+
+    @Test
     fun testMalformedJsonReturnsNull() {
         assertNull(JsonUtils.parseJsonToAnyMap(""))
         assertNull(JsonUtils.parseJsonToAnyMap("   \n\t  "))

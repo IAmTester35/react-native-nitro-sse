@@ -36,15 +36,15 @@ The benchmark system consists of two coordinated components:
 
 ### Key Files
 
-- Server: [`example/script/sse-benchmark-server.mjs`](file:///Users/nammaithanh/Desktop/Samset/react-native-nitro-sse/example/script/sse-benchmark-server.mjs)
-- Client Runner: [`example/src/sseBenchmark.ts`](file:///Users/nammaithanh/Desktop/Samset/react-native-nitro-sse/example/src/sseBenchmark.ts)
-- Results Directory: [`example/benchmark-results/`](file:///Users/nammaithanh/Desktop/Samset/react-native-nitro-sse/example/benchmark-results/)
+- Server: [`example/script/sse-benchmark-server.mjs`](./example/script/sse-benchmark-server.mjs)
+- Client Runner: [`example/src/sseBenchmark.ts`](./example/src/sseBenchmark.ts)
+- Results Directory: [`example/benchmark-results/`](./example/benchmark-results/)
 
 ---
 
 ## 2. Standard Benchmark Scenarios
 
-The suite evaluates 13 distinct scenarios to test throughput limits, JSI bridge overhead, batching efficiency, and memory stability:
+The suite evaluates 14 distinct scenarios to test throughput limits, JSI bridge overhead, batching efficiency, and memory stability:
 
 | #   | Scenario                          | Target Rate | Payload    | Batching Mode    | Primary Focus                                     |
 | --- | --------------------------------- | ----------- | ---------- | ---------------- | ------------------------------------------------- |
@@ -57,10 +57,11 @@ The suite evaluates 13 distinct scenarios to test throughput limits, JSI bridge 
 | 6   | 1,000 ev/s \| 50ms Batch \| Raw   | 1,000 ev/s  | 128 B text | 50ms window      | High-efficiency batching (~50 ev/batch)           |
 | 7   | 1,000 ev/s \| 50ms Batch \| JSON  | 1,000 ev/s  | 128 B JSON | 50ms window      | Batching + parsing throughput                     |
 | 8   | 5,000 ev/s \| No-batch \| Raw     | 5,000 ev/s  | 128 B text | Disabled (`0ms`) | High-frequency raw JSI bridge without batching    |
-| 9   | 5,000 ev/s \| 50ms Batch \| Raw   | 5,000 ev/s  | 128 B text | 50ms window      | High-throughput streaming (~250 ev/batch)         |
-| 10  | 5,000 ev/s \| 50ms Batch \| JSON  | 5,000 ev/s  | 128 B JSON | 50ms window      | High-throughput JSON streaming                    |
-| 11  | 10,000 ev/s \| 50ms Batch \| Raw  | 10,000 ev/s | 128 B text | 50ms window      | **Extreme throughput** (~500 ev/batch, >1.2 MB/s) |
-| 12  | 10,000 ev/s \| 50ms Batch \| JSON | 10,000 ev/s | 128 B JSON | 50ms window      | Extreme throughput with JSON serialization        |
+| 9   | 5,000 ev/s \| No-batch \| JSON    | 5,000 ev/s  | 128 B JSON | Disabled (`0ms`) | High-frequency JSON JSI bridge without batching   |
+| 10  | 5,000 ev/s \| 50ms Batch \| Raw   | 5,000 ev/s  | 128 B text | 50ms window      | High-throughput streaming (~250 ev/batch)         |
+| 11  | 5,000 ev/s \| 50ms Batch \| JSON  | 5,000 ev/s  | 128 B JSON | 50ms window      | High-throughput JSON streaming                    |
+| 12  | 10,000 ev/s \| 50ms Batch \| Raw  | 10,000 ev/s | 128 B text | 50ms window      | **Extreme throughput** (~500 ev/batch, >1.2 MB/s) |
+| 13  | 10,000 ev/s \| 50ms Batch \| JSON | 10,000 ev/s | 128 B JSON | 50ms window      | Extreme throughput with JSON serialization        |
 
 ---
 
@@ -71,7 +72,7 @@ The suite evaluates 13 distinct scenarios to test throughput limits, JSI bridge 
 Run the standalone Node.js server on the host machine:
 
 ```bash
-node example/script/sse-benchmark-server.mjs
+yarn bench:server
 ```
 
 The server binds to `0.0.0.0:3100` and displays:
@@ -134,41 +135,3 @@ In the example app UI, trigger the benchmark suite.
 | **Hermes GCs**               | 0–10 GCs over entire 40k event run       | Frequency of garbage collections. Lower is better.                                                                                        |
 | **GC CPU Time**              | < 10 ms                                  | Total thread pause caused by GC. Ephemeral SSE payloads are reclaimed in nursery with ~0.5–1ms per minor GC pause.                        |
 | **Heap Memory**              | Stable (8 MB – 16 MB)                    | Heap must remain stable across scenarios without monotonic growth (no memory leak).                                                       |
-
----
-
-## 5. Diagnostic Playbook for Platform Discrepancies Example
-
-### Anomaly A: Android Latency Shows +100ms to +200ms vs iOS
-
-- **Root Cause:** AVD (Android Virtual Device / QEMU) system clock drift relative to host macOS clock. Latency calculated as `Date.now() - event.timestamp` is skewed by clock difference.
-- **Diagnosis:** Check emulator clock offset:
-  ```bash
-  adb shell date +%s%3N && date +%s%3N
-  ```
-- **Solution:** Use Cristian's Clock Synchronization Algorithm (already implemented in `sseBenchmark.ts`):
-  1. Client sends pre-flight request to `/health`.
-  2. Server responds with `serverTime: Date.now()`.
-  3. Client calculates `clockOffset = (t0 + t1)/2 - serverTime`.
-  4. Client adjusts latency: `latency = clientNow - eventTs - clockOffset`.
-
-### Anomaly B: No-batch Shows `avgBatchSize > 1.0` on Android
-
-- **Root Cause:** Event coalescing in `SseEventBuffer.kt`. If the dispatcher posts a flush runnable to the tail of the `HandlerThread` queue, subsequent incoming events push to the list before the flush executes, turning 1-by-1 dispatches into batches of 4–8.
-- **Solution:** Check thread context via `dispatcher.isCurrentDispatcher()`. When `batchingIntervalMs <= 0.0` and already on the dispatcher thread, execute `flushSync()` immediately without posting an async message.
-
-### Anomaly C: 50ms Batch Yields ~160 Batches Instead of ~80
-
-- **Root Cause:** Timer not cancelled on out-of-band or forced flushes. If a flush occurred, the pending `postDelayed` runnable remained active and fired shortly thereafter (~25ms interval).
-- **Solution:** Call `dispatcher.removeCallbacks(flushRunnable)` before any manual or scheduled flush to guarantee clean window intervals.
-
-### Anomaly D: Android Reports +15% More Bytes Than iOS
-
-- **Root Cause:** Android counted wire bytes (including HTTP headers, chunk delimiters, and gzip framing via OkHttp interceptor), while iOS counted logical UTF-8 string bytes (`data + type + id + comment`).
-- **Solution:** Standardize on **logical UTF-8 byte accounting** across all platforms in `NitroSse.kt` and `NitroSse.swift`:
-  ```kotlin
-  val bytes = event.data.toByteArray(Charsets.UTF_8).size +
-              event.eventType.toByteArray(Charsets.UTF_8).size +
-              event.id.toByteArray(Charsets.UTF_8).size
-  totalBytesReceived.addAndGet(bytes.toLong())
-  ```

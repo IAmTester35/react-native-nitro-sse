@@ -18,6 +18,7 @@ export type SseEventType =
   | 'message'
   | 'error'
   | 'close'
+  // TODO(breaking-change): Decouple 'heartbeat' from SseEventType into an opt-in callback (onHeartbeat) to eliminate high-frequency JSI bridge overhead.
   | 'heartbeat'
   | 'state';
 
@@ -223,17 +224,75 @@ export interface SseEvent<TData = AnyMap> {
   state?: SseState;
 }
 
+export type SseDisconnectReason =
+  | 'user_stop'
+  | 'network_error'
+  | 'server_error'
+  | 'parser_error'
+  | 'timeout';
+
 /**
  * Statistics about the SSE connection.
  */
 export interface SseStats {
-  /** Total bytes received so far. */
+  // === Transport & Socket ===
+  /** Raw bytes received from the network socket before decompression. */
+  rawBytesReceived: number;
+  /** Decompressed bytes received (if gzip/compression applied). */
+  decompressedBytesReceived?: number;
+  /** Decoded payload byte length (for backward compatibility). */
   totalBytesReceived: number;
-  /** Number of times the connection has been re-established. */
+  /** Number of data chunks/packets read from the network transport. */
+  chunksReceived: number;
+  /** HTTP response status code of the current or last connection attempt. */
+  lastStatusCode?: number;
+
+  // === Parser & Framing ===
+  /** Total valid SSE message events parsed and emitted. */
+  totalEventsReceived: number;
+  /** Total SSE comment lines (':') received as heartbeats. */
+  commentsReceived: number;
+  /** Total raw lines processed by the SSE parser. */
+  linesParsed: number;
+  /** Number of parsing errors encountered (line length limit exceeded, invalid UTF-8, etc.). */
+  parseErrors: number;
+  /** Latest retry delay requested by server via 'retry:' directive (ms). */
+  serverRetryDelayMs?: number;
+
+  // === Latency & Timing ===
+  /** Epoch timestamp (ms) when the active connection was established. */
+  connectedAt?: number;
+  /** Latency in ms from connection start to first body byte received. */
+  timeToFirstByteMs?: number;
+  /** Epoch timestamp (ms) of the most recently received event. */
+  lastEventTime?: number;
+  /** Epoch timestamp (ms) of the most recently received heartbeat/comment. */
+  lastHeartbeatTime?: number;
+  /** Maximum elapsed time (ms) between consecutive events/heartbeats (stall detection). */
+  maxEventGapMs: number;
+
+  // === Buffer & Backpressure ===
+  /** Number of events currently waiting in the dispatch buffer. */
+  eventsBuffered: number;
+  /** Maximum number of events queued in the buffer at any one time (high-water mark). */
+  peakBufferedEvents: number;
+  /** Total number of buffer flushes to JavaScript. */
+  bufferFlushCount: number;
+  /** Total number of early flushes triggered because buffer reached maxBufferSize. */
+  bufferOverflowCount: number;
+
+  // === Reconnection & Diagnostics ===
+  /** Total connection attempts made (initial and retries). */
+  connectionAttempts: number;
+  /** Number of successful reconnections. */
   reconnectCount: number;
+  /** Delay in ms used for the last reconnect attempt. */
+  lastReconnectDelayMs?: number;
+  /** Reason for the last disconnection. */
+  disconnectReason?: SseDisconnectReason;
   /** Timestamp of the last error event. */
   lastErrorTime?: number;
-  /** Error code of the last error. */
+  /** Error code or domain of the last error. */
   lastErrorCode?: string;
 }
 

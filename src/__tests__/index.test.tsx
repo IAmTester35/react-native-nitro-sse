@@ -1156,6 +1156,45 @@ describe('NitroSseModule Unit Tests', () => {
       });
     });
 
+    it('should accurately calculate totalBytesReceived with spec-compliant logical byte accounting', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+
+        // 1. "payload-data" (12 B) + "custom" (6 B) + "id-1" (4 B) -> 22 B
+        // 2. "hello" (5 B) + "message" (0 B) + retained "id-1" (0 B) -> 5 B (total 27 B)
+        // 3. "world" (5 B) + "message" (0 B) + new "id-2" (4 B) -> 9 B (total 36 B)
+        // 4. "reset" (5 B) + "message" (0 B) + empty id "" (0 B) -> 5 B (total 41 B, resets lastProcessedId)
+        // 5. "after" (5 B) + "message" (0 B) + "id-2" (4 B, counted as new id after reset) -> 9 B (total 50 B)
+        NitroSseModule.setup({
+          url: TEST_URL,
+          mock: {
+            mode: 'replace',
+            data: [
+              {
+                type: 'message',
+                data: 'payload-data',
+                event: 'custom',
+                id: 'id-1',
+              },
+              { type: 'message', data: 'hello', event: 'message', id: 'id-1' },
+              { type: 'message', data: 'world', event: 'message', id: 'id-2' },
+              { type: 'message', data: 'reset', event: 'message', id: '' },
+              { type: 'message', data: 'after', event: 'message', id: 'id-2' },
+            ],
+            eventsPerSecond: 10,
+          },
+        });
+        NitroSseModule.start();
+
+        jest.advanceTimersByTime(600);
+
+        const stats = NitroSseModule.getStats();
+        expect(stats.totalBytesReceived).toBe(50);
+        NitroSseModule.stop();
+      });
+    });
+
     it('should pass maxAuthRetries parameter to native setup', () => {
       jest.isolateModules(() => {
         const { createNitroSse } = require('../index');
@@ -1183,10 +1222,13 @@ describe('NitroSseModule Unit Tests', () => {
           expect(client.isDisposed).toBe(true);
           expect(client.isConnected()).toBe(false);
           expect(client.getState()).toBe('closed');
-          expect(client.getStats()).toEqual({
-            totalBytesReceived: 0,
-            reconnectCount: 0,
-          });
+          expect(client.getStats()).toEqual(
+            expect.objectContaining({
+              totalBytesReceived: 0,
+              reconnectCount: 0,
+              disconnectReason: 'user_stop',
+            })
+          );
 
           expect(() => client.start()).toThrow(
             'Cannot perform operation on a disposed NitroSseClient instance'

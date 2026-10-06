@@ -391,11 +391,11 @@ class NitroSseTests: XCTestCase {
         var didClose = false
         var failureCount = 0
         var onFailure: ((Int) -> Void)?
-        func connectionDidOpen(attemptVersion: Int) { didOpen = true }
+        func connectionDidOpen(response: HTTPURLResponse, attemptVersion: Int) { didOpen = true }
         func connectionDidClose(attemptVersion: Int) { didClose = true }
         func connectionDidReceiveMessage(eventType: String, data: String, lastEventId: String, attemptVersion: Int) {}
         func connectionDidReceiveComment(_ comment: String, attemptVersion: Int) {}
-        func connectionDidFail(error: Error, attemptVersion: Int) {
+        func connectionDidFail(error: Error, response: HTTPURLResponse?, errorBody: String?, attemptVersion: Int) {
             failureCount += 1
             onFailure?(failureCount)
         }
@@ -462,7 +462,7 @@ class NitroSseTests: XCTestCase {
         )
         let delegate = MockSseConnectionDelegate()
         let firstFailure = expectation(description: "Initial connection failure is forwarded")
-        let duplicateFailure = expectation(description: "LDSwiftEventSource does not reconnect independently")
+        let duplicateFailure = expectation(description: "Native SseEventSource does not reconnect independently")
         duplicateFailure.isInverted = true
         delegate.onFailure = { count in
             if count == 1 {
@@ -514,31 +514,41 @@ class NitroSseTests: XCTestCase {
         
         let delegate = MockSseConnectionDelegate()
         let dispatcher = MockSseDispatcher()
+        var capturedRequest: URLRequest?
+        let exp = expectation(description: "Request captured")
+        
+        MockURLProtocol.setHandler { request in
+            capturedRequest = request
+            exp.fulfill()
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            return (response, [], 0.0)
+        }
+        
         let eventSource = SseConnectionHandler.createEventSource(
             url: URL(string: config.url)!,
             config: config,
             lastProcessedId: "dynamic-resumed-id",
             delegate: delegate,
             attemptVersion: 1,
-            dispatcher: dispatcher
+            dispatcher: dispatcher,
+            protocolClasses: [MockURLProtocol.self]
         )
-        defer { eventSource.stop() }
-        
-        let mirror = Mirror(reflecting: eventSource)
-        if let configProp = mirror.children.first(where: { $0.label == "config" })?.value {
-            let configMirror = Mirror(reflecting: configProp)
-            if let headers = configMirror.children.first(where: { $0.label == "headers" })?.value as? [String: String] {
-                XCTAssertNil(headers["Last-Event-Id"])
-                XCTAssertNil(headers["last-event-id"])
-                XCTAssertEqual(headers["Authorization"], "Bearer token123")
-            }
-            if let lastEventId = configMirror.children.first(where: { $0.label == "lastEventId" })?.value as? String {
-                XCTAssertEqual(lastEventId, "dynamic-resumed-id")
-            }
-            if let method = configMirror.children.first(where: { $0.label == "method" })?.value as? String {
-                XCTAssertEqual(method, "POST")
-            }
+        defer {
+            eventSource.stop()
+            MockURLProtocol.reset()
         }
+        
+        wait(for: [exp], timeout: 2.0)
+        
+        XCTAssertNotNil(capturedRequest)
+        XCTAssertEqual(capturedRequest?.value(forHTTPHeaderField: "Last-Event-ID"), "dynamic-resumed-id")
+        XCTAssertEqual(capturedRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer token123")
+        XCTAssertEqual(capturedRequest?.httpMethod, "POST")
     }
 
     // MARK: - SseDispatchQueueDispatcher Tests

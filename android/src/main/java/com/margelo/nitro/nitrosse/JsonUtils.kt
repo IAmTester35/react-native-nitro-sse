@@ -25,7 +25,7 @@ object JsonUtils {
         if (depth > MAX_DEPTH) {
             throw IllegalArgumentException("JSON nesting depth limit ($MAX_DEPTH) exceeded")
         }
-        val map = mutableMapOf<String, Any?>()
+        val map = HashMap<String, Any?>(jsonObject.length())
         val keys = jsonObject.keys()
         while (keys.hasNext()) {
             val key = keys.next()
@@ -38,11 +38,40 @@ object JsonUtils {
         if (depth > MAX_DEPTH) {
             throw IllegalArgumentException("JSON nesting depth limit ($MAX_DEPTH) exceeded")
         }
-        val list = mutableListOf<Any?>()
+        val list = ArrayList<Any?>(jsonArray.length())
         for (i in 0 until jsonArray.length()) {
             list.add(convertJsonValue(jsonArray.get(i), depth))
         }
         return list
+    }
+
+    /**
+     * Parses a raw JSON string into a [Map]. Returns null on non-object roots.
+     * Throws [org.json.JSONException] on malformed JSON objects.
+     */
+    fun parseJsonToMap(data: String): Map<String, Any?>? {
+        val len = data.length
+        var firstChar = ' '
+        var idx = 0
+        var needsSubstring = false
+        while (idx < len) {
+            val c = data[idx]
+            if (c > ' ') {
+                if (c.isWhitespace()) {
+                    needsSubstring = true
+                } else {
+                    firstChar = c
+                    break
+                }
+            }
+            idx++
+        }
+        if (firstChar != '{') {
+            return null
+        }
+        val jsonStr = if (needsSubstring) data.substring(idx) else data
+        val jsonObject = JSONObject(jsonStr)
+        return jsonObjectToMap(jsonObject)
     }
 
     /**
@@ -51,14 +80,8 @@ object JsonUtils {
      */
     fun parseJsonToAnyMap(data: String): AnyMap? {
         return try {
-            val trimmed = data.trim()
-            if (trimmed.startsWith("{")) {
-                val jsonObject = JSONObject(trimmed)
-                val map = jsonObjectToMap(jsonObject)
-                AnyMap.fromMap(map, true)
-            } else {
-                null
-            }
+            val map = parseJsonToMap(data) ?: return null
+            AnyMap.fromMap(map, true)
         } catch (t: Throwable) {
             try {
                 Log.w("JsonUtils", "Failed to parse JSON: ${t.message}")

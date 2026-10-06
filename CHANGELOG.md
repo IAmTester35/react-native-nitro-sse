@@ -1,6 +1,19 @@
 # Changelog
 
-**## 3.0.0 (2026-09-11)**
+## 3.1.0 (2026-10-06)
+
+### Features
+
+- **Native SSE Parser**: Replaced external libraries (`LDSwiftEventSource`, `okhttp-eventsource`) with built-in WHATWG streaming parsers on iOS and Android.
+- **Detailed Metrics**: Added 25 connection and stream metrics to `getStats()` (throughput, latency, buffer, and reconnect diagnostics).
+- **Web-Ready Architecture**: Decoupled transport layer via `SseDriver` interface in preparation for web platform support.
+
+### Fixes & Improvements
+
+- **WHATWG Compliance**: Cross-platform support for CR/LF/CRLF, UTF-8 BOM, multi-line data, retry intervals, and EOF dispatch.
+- **Safety & Stability**: Added OOM limits for line/payload/error sizes, immediate socket teardown on `stop()`, and leak-free request tracking.
+
+## 3.0.0 (2026-09-11)
 
 **### Breaking Changes**
 
