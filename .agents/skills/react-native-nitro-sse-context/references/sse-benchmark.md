@@ -72,7 +72,7 @@ The suite evaluates 14 distinct scenarios to test throughput limits, JSI bridge 
 Run the standalone Node.js server on the host machine:
 
 ```bash
-node example/script/sse-benchmark-server.mjs
+yarn bench:server
 ```
 
 The server binds to `0.0.0.0:3100` and displays:
@@ -135,40 +135,3 @@ In the example app UI, trigger the benchmark suite.
 | **Hermes GCs**               | 0–10 GCs over entire 40k event run       | Frequency of garbage collections. Lower is better.                                                                                        |
 | **GC CPU Time**              | < 10 ms                                  | Total thread pause caused by GC. Ephemeral SSE payloads are reclaimed in nursery with ~0.5–1ms per minor GC pause.                        |
 | **Heap Memory**              | Stable (8 MB – 16 MB)                    | Heap must remain stable across scenarios without monotonic growth (no memory leak).                                                       |
-
----
-
-## 5. Diagnostic Playbook for Platform Discrepancies Example
-
-### Anomaly A: Android Latency Shows +100ms to +200ms vs iOS
-
-- **Root Cause:** AVD (Android Virtual Device / QEMU) system clock drift relative to host macOS clock. Latency calculated as `Date.now() - event.timestamp` is skewed by clock difference.
-- **Diagnosis:** Check emulator clock offset:
-  ```bash
-  adb shell date +%s%3N && date +%s%3N
-  ```
-- **Solution:** Use Cristian's Clock Synchronization Algorithm (already implemented in `sseBenchmark.ts`):
-  1. Client sends pre-flight request to `/health`.
-  2. Server responds with `serverTime: Date.now()`.
-  3. Client calculates `clockOffset = (t0 + t1)/2 - serverTime`.
-  4. Client adjusts latency: `latency = clientNow - eventTs - clockOffset`.
-
-### Anomaly B: No-batch Shows `avgBatchSize > 1.0` on Android
-
-- **Root Cause:** Event coalescing in `SseEventBuffer.kt`. If the dispatcher posts a flush runnable to the tail of the `HandlerThread` queue, subsequent incoming events push to the list before the flush executes, turning 1-by-1 dispatches into batches of 4–8.
-- **Solution:** Check thread context via `dispatcher.isCurrentDispatcher()`. When `batchingIntervalMs <= 0.0` and already on the dispatcher thread, execute `flushSync()` immediately without posting an async message.
-
-### Anomaly C: 50ms Batch Yields ~160 Batches Instead of ~80
-
-- **Root Cause:** Timer not cancelled on out-of-band or forced flushes. If a flush occurred, the pending `postDelayed` runnable remained active and fired shortly thereafter (~25ms interval).
-- **Solution:** Call `dispatcher.removeCallbacks(flushRunnable)` before any manual or scheduled flush to guarantee clean window intervals.
-
-### Anomaly D: Android Counted Retained `lastEventId` on Terminal Close Event
-
-- **Root Cause:** When stream finishes, server emits `event: close\ndata: {"status":"finished","total":N}` without an `id:` line. Per WHATWG SSE, `lastEventId` buffer retains the final numeric event ID (`400`, `4000`, `20000`, `40000`). iOS checked `lastEventId != self.lastProcessedId` and did NOT count bytes for retained ID. Android unconditionally counted `idSize = id.length`, resulting in +3 bytes (400), +4 bytes (4000), +5 bytes (20000/40000).
-- **Solution:** In `NitroSse.kt`, guard `idSize` with `val isNewId = !id.isNullOrEmpty() && id != this@NitroSse.lastProcessedId` matching iOS logic.
-
-### Anomaly E: Negative Values in `allocatedBytesDeltaKB`
-
-- **Root Cause:** `js_allocatedBytes` measures instantaneous live heap (retained objects). When Hermes GC fires mid-run (`gcCountDelta >= 1`), it sweeps pre-existing dead objects present before `initialStats` was recorded. The post-run heap (`finalStats.js_allocatedBytes`) is therefore smaller than the uncollected initial heap, yielding a negative delta (`final - initial < 0`).
-- **Solution:** Distinguish between **Alloc Churn** (`totalAllocatedBytesDeltaKB`, monotonic >= 0) which measures total memory allocated, and **Live Heap Δ** (`liveHeapDeltaKB` / `allocatedBytesDeltaKB`) which measures net retained heap growth. Use zero-allocation latency histograms to prevent test harness allocations from skewing GC telemetry.
