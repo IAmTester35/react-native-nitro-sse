@@ -66,14 +66,8 @@ class NitroSseGzipTest {
                 .setBody(compressedBuffer)
         )
 
-        val capturedComments = mutableListOf<String>()
-        val heartbeatInterceptor = HeartbeatInterceptor { _, comment ->
-            capturedComments.add(comment)
-        }
-
         val client = OkHttpClient.Builder()
             .addNetworkInterceptor(InspectorNetworkInterceptor())
-            .addInterceptor(heartbeatInterceptor)
             .build()
 
         val request = Request.Builder()
@@ -90,13 +84,25 @@ class NitroSseGzipTest {
         assertTrue("OkHttp should include gzip in Accept-Encoding", acceptEncoding?.contains("gzip") == true)
         assertTrue("Request must not enforce identity encoding", acceptEncoding != "identity")
 
-        // Downstream stream reader receives transparently decompressed body
-        val bodyContent = response.body?.string()
-        assertEquals(ssePayload, bodyContent)
+        val capturedComments = mutableListOf<String>()
+        val capturedEvents = mutableListOf<String>()
+        val reader = SseEventReader(response.body!!.source())
+        val callback = object : SseEventReader.Callback {
+            override fun onEvent(id: String?, type: String?, data: String) {
+                capturedEvents.add(data)
+            }
+            override fun onComment(comment: String) {
+                capturedComments.add(comment)
+            }
+            override fun onRetryChange(retryMs: Long) {}
+        }
+        while (reader.processNextEvent(callback)) {}
 
-        // Verify comment/heartbeat extracted properly
+        // Verify comment/heartbeat and data extracted properly from gzip
         assertEquals(1, capturedComments.size)
         assertEquals("keep-alive", capturedComments[0])
+        assertEquals(1, capturedEvents.size)
+        assertEquals("{\"status\":\"ok\",\"compressed\":true}", capturedEvents[0])
     }
 
     @Test

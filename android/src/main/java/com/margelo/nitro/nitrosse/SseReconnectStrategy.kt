@@ -34,6 +34,15 @@ class SseReconnectStrategy {
         this.maxReconnectAttempts = if (maxReconnectAttempts == -1 || maxReconnectAttempts >= 0) maxReconnectAttempts else -1
     }
 
+    /**
+     * Updates base retry interval when server sends a 'retry: <ms>' directive.
+     */
+    fun updateRetryInterval(retryMs: Double) {
+        if (!retryMs.isNaN() && !retryMs.isInfinite() && retryMs >= 0) {
+            this.retryIntervalMs = retryMs
+        }
+    }
+
     fun nextDelay(isError: Boolean): Long {
         _currentReconnectAttempts.incrementAndGet()
         val baseDelay = if (isError) {
