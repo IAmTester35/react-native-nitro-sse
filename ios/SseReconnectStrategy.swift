@@ -82,23 +82,42 @@ class SseReconnectStrategy {
         currentReconnectAttempts = 0
     }
     
+    /// Updates base retry interval when server sends a 'retry: <ms>' directive.
+    func updateRetryInterval(_ retryMs: Double) {
+        if retryMs.isFinite && retryMs >= 0 {
+            self.retryInterval = retryMs / 1000.0
+        }
+    }
+
     /// Parses `Retry-After` HTTP headers per RFC 7231 (integer seconds or RFC 1123 date).
-    /// Fallback to full jitter backoff when response metadata is omitted by underlying client.
+    static func extractRetryAfterSeconds(from response: HTTPURLResponse) -> TimeInterval? {
+        guard let retryAfterHeader = response.value(forHTTPHeaderField: "Retry-After") ?? (response.allHeaderFields["Retry-After"] as? String) else { return nil }
+        return parseRetryAfterHeader(retryAfterHeader)
+    }
+
+    /// Parses `Retry-After` HTTP headers per RFC 7231 (integer seconds or RFC 1123 date) from NSError userInfo.
     static func extractRetryAfterSeconds(from error: Error) -> TimeInterval? {
         let nsError = error as NSError
-        guard let response = nsError.userInfo["response"] as? HTTPURLResponse else { return nil }
-        guard let retryAfterHeader = response.value(forHTTPHeaderField: "Retry-After") else { return nil }
-        
-        if let seconds = Double(retryAfterHeader) {
+        if let response = nsError.userInfo["response"] as? HTTPURLResponse {
+            return extractRetryAfterSeconds(from: response)
+        }
+        return nil
+    }
+
+    private static func parseRetryAfterHeader(_ retryAfterHeader: String) -> TimeInterval? {
+        let trimmed = retryAfterHeader.trimmingCharacters(in: .whitespaces)
+        // RFC 7231 Section 7.1.3: delay-seconds is a sequence of 1*DIGIT (ASCII digits only)
+        if !trimmed.isEmpty && trimmed.allSatisfy({ $0.isASCII && $0.isNumber }), let seconds = Double(trimmed) {
             return seconds
         }
         
         let rfc1123Formatter = DateFormatter()
         rfc1123Formatter.locale = Locale(identifier: "en_US_POSIX")
+        rfc1123Formatter.timeZone = TimeZone(secondsFromGMT: 0)
         rfc1123Formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss z"
-        if let date = rfc1123Formatter.date(from: retryAfterHeader) {
+        if let date = rfc1123Formatter.date(from: trimmed) {
             let timeUntilDate = date.timeIntervalSinceNow
-            return timeUntilDate > 0 ? timeUntilDate : nil
+            return max(0.0, timeUntilDate)
         }
         return nil
     }

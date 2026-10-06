@@ -12,6 +12,15 @@ class SseEventBuffer {
     private var maxBufferSize: Int = 1000
     private weak var dispatcher: SseDispatcher?
     
+    // MARK: - Buffer Metrics
+    private(set) var peakBufferedEvents: Int = 0
+    private(set) var bufferFlushCount: Int = 0
+    private(set) var bufferOverflowCount: Int = 0
+    
+    var eventsBuffered: Int {
+        return eventBuffer.count
+    }
+    
     /// Initializes buffer batching thresholds and dispatch target.
     func configure(
         batchingIntervalMs: Double,
@@ -34,7 +43,15 @@ class SseEventBuffer {
         dispatcher?.assertOnQueue()
         eventBuffer.append(event)
         
-        if eventBuffer.count >= maxBufferSize || batchingIntervalMs <= 0 {
+        if eventBuffer.count > peakBufferedEvents {
+            peakBufferedEvents = eventBuffer.count
+        }
+        
+        if eventBuffer.count >= maxBufferSize && batchingIntervalMs > 0 {
+            bufferOverflowCount += 1
+            cancelPendingTimer()
+            flush()
+        } else if eventBuffer.count >= maxBufferSize || batchingIntervalMs <= 0 {
             cancelPendingTimer()
             flush()
         } else if pendingTimer == nil, let dispatcher = dispatcher {
@@ -53,6 +70,7 @@ class SseEventBuffer {
         cancelPendingTimer()
         guard !eventBuffer.isEmpty else { return }
         
+        bufferFlushCount += 1
         let batch = eventBuffer
         eventBuffer.removeAll()
         

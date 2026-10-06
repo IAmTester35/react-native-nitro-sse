@@ -9,8 +9,10 @@ public class MockSseDispatcher: SseDispatcher {
     /// Controls whether async work is executed synchronously inline or captured in pending queues.
     public var executeImmediately: Bool = true
     
+    private let lock = NSLock()
     public var pendingBlocks: [() -> Void] = []
     public var pendingDelayedBlocks: [(delay: TimeInterval, block: () -> Void)] = []
+    public var onDelayedBlockScheduled: ((TimeInterval) -> Void)?
     
     public init() {}
     
@@ -18,7 +20,9 @@ public class MockSseDispatcher: SseDispatcher {
         if executeImmediately {
             block()
         } else {
+            lock.lock()
             pendingBlocks.append(block)
+            lock.unlock()
         }
     }
     
@@ -35,11 +39,15 @@ public class MockSseDispatcher: SseDispatcher {
         if executeImmediately && delay <= 0.001 {
             block()
         } else {
+            lock.lock()
             pendingDelayedBlocks.append((delay: delay, block: {
                 if !cancellable.isCancelled {
                     block()
                 }
             }))
+            let callback = onDelayedBlockScheduled
+            lock.unlock()
+            callback?(delay)
         }
         return cancellable
     }
@@ -57,14 +65,18 @@ public class MockSseDispatcher: SseDispatcher {
     }
     
     public func executeAllPendingBlocks() {
+        lock.lock()
         let blocks = pendingBlocks
         pendingBlocks.removeAll()
+        lock.unlock()
         blocks.forEach { $0() }
     }
     
     public func executeDelayedBlocks() {
+        lock.lock()
         let delayedBlocks = pendingDelayedBlocks.sorted { $0.delay < $1.delay }
         pendingDelayedBlocks.removeAll()
+        lock.unlock()
         delayedBlocks.forEach { $0.block() }
     }
 }
