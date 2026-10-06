@@ -1,19 +1,17 @@
 # Changelog
 
-## 3.0.1 (2026-09-15)
+## 3.1.0 (2026-10-06)
+
+### Features
+
+- **Native SSE Parser**: Replaced external libraries (`LDSwiftEventSource`, `okhttp-eventsource`) with built-in WHATWG streaming parsers on iOS and Android.
+- **Detailed Metrics**: Added 25 connection and stream metrics to `getStats()` (throughput, latency, buffer, and reconnect diagnostics).
+- **Web-Ready Architecture**: Decoupled transport layer via `SseDriver` interface in preparation for web platform support.
 
 ### Fixes & Improvements
 
-- **Bounded Error Body**: Captured HTTP `4xx`/`5xx` error response bodies up to 8KB in `SseEvent.message` to deliver server error details without OOM risk.
-- **Strict Content-Type**: Terminated connection permanently without reconnecting on non-`text/event-stream` responses (fixes captive portal retry loops).
-- **Native iOS Engine**: Replaced `LDSwiftEventSource` with native Foundation `URLSessionDataDelegate` and an in-house WHATWG SSE parser (zero 3rd-party dependencies on iOS).
-- **DevTools Network Inspector**: Response headers on iOS are now fully captured and displayed in React Native DevTools.
-- **Sequential Streaming (Android)**: Replaced `okhttp-sse` with a custom stream reader to ensure strict chronological ordering between comments and messages.
-- **WHATWG Directives**: Added cross-platform support for `retry:` server directives and HTTP `Retry-After` headers (with randomized jitter).
-- **Socket Lifecycle & Cancellation**: Made `stop()` immediately cancel active sockets and guarded against rapid unmount/remount race conditions.
-- **Resource Teardown**: Guaranteed clean executor and dispatcher shutdown upon `dispose()`.
-- **Headers & Decompression**: Preserved transparent gzip decompression (`Accept-Encoding`) and honored custom `Content-Type` on POST requests.
-- **Metrics**: Aligned cross-platform `totalBytesReceived` tracking to decoded payload bytes.
+- **WHATWG Compliance**: Cross-platform support for CR/LF/CRLF, UTF-8 BOM, multi-line data, retry intervals, and EOF dispatch.
+- **Safety & Stability**: Added OOM limits for line/payload/error sizes, immediate socket teardown on `stop()`, and leak-free request tracking.
 
 ## 3.0.0 (2026-09-11)
 

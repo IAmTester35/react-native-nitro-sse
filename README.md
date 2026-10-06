@@ -209,7 +209,7 @@ sse.start();
 - **`flush()`**: Flushes pending events in the buffer immediately.
 - **`isConnected()`**: Returns boolean indicating if connection is active (`connecting`, `open`, `reconnecting`).
 - **`getState()`**: Returns current `SseState`.
-- **`getStats()`**: Returns connection metrics (`totalBytesReceived`, `reconnectCount`, `lastErrorTime`, `lastErrorCode`).
+- **`getStats()`**: Returns comprehensive connection metrics across transport (`rawBytesReceived`, `decompressedBytesReceived`, `totalBytesReceived`, `chunksReceived`, `lastStatusCode`), parser (`totalEventsReceived`, `commentsReceived`, `linesParsed`, `parseErrors`, `serverRetryDelayMs`), latency (`connectedAt`, `timeToFirstByteMs`, `lastEventTime`, `lastHeartbeatTime`, `maxEventGapMs`), buffer (`eventsBuffered`, `peakBufferedEvents`, `bufferFlushCount`, `bufferOverflowCount`), and diagnostics/lifecycle (`connectionAttempts`, `reconnectCount`, `lastReconnectDelayMs`, `disconnectReason`, `lastErrorTime`, `lastErrorCode`).
 - **`updateHeaders(headers)`**: Merges new headers into current configuration without closing the connection.
 - **`setLastProcessedId(id)`**: Sets the event ID to send in `Last-Event-ID` on subsequent reconnections.
 - **`addEventListener(type, listener)`**: Subscribes to an event type (`'message'`, `'open'`, `'close'`, `'error'`, `'heartbeat'`, `'state'`, or custom event name).
