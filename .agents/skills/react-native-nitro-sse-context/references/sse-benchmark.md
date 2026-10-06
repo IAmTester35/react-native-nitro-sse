@@ -36,9 +36,9 @@ The benchmark system consists of two coordinated components:
 
 ### Key Files
 
-- Server: [`example/script/sse-benchmark-server.mjs`](file:///Users/nammaithanh/Desktop/Samset/react-native-nitro-sse/example/script/sse-benchmark-server.mjs)
-- Client Runner: [`example/src/sseBenchmark.ts`](file:///Users/nammaithanh/Desktop/Samset/react-native-nitro-sse/example/src/sseBenchmark.ts)
-- Results Directory: [`example/benchmark-results/`](file:///Users/nammaithanh/Desktop/Samset/react-native-nitro-sse/example/benchmark-results/)
+- Server: [`example/script/sse-benchmark-server.mjs`](./example/script/sse-benchmark-server.mjs)
+- Client Runner: [`example/src/sseBenchmark.ts`](./example/src/sseBenchmark.ts)
+- Results Directory: [`example/benchmark-results/`](./example/benchmark-results/)
 
 ---
 
