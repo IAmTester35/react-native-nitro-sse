@@ -25,7 +25,7 @@ object JsonUtils {
         if (depth > MAX_DEPTH) {
             throw IllegalArgumentException("JSON nesting depth limit ($MAX_DEPTH) exceeded")
         }
-        val map = mutableMapOf<String, Any?>()
+        val map = HashMap<String, Any?>(jsonObject.length())
         val keys = jsonObject.keys()
         while (keys.hasNext()) {
             val key = keys.next()
@@ -38,7 +38,7 @@ object JsonUtils {
         if (depth > MAX_DEPTH) {
             throw IllegalArgumentException("JSON nesting depth limit ($MAX_DEPTH) exceeded")
         }
-        val list = mutableListOf<Any?>()
+        val list = ArrayList<Any?>(jsonArray.length())
         for (i in 0 until jsonArray.length()) {
             list.add(convertJsonValue(jsonArray.get(i), depth))
         }
@@ -51,9 +51,19 @@ object JsonUtils {
      */
     fun parseJsonToAnyMap(data: String): AnyMap? {
         return try {
-            val trimmed = data.trim()
-            if (trimmed.startsWith("{")) {
-                val jsonObject = JSONObject(trimmed)
+            val len = data.length
+            var firstChar = ' '
+            var idx = 0
+            while (idx < len) {
+                val c = data[idx]
+                if (c > ' ') {
+                    firstChar = c
+                    break
+                }
+                idx++
+            }
+            if (firstChar == '{') {
+                val jsonObject = JSONObject(data)
                 val map = jsonObjectToMap(jsonObject)
                 AnyMap.fromMap(map, true)
             } else {

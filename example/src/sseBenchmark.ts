@@ -736,7 +736,9 @@ export async function runSseBenchmarkMatrix(
         // ignore
       }
     }
-    await new Promise((r) => setTimeout(r, 1500));
+    // Adaptive cooldown: allow heavy throughput scenarios (>= 5,000 ev/s) adequate time to stabilize GC/socket buffers
+    const cooldownMs = scenario.targetRate >= 5000 ? 3000 : 1500;
+    await new Promise((r) => setTimeout(r, cooldownMs));
   }
 
   const report: BenchmarkReport = {

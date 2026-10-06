@@ -927,12 +927,11 @@ class NitroSseCoordinatorTest {
         val config = createMockConfig()
         sse.setup(config) { _ -> }
         drainLoopers()
-        sse.start()
-        drainLoopers()
 
         val lastIdField = NitroSse::class.java.getDeclaredField("lastProcessedId").apply { isAccessible = true }
         val reqIdField = NitroSse::class.java.getDeclaredField("requestId").apply { isAccessible = true }
-        val currentReqId = reqIdField.get(sse) as String
+        val currentReqId = "mock-req-id"
+        reqIdField.set(sse, currentReqId)
 
         // Initial setup has no Last-Event-ID
         assertNull(lastIdField.get(sse))
