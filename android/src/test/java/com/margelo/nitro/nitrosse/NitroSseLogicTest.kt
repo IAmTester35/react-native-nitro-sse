@@ -7,6 +7,7 @@ import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -397,4 +398,87 @@ class NitroSseLogicTest {
         eventSource.cancel()
         server.shutdown()
     }
+
+    @Test
+    fun testConnectionHandlerStreamReadFailurePassesNullResponse() {
+        val server = MockWebServer()
+        server.enqueue(MockResponse()
+            .setHeader("Content-Type", "text/event-stream")
+            .setBody("data: initial chunk\n\n")
+            .setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
+        server.start()
+
+        val latch = CountDownLatch(1)
+        var failedThrowable: Throwable? = null
+        var failedResponse: Response? = "placeholder".let { null }
+        var failCalled = false
+
+        val delegate = object : SseConnectionDelegate {
+            override fun connectionDidOpen(response: Response, requestId: String) {}
+            override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, requestId: String) {}
+            override fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {
+                failCalled = true
+                failedThrowable = t
+                failedResponse = response
+                latch.countDown()
+            }
+            override fun connectionDidClose(requestId: String) {}
+        }
+
+        val client = OkHttpClient.Builder().build()
+        val request = Request.Builder().url(server.url("/")).build()
+
+        val handler = SseConnectionHandler(delegate)
+        val eventSource = handler.createEventSource(client, request, "test-stream-fail-id")
+
+        assertTrue("Timeout waiting for connectionDidFail", latch.await(5, TimeUnit.SECONDS))
+        assertTrue(failCalled)
+        assertNotNull(failedThrowable)
+        assertNull("Response must be null on stream-read exception", failedResponse)
+
+        eventSource.cancel()
+        server.shutdown()
+    }
+
+    @Test
+    fun testConnectionHandlerInvalidContentTypePassesResponse() {
+        val server = MockWebServer()
+        server.enqueue(MockResponse()
+            .setHeader("Content-Type", "text/html")
+            .setBody("<html><body>Captive Portal</body></html>"))
+        server.start()
+
+        val latch = CountDownLatch(1)
+        var failedThrowable: Throwable? = null
+        var failedResponse: Response? = null
+        var failCalled = false
+
+        val delegate = object : SseConnectionDelegate {
+            override fun connectionDidOpen(response: Response, requestId: String) {}
+            override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, requestId: String) {}
+            override fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {
+                failCalled = true
+                failedThrowable = t
+                failedResponse = response
+                latch.countDown()
+            }
+            override fun connectionDidClose(requestId: String) {}
+        }
+
+        val client = OkHttpClient.Builder().build()
+        val request = Request.Builder().url(server.url("/")).build()
+
+        val handler = SseConnectionHandler(delegate)
+        val eventSource = handler.createEventSource(client, request, "test-invalid-ct-id")
+
+        assertTrue("Timeout waiting for connectionDidFail", latch.await(5, TimeUnit.SECONDS))
+        assertTrue(failCalled)
+        assertTrue(failedThrowable is InvalidContentTypeException)
+        assertNotNull("Response must be non-null on invalid Content-Type", failedResponse)
+        assertEquals("text/html", failedResponse?.header("Content-Type"))
+
+        eventSource.cancel()
+        server.shutdown()
+    }
 }
+

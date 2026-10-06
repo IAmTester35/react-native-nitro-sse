@@ -75,6 +75,7 @@ class NitroSse: HybridNitroSseSpec {
     private var isReconnecting: Bool = false
     private var lastReconnectDelayMs: Double? = nil
     private var disconnectReason: SseDisconnectReason? = nil
+    private var currentAttemptHasParseError: Bool = false
     private var lastErrorTime: Double? = nil
     private var lastErrorCode: String? = nil
 
@@ -562,6 +563,7 @@ class NitroSse: HybridNitroSseSpec {
         self.connectionAttempts += 1
         self.connectionAttemptStartTime = Date().timeIntervalSince1970 * 1000
         self.timeToFirstByteMs = nil
+        self.currentAttemptHasParseError = false
         
         self.updateState(.connecting)
         self.finishActiveRequestInspector()
@@ -725,6 +727,7 @@ extension NitroSse: SseConnectionDelegate {
         dispatcher.assertOnQueue()
         guard attemptVersion == self.connectionAttemptVersion else { return }
         self.parseErrors += 1
+        self.currentAttemptHasParseError = true
         self.disconnectReason = .parserError
     }
     
@@ -833,31 +836,27 @@ extension NitroSse: SseConnectionDelegate {
             self.lastStatusCode = Double(resp.statusCode)
         }
         
-        if isParserLimit || self.disconnectReason == .parserError {
+        if isParserLimit || self.currentAttemptHasParseError {
             self.disconnectReason = .parserError
         } else if let http = httpStatusCode, http >= 400 || http == 204 {
             self.disconnectReason = .serverError
-        } else if response != nil {
-            self.disconnectReason = .serverError
+        } else if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut {
+            self.disconnectReason = .timeout
+        } else if nsError.localizedDescription.lowercased().contains("timed out") {
+            self.disconnectReason = .timeout
+        } else if nsError.domain == NSURLErrorDomain && (
+            nsError.code == NSURLErrorNotConnectedToInternet ||
+            nsError.code == NSURLErrorNetworkConnectionLost ||
+            nsError.code == NSURLErrorCannotFindHost ||
+            nsError.code == NSURLErrorCannotConnectToHost ||
+            nsError.code == NSURLErrorDNSLookupFailed ||
+            nsError.code == NSURLErrorInternationalRoamingOff ||
+            nsError.code == NSURLErrorCallIsActive ||
+            nsError.code == NSURLErrorDataNotAllowed
+        ) {
+            self.disconnectReason = .networkError
         } else {
-            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut {
-                self.disconnectReason = .timeout
-            } else if nsError.domain == NSURLErrorDomain && (
-                nsError.code == NSURLErrorNotConnectedToInternet ||
-                nsError.code == NSURLErrorNetworkConnectionLost ||
-                nsError.code == NSURLErrorCannotFindHost ||
-                nsError.code == NSURLErrorCannotConnectToHost ||
-                nsError.code == NSURLErrorDNSLookupFailed ||
-                nsError.code == NSURLErrorInternationalRoamingOff ||
-                nsError.code == NSURLErrorCallIsActive ||
-                nsError.code == NSURLErrorDataNotAllowed
-            ) {
-                self.disconnectReason = .networkError
-            } else if nsError.localizedDescription.lowercased().contains("timed out") {
-                self.disconnectReason = .timeout
-            } else if self.disconnectReason == nil {
-                self.disconnectReason = .networkError
-            }
+            self.disconnectReason = .networkError
         }
         
         self.lastErrorTime = Date().timeIntervalSince1970 * 1000

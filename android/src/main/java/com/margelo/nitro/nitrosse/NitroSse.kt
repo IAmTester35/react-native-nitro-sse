@@ -594,13 +594,15 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         // are intentionally excluded to maintain cross-platform parity.
         val encodedDataSize = data.utf8Size()
         val eventTypeSize = if (type != null && type != "message") type.utf8Size() else 0L
-        val currentLastId = synchronized(this@NitroSse) { this@NitroSse.lastProcessedId }
-        val isNewId = !id.isNullOrEmpty() && id != currentLastId
-        val idSize = if (isNewId) id!!.utf8Size() else 0L
-        totalBytesReceived.addAndGet(encodedDataSize + eventTypeSize + idSize)
 
         val currentConfig: SseConfig?
         synchronized(this@NitroSse) {
+            if (requestId != this@NitroSse.requestId) return
+            val currentLastId = this@NitroSse.lastProcessedId
+            val isNewId = !id.isNullOrEmpty() && id != currentLastId
+            val idSize = if (isNewId) id!!.utf8Size() else 0L
+            totalBytesReceived.addAndGet(encodedDataSize + eventTypeSize + idSize)
+
             // WHATWG SSE Spec: If the server sends an empty id (e.g. 'id:\n'), reset lastProcessedId to null.
             // Note: lastProcessedId is dynamically updated here for every incoming message with an id,
             // feeding into Last-Event-ID for reconnection resumption per WHATWG SSE specification.
@@ -620,15 +622,19 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             lastActivityTime = now
         }
         val parsedData = if (currentConfig?.autoParseJSON == true) JsonUtils.parseJsonToAnyMap(data) else null
-        eventBuffer.push(SseEvent(SseEventType.MESSAGE, data, parsedData, id, type, null, 200.0, null, null))
+        sseDispatcher?.post {
+            if (requestId != this@NitroSse.requestId) return@post
+            eventBuffer.push(SseEvent(SseEventType.MESSAGE, data, parsedData, id, type, null, 200.0, null, null))
+        }
     }
 
     override fun connectionDidReceiveComment(comment: String, requestId: String) {
         val currentRid = synchronized(this@NitroSse) { this@NitroSse.requestId }
         if (requestId != currentRid) return
         val commentBytes = comment.utf8Size()
-        totalBytesReceived.addAndGet(commentBytes)
         synchronized(this@NitroSse) {
+            if (requestId != this@NitroSse.requestId) return
+            totalBytesReceived.addAndGet(commentBytes)
             commentsReceived += 1.0
             val now = System.currentTimeMillis().toDouble()
             lastHeartbeatTime = now
@@ -641,29 +647,28 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             lastActivityTime = now
         }
         // TODO(breaking-change): In next major version, avoid pushing HEARTBEAT event across JSI; use internal watchdog or dedicated onHeartbeat callback to eliminate bridge overhead.
-        eventBuffer.push(SseEvent(SseEventType.HEARTBEAT, null, null, null, null, comment, null, null, null))
+        sseDispatcher?.post {
+            if (requestId != this@NitroSse.requestId) return@post
+            eventBuffer.push(SseEvent(SseEventType.HEARTBEAT, null, null, null, null, comment, null, null, null))
+        }
     }
 
     override fun connectionDidReceiveRetry(retryMs: Long, requestId: String) {
-        val currentRid = synchronized(this@NitroSse) { this@NitroSse.requestId }
-        if (requestId == currentRid) {
-            synchronized(this@NitroSse) {
-                serverRetryDelayMs = retryMs.toDouble()
-            }
+        synchronized(this@NitroSse) {
+            if (requestId != this@NitroSse.requestId) return
+            serverRetryDelayMs = retryMs.toDouble()
             reconnectStrategy.updateRetryInterval(retryMs.toDouble())
         }
     }
 
     override fun connectionDidUpdateLastEventId(id: String?, requestId: String) {
-        val currentRid = synchronized(this@NitroSse) { this@NitroSse.requestId }
-        if (requestId == currentRid) {
-            val newId = if (id.isNullOrEmpty()) null else id
-            synchronized(this@NitroSse) {
-                if (newId != null && newId != this@NitroSse.lastProcessedId) {
-                    totalBytesReceived.addAndGet(newId.utf8Size())
-                }
-                this@NitroSse.lastProcessedId = newId
+        val newId = if (id.isNullOrEmpty()) null else id
+        synchronized(this@NitroSse) {
+            if (requestId != this@NitroSse.requestId) return
+            if (newId != null && newId != this@NitroSse.lastProcessedId) {
+                totalBytesReceived.addAndGet(newId.utf8Size())
             }
+            this@NitroSse.lastProcessedId = newId
         }
     }
 

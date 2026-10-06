@@ -40,7 +40,7 @@ private let MAX_ERROR_BODY_BYTES: Int = 8192
 /// Maximum bytes allowed for a single SSE line to prevent Out-Of-Memory errors.
 private let MAX_SSE_LINE_LENGTH: Int = 16 * 1024 * 1024
 
-/// Maximum characters allowed for accumulated event data to prevent Out-Of-Memory errors.
+/// Maximum bytes allowed for accumulated event data to prevent Out-Of-Memory errors.
 private let MAX_SSE_EVENT_DATA_SIZE: Int = 16 * 1024 * 1024
 
 /// Protocol representing an active SSE connection that can be cancelled.
@@ -94,6 +94,9 @@ internal class SseEventParser {
     /// Per WHATWG SSE specification: "Once the end of the file is reached, any pending data must be dispatched as an event."
     func endOfStream() {
         if !buffer.isEmpty {
+            if buffer.last == 0x0D {
+                buffer.removeLast()
+            }
             let line = String(decoding: buffer, as: UTF8.self)
             buffer.removeAll()
             processLine(line)
@@ -160,14 +163,16 @@ internal class SseEventParser {
         
         // If buffer has leftover bytes from previous chunks, handle line boundary first
         if !buffer.isEmpty {
-            // Handle CRLF split across chunk boundary: buffer ends with \r, currentData starts with \n
-            if buffer.last == 0x0D && currentData.first == 0x0A {
+            // Handle CR/CRLF split across chunk boundary
+            if buffer.last == 0x0D {
                 buffer.removeLast()
                 let line = String(decoding: buffer, as: UTF8.self)
                 buffer.removeAll()
                 processLine(line)
                 parsedLinesInChunk += 1
-                readIndex = currentData.startIndex + 1
+                if currentData.first == 0x0A {
+                    readIndex = currentData.startIndex + 1
+                }
             } else if let firstLine = findNextLine(in: currentData, from: readIndex) {
                 if buffer.count + firstLine.content.count > MAX_SSE_LINE_LENGTH {
                     let error = NSError(domain: "NitroSse", code: -2002, userInfo: [NSLocalizedDescriptionKey: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes"])
@@ -303,8 +308,8 @@ internal class SseEventParser {
         switch field {
         case "data":
             let separatorSize = hasData ? 1 : 0
-            if dataBuffer.count + separatorSize + value.count > MAX_SSE_EVENT_DATA_SIZE {
-                let error = NSError(domain: "NitroSse", code: -2003, userInfo: [NSLocalizedDescriptionKey: "SSE event data exceeded maximum limit of \(MAX_SSE_EVENT_DATA_SIZE) characters"])
+            if dataBuffer.utf8.count + separatorSize + value.utf8.count > MAX_SSE_EVENT_DATA_SIZE {
+                let error = NSError(domain: "NitroSse", code: -2003, userInfo: [NSLocalizedDescriptionKey: "SSE event data exceeded maximum limit of \(MAX_SSE_EVENT_DATA_SIZE) bytes"])
                 delegate?.parserDidFail(error: error)
                 dataBuffer = ""
                 hasData = false

@@ -381,7 +381,7 @@ internal class RealSseEventSource(
                 ) {
                     delegate.connectionDidEncounterParseError(requestId)
                 }
-                delegate.connectionDidFail(e, response, null, requestId)
+                delegate.connectionDidFail(e, null, null, requestId)
             }
         } finally {
             response.close()

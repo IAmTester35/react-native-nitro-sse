@@ -19,6 +19,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * End-to-end unit tests for [NitroSse] state machine transitions, lifecycle events,
@@ -1235,6 +1236,97 @@ class NitroSseCoordinatorTest {
 
         stats = sse.getStats()
         assertEquals(350.0, stats.rawBytesReceived, 0.0)
+
+        sse.stop()
+        drainLoopers()
+    }
+
+    @Test
+    fun testConnectionDidReceiveMessageOrderingAndObsoleteRequestDiscard() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig().copy(batchingIntervalMs = 0.0)
+        val emittedEvents = mutableListOf<SseEvent>()
+
+        sse.setup(config) { events ->
+            emittedEvents.addAll(events)
+        }
+        drainLoopers()
+
+        val isRunningField = NitroSse::class.java.getDeclaredField("isRunning")
+        isRunningField.isAccessible = true
+        (isRunningField.get(sse) as AtomicBoolean).set(true)
+
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val currentReqId = "test-req-ordering-id"
+        reqIdField.set(sse, currentReqId)
+
+        val resp200 = createResponse(200, "OK", "text/event-stream")
+
+        // Dispatch open and message in succession
+        sse.connectionDidOpen(resp200, currentReqId)
+        sse.connectionDidReceiveMessage("1", "message", "first", currentReqId)
+
+        // Dispatch a message with an obsolete / mismatched requestId
+        sse.connectionDidReceiveMessage("2", "message", "obsolete", "obsolete-req-id")
+
+        drainLoopers()
+
+        val nonStateEvents = emittedEvents.filter { it.type != SseEventType.STATE }
+        assertEquals(2, nonStateEvents.size)
+        assertEquals(SseEventType.OPEN, nonStateEvents[0].type)
+        assertEquals(SseEventType.MESSAGE, nonStateEvents[1].type)
+        assertEquals("first", nonStateEvents[1].data)
+
+        sse.stop()
+        drainLoopers()
+    }
+
+    @Test
+    fun testStateMutationRejectedWhenRequestRetiresConcurrently() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig().copy(batchingIntervalMs = 0.0)
+        val emittedEvents = mutableListOf<SseEvent>()
+
+        sse.setup(config) { events ->
+            emittedEvents.addAll(events)
+        }
+        drainLoopers()
+
+        val isRunningField = NitroSse::class.java.getDeclaredField("isRunning")
+        isRunningField.isAccessible = true
+        (isRunningField.get(sse) as AtomicBoolean).set(true)
+
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val initialReqId = "req-1"
+        reqIdField.set(sse, initialReqId)
+
+        val lastIdField = NitroSse::class.java.getDeclaredField("lastProcessedId")
+        lastIdField.isAccessible = true
+
+        // Simulate replacement attempt retirement by bumping requestId to req-2
+        val replacementReqId = "req-2"
+        reqIdField.set(sse, replacementReqId)
+
+        // Stale callbacks entering from retired attempt req-1
+        sse.connectionDidReceiveMessage("stale-msg-id", "message", "stale payload", initialReqId)
+        sse.connectionDidReceiveComment("stale comment", initialReqId)
+        sse.connectionDidReceiveRetry(8888L, initialReqId)
+        sse.connectionDidUpdateLastEventId("stale-id-only", initialReqId)
+
+        drainLoopers()
+
+        // Verify state mutations from retired request are rejected
+        assertNull("lastProcessedId must not be overwritten by retired request", lastIdField.get(sse))
+        val stats = sse.getStats()
+        assertEquals(0.0, stats.totalEventsReceived, 0.0)
+        assertEquals(0.0, stats.commentsReceived, 0.0)
+        assertEquals(0.0, stats.serverRetryDelayMs ?: 0.0, 0.0)
+
+        // Verify no events delivered to buffer
+        val nonStateEvents = emittedEvents.filter { it.type != SseEventType.STATE }
+        assertTrue("No events should be delivered from retired request", nonStateEvents.isEmpty())
 
         sse.stop()
         drainLoopers()

@@ -1341,6 +1341,65 @@ class NitroSseCoordinatorTests: XCTestCase {
         XCTAssertEqual(try! sse.getState(), .failed)
     }
 
+    func testPriorParseErrorDoesNotAffectLaterConnections() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig().copyWith(batchingIntervalMs: 0.0, retryIntervalMs: 1000, jitterFactor: 0.0)
+
+        try! sse.setup(config: config) { _ in }
+        dispatcher.executeAllPendingBlocks()
+
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+        var version = sse.connectionAttemptVersion
+
+        // Attempt 1: Encounter parse error and fail
+        sse.connectionDidEncounterParseError(attemptVersion: version)
+        sse.connectionDidFail(error: NSError(domain: "NitroSse", code: -2002, userInfo: nil), response: nil, errorBody: nil, attemptVersion: version)
+        dispatcher.executeAllPendingBlocks()
+
+        var stats = try! sse.getStats()
+        XCTAssertEqual(stats.disconnectReason, .parserError)
+
+        // Attempt 2: Start new connection (resets per-attempt parse error flag)
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+        version = sse.connectionAttemptVersion
+
+        // Attempt 2 fails with network error
+        let netErr = NSError(domain: NSURLErrorDomain, code: NSURLErrorNetworkConnectionLost, userInfo: nil)
+        sse.connectionDidFail(error: netErr, response: nil, errorBody: nil, attemptVersion: version)
+        dispatcher.executeAllPendingBlocks()
+
+        stats = try! sse.getStats()
+        XCTAssertEqual(stats.disconnectReason, .networkError, "Later connection must not retain previous .parserError")
+
+        // Attempt 3: 200 OK response followed by timeout should classify as .timeout, not .serverError
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+        version = sse.connectionAttemptVersion
+
+        let resp200 = HTTPURLResponse(url: URL(string: TEST_URL)!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "text/event-stream"])!
+        let timeoutErr = NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut, userInfo: nil)
+        sse.connectionDidFail(error: timeoutErr, response: resp200, errorBody: nil, attemptVersion: version)
+        dispatcher.executeAllPendingBlocks()
+
+        stats = try! sse.getStats()
+        XCTAssertEqual(stats.disconnectReason, .timeout, "HTTP 200 response with timeout must classify as .timeout, not .serverError")
+
+        // Attempt 4: Unknown error should classify as .networkError without retaining prior .timeout
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+        version = sse.connectionAttemptVersion
+
+        let unknownErr = NSError(domain: "CustomDomain", code: 9999, userInfo: nil)
+        sse.connectionDidFail(error: unknownErr, response: nil, errorBody: nil, attemptVersion: version)
+        dispatcher.executeAllPendingBlocks()
+
+        stats = try! sse.getStats()
+        XCTAssertEqual(stats.disconnectReason, .networkError, "Unknown error must classify as .networkError without retaining prior reason")
+    }
+
     func testRawBytesAccumulatesAcrossReconnections() {
         let dispatcher = MockSseDispatcher()
         let sse = NitroSse(dispatcher: dispatcher)

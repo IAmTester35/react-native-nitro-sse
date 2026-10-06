@@ -331,7 +331,7 @@ final class NitroSseWireProtocolTests: XCTestCase {
             
             XCTAssertNil(delegate.failedError, "Exactly MAX bytes including newline separator must succeed")
             XCTAssertEqual(delegate.events.count, 1)
-            XCTAssertEqual(delegate.events.first?.data.count, maxLimit)
+            XCTAssertEqual(delegate.events.first?.data.utf8.count, maxLimit)
         }
 
         // 2. Boundary: Off-by-one verification - raw data is exactly MAX (half + half),
@@ -382,6 +382,46 @@ final class NitroSseWireProtocolTests: XCTestCase {
         }
     }
 
+    func testDataLimitMeasuresUtf8BytesNotGraphemeClusters() {
+        let parser = SseEventParser()
+        let delegate = MockParserDelegate()
+        parser.delegate = delegate
+
+        let prefixData = "data: ".data(using: .utf8)!
+        let nlData = "\n".data(using: .utf8)!
+        let endData = "\n\n".data(using: .utf8)!
+
+        let half = 8 * 1024 * 1024
+
+        // Line 1: 8 MB of ASCII (8,388,608 bytes and 8,388,608 characters)
+        var chunk1 = prefixData
+        chunk1.append(Data(repeating: UInt8(ascii: "a"), count: half))
+        chunk1.append(nlData)
+
+        // Line 2: 4-byte UTF-8 emojis ("🚀" = 4 bytes per character)
+        // 8,388,612 bytes = 2,097,153 characters.
+        // Total characters = 10,485,762 (well below 16M characters limit)
+        // Total UTF-8 bytes = 8,388,608 + 1 (newline) + 8,388,612 = 16,777,221 (> 16MB byte limit)
+        var emojiPattern = "🚀".data(using: .utf8)!
+        while emojiPattern.count < half + 4 {
+            emojiPattern.append(emojiPattern)
+        }
+        let emojiChunk = emojiPattern.subdata(in: 0..<(half + 4))
+
+        var chunk2 = prefixData
+        chunk2.append(emojiChunk)
+        chunk2.append(endData)
+
+        parser.feed(data: chunk1)
+        parser.feed(data: chunk2)
+
+        XCTAssertNotNil(delegate.failedError, "Data buffer exceeding 16MB UTF-8 bytes must fail even when character count is < 16M")
+        let nsError = delegate.failedError as NSError?
+        XCTAssertEqual(nsError?.domain, "NitroSse")
+        XCTAssertEqual(nsError?.code, -2003)
+        XCTAssertEqual(nsError?.localizedDescription, "SSE event data exceeded maximum limit of 16777216 bytes")
+    }
+
     func testStreamEndingAtEofWithoutTrailingEmptyLineDispatchesPendingEvent() {
         let parser = SseEventParser()
         let delegate = MockParserDelegate()
@@ -401,6 +441,42 @@ final class NitroSseWireProtocolTests: XCTestCase {
         XCTAssertEqual(delegate.events.first?.id, "999")
         XCTAssertEqual(delegate.events.first?.type, "finish")
         XCTAssertEqual(delegate.events.first?.data, "payload_at_eof")
+    }
+
+    func testBareCarriageReturnAcrossChunkBoundaryWhenNextChunkDoesNotStartWithLf() {
+        let parser = SseEventParser()
+        let delegate = MockParserDelegate()
+        parser.delegate = delegate
+
+        // Chunk 1 ends with bare \r
+        let chunk1 = "data: line1\r".data(using: .utf8)!
+        // Chunk 2 does not start with \n; it starts with another data line and finishes the event
+        let chunk2 = "data: line2\n\n".data(using: .utf8)!
+
+        parser.feed(data: chunk1)
+        parser.feed(data: chunk2)
+
+        XCTAssertEqual(delegate.events.count, 1)
+        XCTAssertEqual(delegate.events.first?.data, "line1\nline2")
+    }
+
+    func testBareCarriageReturnAtEndOfStream() {
+        let parser = SseEventParser()
+        let delegate = MockParserDelegate()
+        parser.delegate = delegate
+
+        // Stream ends with bare \r at EOF
+        let raw = "id: 123\ndata: value_at_eof\r"
+        parser.feed(data: raw.data(using: .utf8)!)
+
+        XCTAssertEqual(delegate.events.count, 0)
+
+        // endOfStream must strip the trailing \r before decoding and dispatching
+        parser.endOfStream()
+
+        XCTAssertEqual(delegate.events.count, 1)
+        XCTAssertEqual(delegate.events.first?.id, "123")
+        XCTAssertEqual(delegate.events.first?.data, "value_at_eof")
     }
 }
 
