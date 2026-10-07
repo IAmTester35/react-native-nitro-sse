@@ -1623,6 +1623,85 @@ describe('useNitroSse Hook Tests', () => {
         expect(result.getStats()).toBeUndefined();
       });
     });
+
+    describe('Issues Resolution Tests (Issues 2, 4, 8)', () => {
+      it('Issue 8: should not crash or invoke prototype methods when receiving __proto__, toString, or constructor event names', () => {
+        const onCustom = jest.fn();
+        useHookHarness({
+          url: TEST_URL,
+          events: {
+            custom: onCustom,
+          },
+        });
+        flushEffects();
+
+        // Native emits event with event name '__proto__'
+        expect(() => {
+          nativeCallback([
+            { type: 'message', event: '__proto__', data: 'polluted' },
+          ]);
+        }).not.toThrow();
+
+        // Native emits event with event name 'toString'
+        expect(() => {
+          nativeCallback([
+            { type: 'message', event: 'toString', data: 'to-string-data' },
+          ]);
+        }).not.toThrow();
+
+        // Native emits event with event name 'constructor'
+        expect(() => {
+          nativeCallback([
+            { type: 'message', event: 'constructor', data: 'constructor-data' },
+          ]);
+        }).not.toThrow();
+
+        // Valid custom event still triggers
+        nativeCallback([{ type: 'message', event: 'custom', data: 'hello' }]);
+        expect(onCustom).toHaveBeenCalledWith(
+          expect.objectContaining({ event: 'custom', data: 'hello' })
+        );
+      });
+
+      it('Issue 4: should recreate client when headers key set is reduced (header removed)', () => {
+        const createHybridSpy = NitroModules.createHybridObject as jest.Mock;
+        useHookHarness({
+          url: TEST_URL,
+          headers: {
+            'Authorization': 'Bearer token',
+            'X-Tenant-Id': 'tenant-abc',
+          },
+        });
+        flushEffects();
+
+        const initialCount = createHybridSpy.mock.calls.length;
+
+        // Re-render with one header removed
+        useHookHarness({
+          url: TEST_URL,
+          headers: {
+            Authorization: 'Bearer token',
+          },
+        });
+        flushEffects();
+
+        // Client should have been recreated to prevent sending stale X-Tenant-Id
+        expect(createHybridSpy.mock.calls.length).toBeGreaterThan(initialCount);
+      });
+
+      it('Issue 2: should trigger onClose callback when connection state becomes closed', () => {
+        const onClose = jest.fn();
+        useHookHarness({
+          url: TEST_URL,
+          onClose,
+        });
+        flushEffects();
+
+        nativeCallback([{ type: 'state', state: 'closed' }]);
+
+        expect(onClose).toHaveBeenCalled();
+      });
+    });
   });
 
   describe('safeSerializeConfig', () => {

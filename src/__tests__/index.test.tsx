@@ -1156,6 +1156,45 @@ describe('NitroSseModule Unit Tests', () => {
       });
     });
 
+    it('should accurately calculate totalBytesReceived with spec-compliant logical byte accounting', () => {
+      jest.isolateModules(() => {
+        const { createNitroSse } = require('../index');
+        const NitroSseModule = createNitroSse();
+
+        // 1. "payload-data" (12 B) + "custom" (6 B) + "id-1" (4 B) -> 22 B
+        // 2. "hello" (5 B) + "message" (0 B) + retained "id-1" (0 B) -> 5 B (total 27 B)
+        // 3. "world" (5 B) + "message" (0 B) + new "id-2" (4 B) -> 9 B (total 36 B)
+        // 4. "reset" (5 B) + "message" (0 B) + empty id "" (0 B) -> 5 B (total 41 B, resets lastProcessedId)
+        // 5. "after" (5 B) + "message" (0 B) + "id-2" (4 B, counted as new id after reset) -> 9 B (total 50 B)
+        NitroSseModule.setup({
+          url: TEST_URL,
+          mock: {
+            mode: 'replace',
+            data: [
+              {
+                type: 'message',
+                data: 'payload-data',
+                event: 'custom',
+                id: 'id-1',
+              },
+              { type: 'message', data: 'hello', event: 'message', id: 'id-1' },
+              { type: 'message', data: 'world', event: 'message', id: 'id-2' },
+              { type: 'message', data: 'reset', event: 'message', id: '' },
+              { type: 'message', data: 'after', event: 'message', id: 'id-2' },
+            ],
+            eventsPerSecond: 10,
+          },
+        });
+        NitroSseModule.start();
+
+        jest.advanceTimersByTime(600);
+
+        const stats = NitroSseModule.getStats();
+        expect(stats.totalBytesReceived).toBe(50);
+        NitroSseModule.stop();
+      });
+    });
+
     it('should pass maxAuthRetries parameter to native setup', () => {
       jest.isolateModules(() => {
         const { createNitroSse } = require('../index');
@@ -1183,10 +1222,13 @@ describe('NitroSseModule Unit Tests', () => {
           expect(client.isDisposed).toBe(true);
           expect(client.isConnected()).toBe(false);
           expect(client.getState()).toBe('closed');
-          expect(client.getStats()).toEqual({
-            totalBytesReceived: 0,
-            reconnectCount: 0,
-          });
+          expect(client.getStats()).toEqual(
+            expect.objectContaining({
+              totalBytesReceived: 0,
+              reconnectCount: 0,
+              disconnectReason: 'user_stop',
+            })
+          );
 
           expect(() => client.start()).toThrow(
             'Cannot perform operation on a disposed NitroSseClient instance'
@@ -1901,6 +1943,100 @@ describe('NitroSseModule Unit Tests', () => {
             'Authorization': 'token-v2',
             'Tenant': 'tenant-123',
           });
+        });
+      });
+
+      it('should emit security warning when credential headers are sent over unencrypted HTTP (non-loopback)', () => {
+        jest.isolateModules(() => {
+          const { createNitroSse } = require('../index');
+          const client = createNitroSse();
+          const warnSpy = jest
+            .spyOn(console, 'warn')
+            .mockImplementation(() => {});
+
+          // Insecure HTTP with credential header -> should warn
+          client.setup({
+            url: 'http://api.example.com/events',
+            headers: {
+              Authorization: 'Bearer secret-token',
+            },
+          });
+          expect(warnSpy).toHaveBeenCalledWith(
+            expect.stringContaining(
+              '[NitroSse] Security Warning: Sensitive credential header(s) detected'
+            )
+          );
+
+          warnSpy.mockClear();
+
+          // HTTPS with credential header -> should NOT warn
+          client.setup({
+            url: 'https://api.example.com/events',
+            headers: {
+              Authorization: 'Bearer secret-token',
+            },
+          });
+          expect(warnSpy).not.toHaveBeenCalled();
+
+          // Loopback HTTP with credential header -> should NOT warn
+          client.setup({
+            url: 'http://localhost:33333/events',
+            headers: {
+              Authorization: 'Bearer secret-token',
+            },
+          });
+          expect(warnSpy).not.toHaveBeenCalled();
+
+          // Issue 6: Android Emulator loopback HTTP (10.0.2.2 & 10.0.3.3) -> should NOT warn
+          client.setup({
+            url: 'http://10.0.2.2:3000/events',
+            headers: {
+              Authorization: 'Bearer secret-token',
+            },
+          });
+          expect(warnSpy).not.toHaveBeenCalled();
+
+          client.setup({
+            url: 'http://10.0.3.3:8080/events',
+            headers: {
+              Authorization: 'Bearer secret-token',
+            },
+          });
+          expect(warnSpy).not.toHaveBeenCalled();
+
+          // updateHeaders with credentials over insecure HTTP -> should warn
+          client.setup({
+            url: 'http://api.insecure.com/events',
+          });
+          warnSpy.mockClear();
+          client.updateHeaders({
+            Cookie: 'session=xyz',
+          });
+          expect(warnSpy).toHaveBeenCalledWith(
+            expect.stringContaining(
+              '[NitroSse] Security Warning: Sensitive credential header(s) detected'
+            )
+          );
+
+          warnSpy.mockRestore();
+        });
+      });
+
+      it('Issue 2: should emit close event to addEventListener("close") when native emits state closed', () => {
+        jest.isolateModules(() => {
+          const { createNitroSse } = require('../index');
+          const NitroSseModule = createNitroSse();
+          const closeListener = jest.fn();
+          NitroSseModule.addEventListener('close', closeListener);
+
+          NitroSseModule.setup({ url: TEST_URL });
+          const nativeCallback = mockNative.setup.mock.calls[0][1];
+
+          nativeCallback([{ type: 'state', state: 'closed' }]);
+
+          expect(closeListener).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'close' })
+          );
         });
       });
     });

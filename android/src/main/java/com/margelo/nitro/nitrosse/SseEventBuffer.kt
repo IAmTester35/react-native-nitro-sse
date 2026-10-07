@@ -24,6 +24,10 @@ class SseEventBuffer(
     private var batchingIntervalMs: Double = 0.0
     private var maxBufferSize: Int = 1000
 
+    private var peakBufferedEvents: Int = 0
+    private var bufferFlushCount: Long = 0
+    private var bufferOverflowCount: Long = 0
+
     private val flushRunnable = Runnable { flush() }
 
     fun configure(batchingIntervalMs: Double, maxBufferSize: Int) {
@@ -39,17 +43,28 @@ class SseEventBuffer(
         this.onFlush = {}
     }
 
+    fun getEventsBuffered(): Int = synchronized(eventBuffer) { eventBuffer.size }
+    fun getPeakBufferedEvents(): Int = synchronized(eventBuffer) { peakBufferedEvents }
+    fun getBufferFlushCount(): Long = synchronized(eventBuffer) { bufferFlushCount }
+    fun getBufferOverflowCount(): Long = synchronized(eventBuffer) { bufferOverflowCount }
+
     fun push(event: SseEvent) {
         if (batchingIntervalMs <= 0.0) {
             if (dispatcher == null || dispatcher.isCurrentDispatcher()) {
                 synchronized(eventBuffer) {
                     eventBuffer.add(event)
+                    if (eventBuffer.size > peakBufferedEvents) {
+                        peakBufferedEvents = eventBuffer.size
+                    }
                 }
                 flush()
             } else {
                 dispatcher.post {
                     synchronized(eventBuffer) {
                         eventBuffer.add(event)
+                        if (eventBuffer.size > peakBufferedEvents) {
+                            peakBufferedEvents = eventBuffer.size
+                        }
                     }
                     flush()
                 }
@@ -60,7 +75,11 @@ class SseEventBuffer(
         var shouldFlush = false
         synchronized(eventBuffer) {
             eventBuffer.add(event)
+            if (eventBuffer.size > peakBufferedEvents) {
+                peakBufferedEvents = eventBuffer.size
+            }
             if (eventBuffer.size >= maxBufferSize) {
+                bufferOverflowCount++
                 shouldFlush = true
             }
         }
@@ -88,6 +107,7 @@ class SseEventBuffer(
                 isFlushPending.set(false)
                 return
             }
+            bufferFlushCount++
             eventsToEmit = eventBuffer.toTypedArray()
             eventBuffer.clear()
             isFlushPending.set(false)

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { createNitroSse } from './index';
+import { createNitroSse } from './createNitroSse';
 import type {
   SseClient,
   SseClientOptions,
@@ -221,8 +221,24 @@ export function useNitroSse<
   ]);
 
   const hasBeforeRequest = Boolean(onBeforeRequest);
-  // Track undefined transition to recreate client and purge stale headers (e.g. on logout)
+  // Track undefined transition or key removal to recreate client and purge stale headers (e.g. on logout)
   const isHeadersUndefined = headers === undefined;
+  const currentHeaderKeys =
+    headers && typeof headers === 'object' ? Object.keys(headers).sort() : [];
+  const prevHeaderKeysRef = useRef<string[] | undefined>(undefined);
+  const headerRemovalTokenRef = useRef(0);
+
+  if (prevHeaderKeysRef.current !== undefined && headers !== undefined) {
+    const currentKeysSet = new Set(currentHeaderKeys);
+    const isKeyRemoved = prevHeaderKeysRef.current.some(
+      (k) => !currentKeysSet.has(k)
+    );
+    if (isKeyRemoved) {
+      headerRemovalTokenRef.current++;
+    }
+  }
+  prevHeaderKeysRef.current = currentHeaderKeys;
+
   const configKey = safeSerializeConfig(restConfig);
   const headersKey = safeSerializeConfig(headers);
 
@@ -279,10 +295,16 @@ export function useNitroSse<
         }
         if (e.event && e.event !== e.type) {
           try {
-            const handler =
-              callbacksRef.current.events?.[e.event as keyof TEvents];
-            if (handler) {
-              (handler as (event: SseEvent<unknown>) => void)(e);
+            const customEvents = callbacksRef.current.events;
+            if (
+              customEvents &&
+              typeof customEvents === 'object' &&
+              Object.prototype.hasOwnProperty.call(customEvents, e.event)
+            ) {
+              const handler = customEvents[e.event as keyof TEvents];
+              if (typeof handler === 'function') {
+                (handler as (event: SseEvent<unknown>) => void)(e);
+              }
             }
           } catch (err) {
             console.error(
@@ -355,9 +377,16 @@ export function useNitroSse<
       clientRef.current = null;
       setClient(null);
     };
-    // Recreate client if headers becomes undefined to purge stale native headers
+    // Recreate client if headers becomes undefined or keys are removed to purge stale native headers
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [configKey, autoStart, hasBeforeRequest, hasValidUrl, isHeadersUndefined]);
+  }, [
+    configKey,
+    autoStart,
+    hasBeforeRequest,
+    hasValidUrl,
+    isHeadersUndefined,
+    headerRemovalTokenRef.current,
+  ]);
 
   // Synchronize headers dynamically without reconnecting or tearing down active socket
   const isInitialMount = useRef(true);

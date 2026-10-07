@@ -17,6 +17,22 @@ export class MockSseEngine {
   private _mockIndex: number = 0;
   private _mockState?: SseState;
   private _totalBytesReceived: number = 0;
+  private _chunksReceived: number = 0;
+  private _totalEventsReceived: number = 0;
+  private _commentsReceived: number = 0;
+  private _linesParsed: number = 0;
+  private _parseErrors: number = 0;
+  private _connectedAt?: number;
+  private _lastEventTime?: number;
+  private _lastHeartbeatTime?: number;
+  private _lastActivityTime: number = 0;
+  private _maxEventGapMs: number = 0;
+  private _bufferFlushCount: number = 0;
+  private _connectionAttempts: number = 0;
+  private _reconnectCount: number = 0;
+  private _lastErrorTime?: number;
+  private _lastErrorCode?: string;
+  private _lastProcessedId: string | null = null;
 
   constructor(config: SseMockConfig, emitEvents: (events: SseEvent[]) => void) {
     this._config = config;
@@ -69,6 +85,16 @@ export class MockSseEngine {
     } = this._config;
     this._mockIndex = 0;
     this._totalBytesReceived = 0;
+    this._chunksReceived = 0;
+    this._totalEventsReceived = 0;
+    this._commentsReceived = 0;
+    this._linesParsed = 0;
+    this._parseErrors = 0;
+    this._maxEventGapMs = 0;
+    this._lastActivityTime = 0;
+    this._connectionAttempts++;
+    this._connectedAt = Date.now();
+    this._lastProcessedId = null;
 
     // Validate and normalize eventsPerSecond (must be a finite positive number, default to 1)
     let validatedEventsPerSecond = Number(eventsPerSecond);
@@ -108,8 +134,6 @@ export class MockSseEngine {
           }
           if (mode === 'replace') {
             this._setMockState('closed');
-            const closeEvent: SseEvent = { type: 'close', statusCode: 200 };
-            this._emitEvents([closeEvent]);
           }
           return;
         }
@@ -125,6 +149,9 @@ export class MockSseEngine {
           message: 'Mock Connection Drop (Simulated Error)',
           statusCode: 500,
         };
+        this._lastErrorTime = Date.now();
+        this._lastErrorCode = 'SIMULATED_MOCK_FAILURE';
+        this._reconnectCount++;
         this._emitEvents([errorEvent]);
 
         // Retry / reconnect delay simulator (e.g. 2000ms)
@@ -156,11 +183,34 @@ export class MockSseEngine {
       }
 
       if (batch.length > 0) {
+        this._chunksReceived++;
+        this._bufferFlushCount++;
+        const now = Date.now();
         for (const ev of batch) {
           const dataLen = ev.data ? ev.data.length : 0;
-          const evLen = ev.event ? ev.event.length : 0;
-          const idLen = ev.id ? ev.id.length : 0;
+          const evLen =
+            ev.event && ev.event !== 'message' ? ev.event.length : 0;
+          const idLen =
+            ev.id && ev.id !== this._lastProcessedId ? ev.id.length : 0;
+          if (ev.id !== undefined) {
+            this._lastProcessedId = ev.id === '' ? null : ev.id;
+          }
           this._totalBytesReceived += Math.max(1, dataLen + evLen + idLen);
+          this._linesParsed += 2;
+          if (ev.type === 'message' || ev.event === 'message') {
+            this._totalEventsReceived++;
+            this._lastEventTime = now;
+          } else if (ev.type === 'heartbeat') {
+            this._commentsReceived++;
+            this._lastHeartbeatTime = now;
+          }
+          if (this._lastActivityTime > 0) {
+            const gap = now - this._lastActivityTime;
+            if (gap > this._maxEventGapMs) {
+              this._maxEventGapMs = gap;
+            }
+          }
+          this._lastActivityTime = now;
         }
         if (mode === 'replace') {
           this._setMockState('open');
@@ -208,6 +258,7 @@ export class MockSseEngine {
       clearTimeout(this._mockIntervalId);
       this._mockIntervalId = undefined;
     }
+    this._connectedAt = undefined;
     if (this._config.mode === 'replace') {
       this._setMockState('closed');
     }
@@ -228,8 +279,31 @@ export class MockSseEngine {
 
   getStats(): SseStats {
     return {
+      rawBytesReceived: this._totalBytesReceived,
+      decompressedBytesReceived: undefined,
       totalBytesReceived: this._totalBytesReceived,
-      reconnectCount: 0,
+      chunksReceived: this._chunksReceived,
+      lastStatusCode: this._mockState === 'open' ? 200 : undefined,
+      totalEventsReceived: this._totalEventsReceived,
+      commentsReceived: this._commentsReceived,
+      linesParsed: this._linesParsed,
+      parseErrors: this._parseErrors,
+      serverRetryDelayMs: undefined,
+      connectedAt: this._connectedAt,
+      timeToFirstByteMs: undefined,
+      lastEventTime: this._lastEventTime,
+      lastHeartbeatTime: this._lastHeartbeatTime,
+      maxEventGapMs: this._maxEventGapMs,
+      eventsBuffered: 0,
+      peakBufferedEvents: 0,
+      bufferFlushCount: this._bufferFlushCount,
+      bufferOverflowCount: 0,
+      connectionAttempts: this._connectionAttempts,
+      reconnectCount: this._reconnectCount,
+      lastReconnectDelayMs: undefined,
+      disconnectReason: this._mockState === 'closed' ? 'user_stop' : undefined,
+      lastErrorTime: this._lastErrorTime,
+      lastErrorCode: this._lastErrorCode,
     };
   }
 

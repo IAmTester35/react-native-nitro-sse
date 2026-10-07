@@ -18,7 +18,7 @@ The repository enforces responsibility boundaries:
    - Manages Typed Event Listeners (`addEventListener`, `removeEventListener`).
    - Handles the Mocking Engine (`SseMockConfig`) and strips mock code completely in Production (`!__DEV__`).
 4. **Native Layers (`ios/` & `android/`)**:
-   - Handles socket connections (LDSwiftEventSource / OkHttp SSE).
+   - Handles socket connections (Native URLSessionDataDelegate / OkHttp SSE).
    - Enforces thread safety via Dispatchers.
    - Manages app lifecycle, network connectivity monitoring, and event buffering.
 

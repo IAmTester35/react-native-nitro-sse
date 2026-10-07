@@ -8,7 +8,7 @@ This directory contains a Custom Skill designed according to the 3-layer Progres
 - `references/`: Deep-dive resource documentation (read on-demand when tasks require it):
   - `architecture.md`: Details on JSI Nitro Modules architecture, Threading Serialization, Event Buffer, Lifecycle & DevTools Inspector.
   - `conventions.md`: Code conventions across TypeScript, Kotlin, and Swift, thread safety rules, error status handling & attempt versioning.
-  - `native-implementations.md`: Implementation details on iOS (LDSwiftEventSource / GCD) and Android (OkHttp SSE / HandlerThread).
+  - `native-implementations.md`: Implementation details on iOS (Native URLSession / GCD) and Android (OkHttp SSE / HandlerThread).
   - `testing-guide.md`: 3-tier unit testing workflow (Jest JS, Android JUnit/Robolectric, iOS XCTest).
   - `workflows.md`: Nitrogen codegen workflow, running the example app, local SSE mock server, lint/typecheck, and release process.
   - `troubleshooting.md`: Common errors (Nitrogen out-of-sync, JS Dispatcher destroyed, background task limit) and resolution steps.

@@ -1,26 +1,48 @@
 # Changelog
 
-## 3.0.0-beta.3 (2026-09-10)
-
-### Breaking Changes
-
-- **Native Spec (`HybridNitroSse.setup`)**: Decoupled `onBeforeRequest` from `SseConfig` into a 3rd argument in native `setup()`. `SseConfig` is now a pure POD struct, eliminating closure retain cycles and memory leaks on iOS.
+## 3.2.0-beta.1 (2026-10-07)
 
 ### Features
 
-- **TypeScript API**: Added `SseClientOptions` extending `SseConfig` with `onBeforeRequest` to preserve 100% backward compatibility for JS/React developers.
+- **Web Support**: Added web platform support.
+
+## 3.1.0 (2026-10-06)
+
+### Features
+
+- **Native SSE Parser**: Replaced external libraries (`LDSwiftEventSource`, `okhttp-eventsource`) with built-in WHATWG streaming parsers on iOS and Android.
+- **Detailed Metrics**: Added 25 connection and stream metrics to `getStats()` (throughput, latency, buffer, and reconnect diagnostics).
+- **Web-Ready Architecture**: Decoupled transport layer via `SseDriver` interface in preparation for web platform support.
 
 ### Fixes & Improvements
 
-- **Lifecycle & Memory**: Made `dispose()` idempotent and reentrant-safe across iOS and Android, immediately releasing interceptor closures, configuration, and timers.
-- **Teardown on Destroyed Dispatcher**: Trigger full `dispose()` when encountering `"Dispatcher has already been destroyed"` during interceptor execution or event flush.
-- **Threading**: Optimized `restart()` and `stop()` to run inline when already on the dispatcher thread, preventing redundant queue dispatch.
-- **Transparent Gzip (Android)**: Switched from `Accept-Encoding: identity` to OkHttp application interceptor for transparent Gzip decompression while preserving SSE comment and heartbeat extraction.
-- **DevTools Tracing**: Extracted `InspectorNetworkInterceptor` to record raw wire headers and status independently of stream decoding.
-- **Network Monitor**: Encapsulated network state inside `SseNetworkMonitor` to prevent false reconnection triggers during initial startup.
-- **React Hook (`useNitroSse`)**: Recreates the client instance when `headers` transitions to `undefined` to clear stale native headers.
+- **WHATWG Compliance**: Cross-platform support for CR/LF/CRLF, UTF-8 BOM, multi-line data, retry intervals, and EOF dispatch.
+- **Safety & Stability**: Added OOM limits for line/payload/error sizes, immediate socket teardown on `stop()`, and leak-free request tracking.
 
----
+## 3.0.0 (2026-09-11)
+
+**### Breaking Changes**
+
+- **Native Spec (`HybridNitroSse.setup`)**: Moved `onBeforeRequest` out of `SseConfig` into the 3rd `setup()` argument. `SseConfig` is now a pure POD struct, preventing closure retain cycles and iOS memory leaks.
+
+**### Features**
+
+- **TypeScript API**: Added `SseClientOptions` extending `SseConfig` with `onBeforeRequest`, preserving full JS/React backward compatibility.
+
+**### Fixes & Improvements**
+
+- **Lifecycle & Memory**: Made `dispose()` idempotent and reentrant-safe on iOS/Android, immediately releasing closures, config, and timers.
+- **Destroyed Dispatcher**: Fully disposes the client when `"Dispatcher has already been destroyed"` occurs during interception or event flushing.
+- **Threading**: Optimized `restart()` and `stop()` to run inline on the dispatcher thread, avoiding redundant queue dispatch.
+- **Transparent Gzip (Android)**: Switched to an OkHttp application interceptor for transparent Gzip decompression while preserving SSE comments and heartbeats.
+- **Header Scoping**: Scoped `onBeforeRequest` dynamic headers to the current connection attempt, preventing base `config.headers` mutation across reconnects.
+- **Security Warning**: Added a dev-time warning for sensitive headers (`Authorization`, `Cookie`, `X-Api-Key`) sent over unencrypted HTTP, excluding loopback and Android emulator hosts `10.0.2.2`/`10.0.3.3`.
+- **DevTools Tracing**: Extracted `InspectorNetworkInterceptor` to capture raw wire headers and status independently of stream decoding.
+- **Network Monitor**: Encapsulated network state in `SseNetworkMonitor` to avoid false reconnects during startup.
+- **Close Events**: Fixed native `addEventListener('close')` and `onClose` not firing when the connection reaches `closed`.
+- **Auth Retry Limit**: Fixed an off-by-one error causing `maxAuthRetries` to stop reconnection one attempt early.
+- **React Hook (`useNitroSse`)**: Recreates the client when `headers` becomes `undefined` or keys are removed, clearing stale native headers.
+- **Custom Event Safety**: Guarded custom event dispatch against prototype properties such as `__proto__` and `constructor`.
 
 ## 3.0.0-beta.1 (2026-09-08)
 

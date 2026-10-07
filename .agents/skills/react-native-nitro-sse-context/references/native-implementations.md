@@ -6,17 +6,18 @@ This document provides a detailed breakdown of the native source code implementa
 
 ## 1. iOS Implementation (`ios/`)
 
-The iOS implementation is built on top of `LDSwiftEventSource` (LaunchDarkly's official EventSource parser) wrapped with thread-safe dispatchers.
+The iOS implementation is built on native Apple Foundation `URLSession` (`URLSessionDataDelegate`) and a dedicated WHATWG SSE parser (`SseEventParser`), removing third-party dependencies completely.
 
 ### iOS Module List
 
 1. **`NitroSse.swift`**:
    - Primary class inheriting from `HybridNitroSseSpec`.
    - Implements JSI spec methods: `setup`, `start`, `stop`, `restart`, `flush`, `setLastProcessedId`, `updateHeaders`, `getStats`, `getState`.
-   - Listens to `SseConnectionDelegate` to handle open events, message chunks, heartbeat comments, and socket failures.
+   - Listens to `SseConnectionDelegate` to handle open events (carrying raw `HTTPURLResponse` for DevTools inspector), message chunks, heartbeat comments, and socket failures.
 2. **`SseConnectionHandler.swift`**:
-   - Instantiates and configures `EventSource` from `LDSwiftEventSource`.
-   - Configures custom HTTP Headers (`Last-Event-ID`, `Authorization`, etc.), HTTP method (GET/POST), and connect/read timeouts.
+   - Implements `SseEventParser` strictly conforming to WHATWG SSE specification (line break framing, comments, multi-line data, ID resets, and retry directives).
+   - Implements `RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSource` to manage raw HTTP stream tasks, validate status codes and `Content-Type: text/event-stream`, and deliver events to `SseDispatcher`.
+   - Factory `SseConnectionHandler.createEventSource(...)` configuring custom HTTP headers, method (GET/POST), connect/read timeouts, and custom protocol classes (for testing).
 3. **`SseDispatchQueueDispatcher.swift` & `SseDispatcher.swift`**:
    - `SseDispatcher` protocol defines the threading queue interface.
    - `SseDispatchQueueDispatcher` wraps `DispatchQueue(label: "com.margelo.nitro.sse", qos: .utility)` ensuring all state mutations execute on a single background queue.
@@ -73,7 +74,7 @@ The Android implementation is built on **OkHttp SSE** (`okhttp3.sse.EventSource`
 
 | Feature | iOS (Swift) | Android (Kotlin) |
 |---|---|---|
-| Socket Parser Engine | `LDSwiftEventSource.EventSource` | `okhttp3.sse.EventSources` |
+| Socket Parser Engine | `RealSseEventSource` (`URLSessionDataDelegate`) + `SseEventParser` | `RealSseEventSource` (`OkHttp`) + `SseEventReader` |
 | Thread Serializer | `SseDispatchQueueDispatcher` (`GCD`) | `AndroidSseDispatcher` (`HandlerThread`) |
 | App Lifecycle Observer | `SseLifecycleManager` (`NotificationCenter`) | `SseLifecycleManager` (`ProcessLifecycleOwner`) |
 | Network Monitor | `SseNetworkMonitor` (`NWPathMonitor`) | `SseNetworkMonitor` (`ConnectivityManager`) |

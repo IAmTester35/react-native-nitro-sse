@@ -1,12 +1,23 @@
 {
   "name": "react-native-nitro-sse",
-  "version": "3.0.0-beta.2",
+  "version": "3.2.0-beta.1",
   "description": "High-performance Server-Sent Events (SSE) for React Native, powered by Nitro Modules.",
   "main": "./lib/module/index.js",
+  "react-native": "./lib/module/index.native.js",
+  "browser": "./lib/module/index.web.js",
   "types": "./lib/typescript/src/index.d.ts",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./lib/typescript/src/index.d.ts",
+      "react-native": {
+        "types": "./lib/typescript/src/index.native.d.ts",
+        "default": "./lib/module/index.native.js"
+      },
+      "browser": {
+        "types": "./lib/typescript/src/index.web.d.ts",
+        "default": "./lib/module/index.web.js"
+      },
       "default": "./lib/module/index.js"
     },
     "./package.json": "./package.json"
@@ -43,7 +54,7 @@
     "test:android": "(cd example/android && ./gradlew :react-native-nitro-sse:testDebugUnitTest)",
     "test:ios": "(cd example/ios && xcodebuild test -workspace NitroSseExample.xcworkspace -scheme NitroSse-Unit-Tests -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16e')",
     "test:native": "yarn test:android && yarn test:ios",
-    "ci": "yarn lint && yarn typecheck && yarn test && yarn prepare && (cd example/ios && pod install) && yarn test:native && yarn turbo run build:android build:ios",
+    "ci": "yarn lint && yarn typecheck && yarn test && yarn prepare && (cd example/ios && pod install) && yarn test:native && yarn turbo run build:android build:ios && node -e \"console.log('Everything \\x1b[1;32msuccessful\\x1b[0m')\"",
     "release": "release-it --only-version",
     "server": "node example/script/sse-server.mjs",
     "bench:server": "node example/script/sse-benchmark-server.mjs",

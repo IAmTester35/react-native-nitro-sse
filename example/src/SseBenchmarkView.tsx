@@ -106,9 +106,9 @@ export const SseBenchmarkView: React.FC = () => {
               </View>
 
               <View style={styles.metricItem}>
-                <Text style={styles.metricLabel}>Latency (Avg / P95 / Max)</Text>
+                <Text style={styles.metricLabel}>Latency (p50 / p95 / p99 / max)</Text>
                 <Text style={styles.metricValue}>
-                  {r.latency.avgMs}ms / {r.latency.p95Ms}ms / {r.latency.maxMs}ms
+                  {r.latency.p50Ms ?? r.latency.avgMs}ms / {r.latency.p95Ms}ms / {r.latency.p99Ms ?? r.latency.maxMs}ms / {r.latency.maxMs}ms
                 </Text>
               </View>
 
@@ -129,7 +129,7 @@ export const SseBenchmarkView: React.FC = () => {
               <View style={styles.metricItem}>
                 <Text style={styles.metricLabel}>Alloc Churn / Heap</Text>
                 <Text style={styles.metricValue}>
-                  +{r.hermesMetrics.totalAllocatedBytesDeltaKB.toLocaleString()} KB / {r.hermesMetrics.finalHeapSizeKB} KB
+                  +{r.hermesMetrics.totalAllocatedBytesDeltaKB.toLocaleString()} KB{r.hermesMetrics.bytesPerEvent ? ` (${r.hermesMetrics.bytesPerEvent} B/ev)` : ''} / {r.hermesMetrics.finalHeapSizeKB} KB
                 </Text>
               </View>
             </View>

@@ -124,6 +124,10 @@
 
               <button
                 class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/70 hover:text-slate-900"
+                data-metric="latencyP99" role="tab" aria-selected="false">Latency P99 (ms)</button>
+
+              <button
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/70 hover:text-slate-900"
                 data-metric="latencyP95" role="tab" aria-selected="false">Latency P95 (ms)</button>
 
               <button
@@ -149,6 +153,10 @@
               <button
                 class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/70 hover:text-slate-900"
                 data-metric="churn" role="tab" aria-selected="false">Alloc Churn (KB)</button>
+
+              <button
+                class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/70 hover:text-slate-900"
+                data-metric="bytesPerEv" role="tab" aria-selected="false">Bytes / Event</button>
 
               <button
                 class="tab-btn rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-white/70 hover:text-slate-900"
@@ -680,6 +688,7 @@
       const titles = {
         throughput: 'Event Throughput (ev/s — Higher is better)',
         dataRate: 'Data Transfer Rate (KB/s — Higher is better)',
+        latencyP99: 'P99 Tail Delivery Latency (ms — Lower is better)',
         latencyP95: 'P95 Delivery Latency (ms — Lower is better)',
         latencyAvg: 'Average Delivery Latency (ms — Lower is better)',
         latencyMax: 'Peak Max Latency Spike (ms — Lower is better)',
@@ -687,6 +696,7 @@
         avgBatch: 'Average Batch Size (Events/batch — Batching compression)',
         delivery: 'Event Delivery Completeness Rate (% — Target: 100%)',
         churn: 'Hermes Memory Allocation Churn (KB — Lower is better)',
+        bytesPerEv: 'Alloc Churn per Event (Bytes/ev — Lower is better)',
         gcs: 'Hermes GC Invocations (Count — Lower is better)',
         gcCpu: 'Hermes GC CPU Time (ms — Lower is better)',
         heap: 'Final Heap Size (KB — Memory footprint)',
@@ -701,6 +711,7 @@
 
           if (metric === 'throughput') return item.throughput;
           if (metric === 'dataRate') return item.dataRateKBps ?? 0;
+          if (metric === 'latencyP99') return item.latency?.p99Ms ?? item.latency?.maxMs ?? 0;
           if (metric === 'latencyP95') return item.latency?.p95Ms ?? 0;
           if (metric === 'latencyAvg') return item.latency?.avgMs ?? 0;
           if (metric === 'latencyMax') return item.latency?.maxMs ?? 0;
@@ -711,6 +722,10 @@
             return item.hermesMetrics?.totalAllocatedBytesDeltaKB ??
               item.hermesMetrics?.allocatedBytesDeltaKB ??
               0;
+          }
+          if (metric === 'bytesPerEv') {
+            return item.hermesMetrics?.bytesPerEvent ??
+              Math.round(((item.hermesMetrics?.totalAllocatedBytesDeltaKB ?? 0) * 1024) / Math.max(1, item.totalEvents ?? 1));
           }
           if (metric === 'gcs') return item.hermesMetrics?.gcCountDelta ?? 0;
           if (metric === 'gcCpu') return item.hermesMetrics?.gcCpuTimeDeltaMs ?? 0;
@@ -735,6 +750,10 @@
             return item.stdDev?.latencyAvgMs ?? item.latency?.stdDevMs ?? 0;
           }
 
+          if (metric === 'latencyP99') {
+            return item.stdDev?.latencyP99Ms ?? 0;
+          }
+
           if (metric === 'latencyP95') {
             return item.stdDev?.latencyP95Ms ?? 0;
           }
@@ -745,6 +764,10 @@
 
           if (metric === 'churn') {
             return item.stdDev?.totalAllocatedBytesDeltaKB ?? 0;
+          }
+
+          if (metric === 'bytesPerEv') {
+            return item.stdDev?.bytesPerEvent ?? 0;
           }
 
           if (metric === 'gcCpu') {

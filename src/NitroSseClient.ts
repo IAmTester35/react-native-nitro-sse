@@ -47,6 +47,67 @@ export function sanitizeHeaders(
   return clean;
 }
 
+const SENSITIVE_HEADER_REGEX =
+  /^(authorization|cookie|proxy-authorization|x-api-key|api-key)$/i;
+
+/**
+ * Checks whether a URL points to a loopback/local address (localhost, 127.0.0.1, [::1]).
+ */
+function isLoopbackUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase();
+    return (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '[::1]' ||
+      hostname === '::1' ||
+      hostname === '10.0.2.2' ||
+      hostname === '10.0.3.3' ||
+      hostname.endsWith('.localhost')
+    );
+  } catch {
+    const lower = url.toLowerCase();
+    return (
+      lower.includes('://localhost') ||
+      lower.includes('://127.0.0.1') ||
+      lower.includes('://[::1]') ||
+      lower.includes('://10.0.2.2') ||
+      lower.includes('://10.0.3.3')
+    );
+  }
+}
+
+/**
+ * Warns in development when credential headers are transmitted over insecure cleartext HTTP (non-loopback).
+ */
+export function warnInsecureCredentials(
+  url?: string,
+  headers?: Record<string, unknown>
+): void {
+  if (typeof __DEV__ === 'undefined' || !__DEV__) return;
+  if (
+    !url ||
+    typeof url !== 'string' ||
+    !headers ||
+    typeof headers !== 'object'
+  )
+    return;
+
+  const trimmedUrl = url.trim();
+  const lowerUrl = trimmedUrl.toLowerCase();
+  if (lowerUrl.startsWith('http://') && !isLoopbackUrl(trimmedUrl)) {
+    const hasSensitiveHeader = Object.keys(headers).some((key) =>
+      SENSITIVE_HEADER_REGEX.test(key.trim())
+    );
+    if (hasSensitiveHeader) {
+      console.warn(
+        `[NitroSse] Security Warning: Sensitive credential header(s) detected over an insecure, unencrypted HTTP connection ("${trimmedUrl}"). Transmitting credentials over plaintext HTTP is vulnerable to interception and token theft. Use HTTPS in production.`
+      );
+    }
+  }
+}
+
 /**
  * Defensively validates and normalizes the SSE configuration object.
  * Throws NitroSseValidationError if essential requirements (e.g. valid URL) are violated.
@@ -112,6 +173,10 @@ export function validateConfig(config: SseClientOptions): SseClientOptions {
         { received: config.headers }
       );
     }
+    warnInsecureCredentials(
+      trimmedUrl,
+      config.headers as Record<string, unknown>
+    );
   }
 
   let lowerMethod: 'get' | 'post' | undefined;
@@ -309,7 +374,8 @@ export function validateConfig(config: SseClientOptions): SseClientOptions {
  * Public facade and typed event emitter for NitroSse, delegating streaming execution to an SseDriver strategy.
  */
 export class NitroSseClient implements SseClient {
-  private _native: NitroSse;
+  private _native: NitroSse | null;
+  private _baseDriver: SseDriver;
   private _driver: SseDriver;
   private _listeners: Map<string, Set<SseListener>> = new Map();
   private _legacyCallback?: (events: SseEvent[]) => void;
@@ -317,11 +383,33 @@ export class NitroSseClient implements SseClient {
   private _isDisposed = false;
   private _pendingHeaders: Record<string, string> = {};
 
-  constructor(native: NitroSse) {
-    this._native = native;
-    this._driver = new NativeDriver(native, (events) =>
-      this._dispatchEvents(events)
-    );
+  constructor(nativeOrDriver: NitroSse | SseDriver) {
+    if (
+      typeof nativeOrDriver === 'object' &&
+      nativeOrDriver !== null &&
+      'injectMockEvent' in nativeOrDriver
+    ) {
+      this._native = null;
+      this._baseDriver = nativeOrDriver as SseDriver;
+      if (
+        'setDispatchEvents' in this._baseDriver &&
+        typeof (this._baseDriver as any).setDispatchEvents === 'function'
+      ) {
+        (this._baseDriver as any).setDispatchEvents((events: SseEvent[]) =>
+          this._dispatchEvents(events)
+        );
+      }
+    } else {
+      this._native = nativeOrDriver as NitroSse;
+      this._baseDriver = new NativeDriver(this._native, (events) =>
+        this._dispatchEvents(events)
+      );
+    }
+    this._driver = this._baseDriver;
+  }
+
+  static fromDriver(driver: SseDriver): NitroSseClient {
+    return new NitroSseClient(driver);
   }
 
   get isDisposed(): boolean {
@@ -375,6 +463,10 @@ export class NitroSseClient implements SseClient {
           try {
             const h = await rawOnBeforeRequest();
             if (h && typeof h === 'object' && !Array.isArray(h)) {
+              warnInsecureCredentials(
+                validatedConfig.url,
+                h as Record<string, unknown>
+              );
               return sanitizeHeaders(h);
             }
             if (
@@ -432,29 +524,13 @@ export class NitroSseClient implements SseClient {
       this._driver =
         mockConfig.mode === 'replace'
           ? new MockReplaceDriver(mockEngine)
-          : new MockInjectDriver(this._native, mockEngine);
+          : new MockInjectDriver(this._baseDriver, mockEngine);
     } else {
-      this._driver = new NativeDriver(this._native, (events) =>
-        this._dispatchEvents(events)
-      );
+      this._driver = this._baseDriver;
     }
 
-    // Wrap the native setup to dispatch events to typed listeners when native streaming is active
-    if (mockConfig?.mode !== 'replace') {
-      if (safeOnBeforeRequest !== undefined) {
-        this._native.setup(
-          this._config,
-          (events) => {
-            this._dispatchEvents(events);
-          },
-          safeOnBeforeRequest
-        );
-      } else {
-        this._native.setup(this._config, (events) => {
-          this._dispatchEvents(events);
-        });
-      }
-    }
+    // Delegate setup to the driver
+    this._driver.setup(this._config, safeOnBeforeRequest);
   }
 
   addEventListener<TData = AnyMap>(
@@ -549,6 +625,13 @@ export class NitroSseClient implements SseClient {
       if (event.event && event.event !== event.type) {
         this._emit(event.event, event);
       }
+      if (event.type === 'state' && event.state === 'closed') {
+        this._emit('close', {
+          type: 'close',
+          statusCode: event.statusCode ?? 200,
+          state: 'closed',
+        });
+      }
     }
   }
 
@@ -590,8 +673,31 @@ export class NitroSseClient implements SseClient {
   getStats(): SseStats {
     if (this._isDisposed) {
       return {
+        rawBytesReceived: 0,
+        decompressedBytesReceived: undefined,
         totalBytesReceived: 0,
+        chunksReceived: 0,
+        lastStatusCode: undefined,
+        totalEventsReceived: 0,
+        commentsReceived: 0,
+        linesParsed: 0,
+        parseErrors: 0,
+        serverRetryDelayMs: undefined,
+        connectedAt: undefined,
+        timeToFirstByteMs: undefined,
+        lastEventTime: undefined,
+        lastHeartbeatTime: undefined,
+        maxEventGapMs: 0,
+        eventsBuffered: 0,
+        peakBufferedEvents: 0,
+        bufferFlushCount: 0,
+        bufferOverflowCount: 0,
+        connectionAttempts: 0,
         reconnectCount: 0,
+        lastReconnectDelayMs: undefined,
+        disconnectReason: 'user_stop',
+        lastErrorTime: undefined,
+        lastErrorCode: undefined,
       };
     }
     return this._driver.getStats();
@@ -616,6 +722,7 @@ export class NitroSseClient implements SseClient {
       this._pendingHeaders = { ...this._pendingHeaders, ...clean };
       this._driver.updateHeaders(clean);
     } else {
+      warnInsecureCredentials(this._config.url, clean);
       this._config.headers = { ...this._config.headers, ...clean };
       this._driver.updateHeaders(this._config.headers);
     }
