@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.2.0-beta.1 (2026-10-07)
+
+### Features
+
+- **Web Support**: Added web platform support.
+
 ## 3.1.0 (2026-10-06)
 
 ### Features
