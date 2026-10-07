@@ -1,17 +1,28 @@
 # react-native-nitro-sse
 
-Server-Sent Events (SSE) client for React Native built on Nitro Modules (JSI).
+Server-Sent Events (SSE) client for React Native built on Nitro Modules (JSI) with seamless Web support.
 
 ---
 
 ## Features
 
-- **JSI Execution**: Direct synchronous JS-to-native calls via Nitro Modules.
+- **JSI Execution (Native)**: Direct synchronous JS-to-native calls via Nitro Modules on iOS and Android.
+- **Universal Web Support**: Pure JS driver powered by the Fetch & ReadableStream API for React Native Web and Web browsers.
 - **Reconnection**: Exponential backoff with jitter and HTTP 429 (`Retry-After`) handling.
 - **Event Batching**: Configurable batch interval and buffer size limits.
 - **Lifecycle & Network**: Automatic pause and resume on app state or network transitions.
 - **Heartbeat Detection**: Inactive connection detection via SSE comment pings (`:`).
 - **Diagnostics**: Network inspection via DevTools and local stream simulation in development.
+
+---
+
+## Platform Support
+
+| Platform | Implementation |
+| :------- | :------------- |
+| **iOS** | Nitro Modules (JSI) + URLSession |
+| **Android** | Nitro Modules (JSI) + OkHttp |
+| **Web** | Pure JS `FetchSseDriver` (Fetch Streams) |
 
 ---
 
@@ -23,7 +34,7 @@ npm install react-native-nitro-sse react-native-nitro-modules
 yarn add react-native-nitro-sse react-native-nitro-modules
 ```
 
-> **Note**: `react-native-nitro-modules` is a peer dependency.
+> **Note**: `react-native-nitro-modules` is a peer dependency required for iOS and Android native compilation. On Web, the library uses the pure JS Fetch driver and does not invoke native binaries.
 
 <details>
 <summary><b>Compatibility Matrix</b></summary>
@@ -238,7 +249,7 @@ try {
 
 | Error Class                   | Error Code                             | Description                                                           |
 | :---------------------------- | :------------------------------------- | :-------------------------------------------------------------------- |
-| `NitroSseModuleNotFoundError` | `NATIVE_MODULE_NOT_FOUND`              | Native Nitro module binary is missing.                                |
+| `NitroSseModuleNotFoundError` | `NATIVE_MODULE_NOT_FOUND`              | Native Nitro module binary is missing (iOS/Android only).             |
 | `NitroSseValidationError`     | `INVALID_CONFIG` \| `INVALID_ARGUMENT` | Invalid argument or configuration parameter.                          |
 | `NitroSseStateError`          | `INVALID_STATE`                        | Method invoked in an invalid state (e.g. `start()` before `setup()`). |
 | `NitroSseDisposedError`       | `CLIENT_DISPOSED`                      | Method invoked on an already disposed client instance.                |
