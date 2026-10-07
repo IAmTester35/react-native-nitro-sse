@@ -1,11 +1,15 @@
 import type { NitroSse } from './NitroSse.nitro';
-import type { SseEvent, SseState, SseStats } from './SseInterface';
+import type { SseConfig, SseEvent, SseState, SseStats } from './SseInterface';
 import { MockSseEngine } from './MockSseEngine';
 
 /**
  * Internal execution strategy driving the SSE lifecycle.
  */
 export interface SseDriver {
+  setup(
+    config: SseConfig,
+    onBeforeRequest?: () => Promise<Record<string, string>>
+  ): void;
   start(): void;
   stop(): void;
   restart(): void;
@@ -27,6 +31,17 @@ export class NativeDriver implements SseDriver {
     private _native: NitroSse,
     private _dispatchEvents: (events: SseEvent[]) => void
   ) {}
+
+  setup(
+    config: SseConfig,
+    onBeforeRequest?: () => Promise<Record<string, string>>
+  ): void {
+    if (onBeforeRequest !== undefined) {
+      this._native.setup(config, this._dispatchEvents, onBeforeRequest);
+    } else {
+      this._native.setup(config, this._dispatchEvents);
+    }
+  }
 
   start(): void {
     this._native.start();
@@ -96,6 +111,15 @@ export class MockReplaceDriver implements SseDriver {
     return this._lastProcessedId;
   }
 
+  setup(
+    config: SseConfig,
+    _onBeforeRequest?: () => Promise<Record<string, string>>
+  ): void {
+    if (config.headers) {
+      this._headers = { ...this._headers, ...config.headers };
+    }
+  }
+
   start(): void {
     this._mockEngine.start();
   }
@@ -140,48 +164,58 @@ export class MockReplaceDriver implements SseDriver {
 }
 
 /**
- * Driver running native networking in parallel with mock event injection.
+ * Driver running underlying network streaming in parallel with mock event injection.
  */
 export class MockInjectDriver implements SseDriver {
-  constructor(private _native: NitroSse, private _mockEngine: MockSseEngine) {}
+  constructor(
+    private _realDriver: SseDriver,
+    private _mockEngine: MockSseEngine
+  ) {}
+
+  setup(
+    config: SseConfig,
+    onBeforeRequest?: () => Promise<Record<string, string>>
+  ): void {
+    this._realDriver.setup(config, onBeforeRequest);
+  }
 
   start(): void {
     this._mockEngine.start();
-    this._native.start();
+    this._realDriver.start();
   }
 
   stop(): void {
     this._mockEngine.stop();
-    this._native.stop();
+    this._realDriver.stop();
   }
 
   restart(): void {
     this._mockEngine.restart();
-    this._native.restart();
+    this._realDriver.restart();
   }
 
   flush(): void {
-    this._native.flush();
+    this._realDriver.flush();
   }
 
   isConnected(): boolean {
-    return this._native.isConnected();
+    return this._realDriver.isConnected();
   }
 
   getStats(): SseStats {
-    return this._native.getStats();
+    return this._realDriver.getStats();
   }
 
   getState(): SseState {
-    return this._native.getState();
+    return this._realDriver.getState();
   }
 
   updateHeaders(headers: Record<string, string>): void {
-    this._native.updateHeaders(headers);
+    this._realDriver.updateHeaders(headers);
   }
 
   setLastProcessedId(id: string): void {
-    this._native.setLastProcessedId(id);
+    this._realDriver.setLastProcessedId(id);
   }
 
   injectMockEvent(event: Partial<SseEvent>): void {
@@ -190,8 +224,6 @@ export class MockInjectDriver implements SseDriver {
 
   dispose(): void {
     this._mockEngine.stop();
-    if (typeof this._native.dispose === 'function') {
-      this._native.dispose();
-    }
+    this._realDriver.dispose();
   }
 }
