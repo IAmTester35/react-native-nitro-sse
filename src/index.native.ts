@@ -2,5 +2,4 @@ export * from './SseInterface';
 export * from './useNitroSse';
 export * from './NitroSseClient';
 export * from './NitroSseError';
-export * from './createNitroSse';
-export { FetchSseDriver } from './FetchSseDriver';
+export * from './createNitroSse.native';

@@ -1,12 +1,23 @@
 {
   "name": "react-native-nitro-sse",
-  "version": "3.1.0",
+  "version": "3.2.0-beta.1",
   "description": "High-performance Server-Sent Events (SSE) for React Native, powered by Nitro Modules.",
   "main": "./lib/module/index.js",
+  "react-native": "./lib/module/index.native.js",
+  "browser": "./lib/module/index.web.js",
   "types": "./lib/typescript/src/index.d.ts",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./lib/typescript/src/index.d.ts",
+      "react-native": {
+        "types": "./lib/typescript/src/index.native.d.ts",
+        "default": "./lib/module/index.native.js"
+      },
+      "browser": {
+        "types": "./lib/typescript/src/index.web.d.ts",
+        "default": "./lib/module/index.web.js"
+      },
       "default": "./lib/module/index.js"
     },
     "./package.json": "./package.json"

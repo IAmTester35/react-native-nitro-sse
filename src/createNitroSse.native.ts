@@ -1,16 +1,14 @@
-import { Platform } from 'react-native';
 import { NitroModules } from 'react-native-nitro-modules';
 import { NitroSseClient } from './NitroSseClient';
-import { FetchSseDriver } from './FetchSseDriver';
 import { NitroSseModuleNotFoundError } from './NitroSseError';
 import type { NitroSse } from './NitroSse.nitro';
 import type { SseClient } from './SseInterface';
 
 /**
- * Creates a high-performance SSE client that supports typed event listeners (`addEventListener`) and legacy batching.
+ * Creates an SSE client for iOS and Android using Nitro Modules (JSI).
  *
- * @returns An SseClient instance wrapping the native NitroSse implementation, or FetchSseDriver on Web.
- * @throws {NitroSseModuleNotFoundError} If the native NitroSse module cannot be found on iOS/Android.
+ * @returns An SseClient instance backed by native NitroSse.
+ * @throws {NitroSseModuleNotFoundError} If the native NitroSse module cannot be found.
  */
 export function createNitroSse(): SseClient {
   let nativeSse: NitroSse | undefined;
@@ -24,11 +22,6 @@ export function createNitroSse(): SseClient {
 
   if (nativeSse) {
     return new NitroSseClient(nativeSse);
-  }
-
-  // Graceful fallback for Web
-  if (Platform.OS === 'web') {
-    return new NitroSseClient(new FetchSseDriver());
   }
 
   throw new NitroSseModuleNotFoundError(
