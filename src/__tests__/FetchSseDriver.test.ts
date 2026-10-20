@@ -263,6 +263,11 @@ describe('FetchSseDriver', () => {
     // Idle timer fired: state moved to stale then reconnecting
     expect(['stale', 'reconnecting']).toContain(driver.getState());
     expect(driver.getStats().disconnectReason).toBe('timeout');
+    expect(
+      dispatchedEvents.some(
+        (e) => e.type === 'error' && e.message === 'Read timeout'
+      )
+    ).toBe(true);
 
     resolveSilent!();
   });
@@ -756,5 +761,281 @@ describe('FetchSseDriver', () => {
 
     const stats = driver.getStats();
     expect(stats.totalBytesReceived).toBe(utf8ExpectedBytes);
+  });
+
+  test('server retry directive updates serverRetryDelayMs and reconnect strategy interval', async () => {
+    const config: SseConfig = { url: TEST_URL, retryIntervalMs: 1000 };
+    driver.setup(config);
+
+    const stream = createMockStream(['retry: 8888\ndata: msg_with_retry\n\n']);
+
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: stream,
+    });
+
+    driver.start();
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+    }
+
+    const stats = driver.getStats();
+    expect(stats.serverRetryDelayMs).toBe(8888);
+  });
+
+  test('parses RFC 1123 HTTP-Date in Retry-After header on HTTP 429', async () => {
+    const config: SseConfig = {
+      url: TEST_URL,
+      maxReconnectAttempts: 1,
+      maxRetryIntervalMs: 60000,
+    };
+    driver.setup(config);
+
+    // Create RFC 1123 HTTP-Date 5 seconds in the future
+    const futureDate = new Date(Date.now() + 5000).toUTCString();
+
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 429,
+      headers: new Headers({ 'Retry-After': futureDate }),
+      body: null,
+    });
+
+    driver.start();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(driver.getState()).toBe('reconnecting');
+    const errorEvent = dispatchedEvents.find((e) => e.type === 'error');
+    expect(errorEvent?.statusCode).toBe(429);
+    expect(errorEvent?.retry).toBeGreaterThanOrEqual(1000);
+    expect(errorEvent?.retry).toBeLessThanOrEqual(6000);
+  });
+
+  test('bounds negative and extreme Retry-After header to maxRetryIntervalMs', async () => {
+    const config: SseConfig = {
+      url: TEST_URL,
+      maxRetryIntervalMs: 5000,
+      maxReconnectAttempts: 1,
+    };
+    driver.setup(config);
+
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 429,
+      headers: new Headers({ 'Retry-After': '999999' }), // extreme delay
+      body: null,
+    });
+
+    driver.start();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const errorEvent = dispatchedEvents.find((e) => e.type === 'error');
+    expect(errorEvent?.retry).toBe(5000); // clamped to maxRetryIntervalMs
+  });
+
+  test('parser resource limit violation during live stream transitions to failed without reconnecting', async () => {
+    const config: SseConfig = { url: TEST_URL, retryIntervalMs: 1000 };
+    driver.setup(config);
+
+    // Single line exceeding 16MB
+    const hugeLine = 'data: ' + 'x'.repeat(16 * 1024 * 1024 + 10) + '\n\n';
+    const stream = createMockStream([hugeLine]);
+
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: stream,
+    });
+
+    driver.start();
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+    }
+
+    expect(driver.getState()).toBe('failed');
+    expect(driver.getStats().disconnectReason).toBe('parser_error');
+    expect(driver.getStats().parseErrors).toBeGreaterThanOrEqual(1);
+    const err = dispatchedEvents.find((e) => e.type === 'error');
+    expect(err?.message).toContain('SSE line exceeded maximum limit');
+  });
+
+  test('onBeforeRequest headers do not mutate base config headers', async () => {
+    const originalHeaders = { 'X-Initial': 'base-header' };
+    const config: SseConfig = {
+      url: TEST_URL,
+      headers: { ...originalHeaders },
+    };
+    const interceptor = jest
+      .fn()
+      .mockResolvedValue({ 'X-Token': 'dynamic-token-123' });
+    driver.setup(config, interceptor);
+
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: createMockStream([]),
+    });
+
+    driver.start();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(config.headers).toEqual(originalHeaders);
+    expect(config.headers?.['X-Token']).toBeUndefined();
+  });
+
+  test('id without data updates lastProcessedId and attaches to subsequent reconnect request', async () => {
+    const config: SseConfig = { url: TEST_URL, retryIntervalMs: 1000 };
+    driver.setup(config);
+
+    const stream = createMockStream([
+      'id: resume-cursor-42\n\n', // ID line without data
+    ]);
+
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: stream,
+    });
+
+    driver.start();
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+    }
+
+    // After EOF, client enters reconnecting state and sends updated Last-Event-ID on reconnect
+    expect(driver.getState()).toBe('reconnecting');
+
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: createMockStream([]),
+    });
+
+    jest.advanceTimersByTime(2000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const secondCallHeaders = (globalThis.fetch as jest.Mock).mock.calls[0][1]
+      .headers;
+    expect(secondCallHeaders['Last-Event-ID']).toBe('resume-cursor-42');
+  });
+
+  test('autoParseJSON handles non-object roots and malformed JSON safely', async () => {
+    const config: SseConfig = {
+      url: TEST_URL,
+      autoParseJSON: true,
+    };
+    driver.setup(config);
+
+    const stream = createMockStream([
+      'data: "just a string"\n\ndata: 12345\n\ndata: true\n\ndata: null\n\ndata: { unclosed json: \n\ndata: {"valid": true}\n\n',
+    ]);
+
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: stream,
+    });
+
+    driver.start();
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
+    }
+
+    const messages = dispatchedEvents.filter((e) => e.type === 'message');
+    expect(messages.length).toBe(6);
+    expect(messages[0]?.parsedData).toBeUndefined();
+    expect(messages[1]?.parsedData).toBeUndefined();
+    expect(messages[2]?.parsedData).toBeUndefined();
+    expect(messages[3]?.parsedData).toBeUndefined();
+    expect(messages[4]?.parsedData).toBeUndefined();
+    expect(messages[5]?.parsedData).toEqual({ valid: true });
+  });
+
+  test('preserves custom Content-Type in POST requests', async () => {
+    const config: SseConfig = {
+      url: TEST_URL,
+      method: 'post',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: 'query=search&limit=10',
+    };
+    driver.setup(config);
+
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: createMockStream([]),
+    });
+
+    driver.start();
+    await Promise.resolve();
+
+    const fetchOptions = (globalThis.fetch as jest.Mock).mock.calls[0][1];
+    expect(fetchOptions.method).toBe('POST');
+    expect(fetchOptions.headers['Content-Type']).toBe(
+      'application/x-www-form-urlencoded'
+    );
+    expect(fetchOptions.body).toBe('query=search&limit=10');
+  });
+
+  test('handles HTTP 405, 410, and 422 fatal client errors identically to native', async () => {
+    for (const code of [405, 410, 422]) {
+      const testDriver = new FetchSseDriver();
+      testDriver.setup({ url: TEST_URL });
+
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        status: code,
+        headers: new Headers(),
+        body: null,
+      });
+
+      testDriver.start();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(testDriver.getState()).toBe('failed');
+      expect(testDriver.getStats().disconnectReason).toBe('server_error');
+      testDriver.dispose();
+    }
+  });
+
+  test('read error mid-stream emits error event without 200 statusCode and transitions to reconnecting', async () => {
+    const config: SseConfig = { url: TEST_URL, retryIntervalMs: 1000 };
+    driver.setup(config);
+
+    let streamController: ReadableStreamDefaultController<Uint8Array>;
+    const faultyStream = new ReadableStream<Uint8Array>({
+      start(c) {
+        streamController = c;
+      },
+    });
+
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: faultyStream,
+    });
+
+    driver.start();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(driver.getState()).toBe('open');
+
+    // Simulate socket reset / network failure mid-stream
+    streamController!.error(new Error('Connection reset by peer'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(driver.getState()).toBe('reconnecting');
+    expect(driver.getStats().disconnectReason).toBe('network_error');
+    const err = dispatchedEvents.find((e) => e.type === 'error');
+    expect(err).toBeDefined();
+    expect(err?.message).toBe('Connection reset by peer');
+    expect(err?.statusCode).toBeUndefined();
   });
 });

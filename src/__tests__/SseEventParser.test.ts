@@ -184,4 +184,31 @@ describe('SseEventParser', () => {
       'new_event'
     );
   });
+
+  test('ignores retry directive with plus sign per WHATWG SSE', () => {
+    parser.feed('retry: +1000\ndata: after_retry\n\n');
+    expect(delegate.onRetry).not.toHaveBeenCalled();
+    expect(delegate.onEvent).toHaveBeenCalledWith(
+      undefined,
+      undefined,
+      'after_retry'
+    );
+  });
+
+  test('handles split multibyte UTF-8 characters across chunk boundaries', () => {
+    const fullMessage = 'data: Xin chào 🇻🇳 🚀\n\n';
+    const splitIndex = 14;
+    const chunk1 = fullMessage.slice(0, splitIndex);
+    const chunk2 = fullMessage.slice(splitIndex);
+
+    parser.feed(chunk1);
+    expect(delegate.onEvent).not.toHaveBeenCalled();
+
+    parser.feed(chunk2);
+    expect(delegate.onEvent).toHaveBeenCalledWith(
+      undefined,
+      undefined,
+      'Xin chào 🇻🇳 🚀'
+    );
+  });
 });

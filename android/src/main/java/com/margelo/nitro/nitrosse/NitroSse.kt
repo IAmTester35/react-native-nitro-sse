@@ -799,13 +799,14 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 updateState(SseState.STALE)
             }
 
+            val reportedStatusCode = if (statusCode >= 400 || statusCode == 204) statusCode.toDouble() else null
             val defaultErrorMsg = when {
                 statusCode >= 500 && !errorBody.isNullOrBlank() -> "Server Error ($statusCode): ${errorBody.trim()}"
-                else -> t?.message ?: "Link lost ($statusCode)"
+                else -> t?.message ?: if (reportedStatusCode != null) "Link lost (${reportedStatusCode.toInt()})" else "Link lost"
             }
 
             // Teardown and reconnect on stream or socket failure.
-            eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, defaultErrorMsg, if (statusCode != -1) statusCode.toDouble() else null, null, null))
+            eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, defaultErrorMsg, reportedStatusCode, null, null))
             scheduleReconnect(true, connectionAttemptVersion.get())
         }
     }

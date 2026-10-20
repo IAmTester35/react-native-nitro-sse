@@ -716,10 +716,11 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         return;
       const isAborted = abortController.signal.aborted;
       if (!isAborted) {
-        this._recordError(
-          readErr instanceof Error ? readErr.message : 'Read error',
-          undefined
-        );
+        const errorMsg =
+          readErr instanceof Error ? readErr.message : 'Read error';
+        this._disconnectReason = 'network_error';
+        this._recordError(errorMsg, undefined);
+        this._pushEvent({ type: 'error', message: errorMsg });
         this._scheduleReconnect(true, undefined, attemptVersion);
         return;
       }
@@ -852,6 +853,9 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       ) {
         this._disconnectReason = 'timeout';
         this._updateState('stale');
+        const errorMsg = 'Read timeout';
+        this._recordError(errorMsg, undefined);
+        this._pushEvent({ type: 'error', message: errorMsg });
         this._cleanupTransport();
         this._scheduleReconnect(true, undefined, attemptVersion);
       }
