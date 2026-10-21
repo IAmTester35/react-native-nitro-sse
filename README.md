@@ -1,6 +1,12 @@
 # react-native-nitro-sse
 
-Server-Sent Events (SSE) client for React Native built on Nitro Modules (JSI).
+Server-Sent Events (SSE) client for React Native built on Nitro Modules (JSI), delivering low-latency streaming, resilient reconnection, and native-grade performance.
+
+## Platform Support
+
+- **Android:** Supported
+- **iOS:** Supported
+- **Web:** Supported
 
 ---
 
