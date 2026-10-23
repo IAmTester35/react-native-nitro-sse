@@ -32,6 +32,7 @@ jobs:
         run: |
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
+          BRANCH="${{ github.event.workflow_run.head_branch || github.ref_name }}"
 
           # Check if this specific version is already published
           PUBLISHED_VERSION=$(npm view "$NAME@$VERSION" version 2>/dev/null || echo "")
@@ -39,11 +40,23 @@ jobs:
           if [ "$PUBLISHED_VERSION" = "$VERSION" ]; then
             echo "Version $VERSION is already published on npm. Skipping."
             echo "changed=false" >> $GITHUB_OUTPUT
-          else
-            echo "Version $VERSION not found on npm. Proceeding to publish."
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            exit 0
           fi
+
+          # Enforce branch release policies
+          if [[ "$BRANCH" != "main" ]] && [[ "$VERSION" != *"beta"* ]] && [[ "$VERSION" != *"alpha"* ]]; then
+            echo "::error::Stable version $VERSION cannot be published from branch '$BRANCH'. Stable releases must be merged to and published from 'main'."
+            exit 1
+          fi
+
+          if [[ "$BRANCH" == "main" ]] && ([[ "$VERSION" == *"beta"* ]] || [[ "$VERSION" == *"alpha"* ]]); then
+            echo "::error::Pre-release version $VERSION cannot be published from 'main'. Pre-releases must be published from 'beta'."
+            exit 1
+          fi
+
+          echo "Version $VERSION not found on npm. Proceeding to publish."
+          echo "changed=true" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
         shell: bash
 
       - name: Build package
@@ -55,20 +68,6 @@ jobs:
         id: extract_changelog
         run: awk '/^## / {if (p) exit; p=1; next} p' CHANGELOG.md > RELEASE_NOTES.md
         shell: bash
-
-      - name: Create GitHub Release
-        if: steps.check.outputs.changed == 'true'
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: v${{ steps.check.outputs.version }}
-          name: Release v${{ steps.check.outputs.version }}
-          body_path: RELEASE_NOTES.md
-          generate_release_notes: true
-          make_latest: ${{ !contains(steps.check.outputs.version, 'beta') && !contains(steps.check.outputs.version, 'alpha') }}
-          draft: false
-          prerelease: ${{ contains(steps.check.outputs.version, 'beta') || contains(steps.check.outputs.version, 'alpha') }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upgrade npm CLI for Trusted Publishing
         if: steps.check.outputs.changed == 'true'
@@ -85,3 +84,18 @@ jobs:
             npm publish --access public --provenance
           fi
         shell: bash
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.changed == 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ steps.check.outputs.version }}
+          target_commitish: ${{ github.event.workflow_run.head_sha || github.sha }}
+          name: Release v${{ steps.check.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          generate_release_notes: true
+          make_latest: ${{ !contains(steps.check.outputs.version, 'beta') && !contains(steps.check.outputs.version, 'alpha') }}
+          draft: false
+          prerelease: ${{ contains(steps.check.outputs.version, 'beta') || contains(steps.check.outputs.version, 'alpha') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

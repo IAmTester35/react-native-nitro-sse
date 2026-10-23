@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.2.0 (2026-10-20)
+
+### Features
+
+- **Web Support**: Added web platform support.
+
+### Fixes & Improvements
+
+- **Status Code Decoupling (Android)**: Prevented transport timeouts after HTTP 200 from falsely reporting `statusCode: 200`.
+- **POST Requests**: Preserved custom `Content-Type` headers across all platforms.
+
+## 3.2.0-beta.1 (2026-10-07)
+
+### Features
+
+- **Web Support**: Added web platform support.
+
 ## 3.1.0 (2026-10-06)
 
 ### Features

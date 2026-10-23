@@ -1331,5 +1331,63 @@ class NitroSseCoordinatorTest {
         sse.stop()
         drainLoopers()
     }
+
+    @Test
+    fun testParserResourceLimitViolationIsFatalNoReconnect() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        val emittedEvents = mutableListOf<SseEvent>()
+
+        sse.setup(config) { events ->
+            emittedEvents.addAll(events)
+        }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+
+        val error = java.io.IOException("SSE line exceeded maximum limit of 16777216 bytes")
+        sse.connectionDidFail(error, null, null, actualReqId)
+        drainLoopers()
+
+        assertEquals("Resource limit violation must be fatal (FAILED) rather than entering RECONNECTING", SseState.FAILED, sse.getState())
+        assertEquals("Disconnect reason should be PARSER_ERROR", SseDisconnectReason.PARSER_ERROR, sse.getStats().disconnectReason)
+    }
+
+    @Test
+    fun testTransportTimeoutAfter200ResponseDoesNotOverwriteWithStatusCode200() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        val emittedEvents = mutableListOf<SseEvent>()
+
+        sse.setup(config) { events ->
+            emittedEvents.addAll(events)
+        }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId")
+        reqIdField.isAccessible = true
+        val actualReqId = reqIdField.get(sse) as String
+
+        // Stream opens with HTTP 200 OK
+        val response = createResponse(200, "OK", "text/event-stream")
+        sse.connectionDidOpen(response, actualReqId)
+        drainLoopers()
+
+        // Socket later times out with SocketTimeoutException
+        val timeoutError = java.net.SocketTimeoutException("Read timed out")
+        sse.connectionDidFail(timeoutError, response, null, actualReqId)
+        drainLoopers()
+
+        val errorEvent = emittedEvents.find { it.type == SseEventType.ERROR }
+        assertNotNull("Error event must be emitted on transport timeout", errorEvent)
+        org.junit.Assert.assertNotEquals("Transport timeout must not report 200 statusCode", 200.0, errorEvent?.statusCode ?: 0.0, 0.0)
+    }
 }
+
 

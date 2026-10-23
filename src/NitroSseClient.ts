@@ -374,7 +374,8 @@ export function validateConfig(config: SseClientOptions): SseClientOptions {
  * Public facade and typed event emitter for NitroSse, delegating streaming execution to an SseDriver strategy.
  */
 export class NitroSseClient implements SseClient {
-  private _native: NitroSse;
+  private _native: NitroSse | null;
+  private _baseDriver: SseDriver;
   private _driver: SseDriver;
   private _listeners: Map<string, Set<SseListener>> = new Map();
   private _legacyCallback?: (events: SseEvent[]) => void;
@@ -382,11 +383,33 @@ export class NitroSseClient implements SseClient {
   private _isDisposed = false;
   private _pendingHeaders: Record<string, string> = {};
 
-  constructor(native: NitroSse) {
-    this._native = native;
-    this._driver = new NativeDriver(native, (events) =>
-      this._dispatchEvents(events)
-    );
+  constructor(nativeOrDriver: NitroSse | SseDriver) {
+    if (
+      typeof nativeOrDriver === 'object' &&
+      nativeOrDriver !== null &&
+      'injectMockEvent' in nativeOrDriver
+    ) {
+      this._native = null;
+      this._baseDriver = nativeOrDriver as SseDriver;
+      if (
+        'setDispatchEvents' in this._baseDriver &&
+        typeof (this._baseDriver as any).setDispatchEvents === 'function'
+      ) {
+        (this._baseDriver as any).setDispatchEvents((events: SseEvent[]) =>
+          this._dispatchEvents(events)
+        );
+      }
+    } else {
+      this._native = nativeOrDriver as NitroSse;
+      this._baseDriver = new NativeDriver(this._native, (events) =>
+        this._dispatchEvents(events)
+      );
+    }
+    this._driver = this._baseDriver;
+  }
+
+  static fromDriver(driver: SseDriver): NitroSseClient {
+    return new NitroSseClient(driver);
   }
 
   get isDisposed(): boolean {
@@ -501,29 +524,13 @@ export class NitroSseClient implements SseClient {
       this._driver =
         mockConfig.mode === 'replace'
           ? new MockReplaceDriver(mockEngine)
-          : new MockInjectDriver(this._native, mockEngine);
+          : new MockInjectDriver(this._baseDriver, mockEngine);
     } else {
-      this._driver = new NativeDriver(this._native, (events) =>
-        this._dispatchEvents(events)
-      );
+      this._driver = this._baseDriver;
     }
 
-    // Wrap the native setup to dispatch events to typed listeners when native streaming is active
-    if (mockConfig?.mode !== 'replace') {
-      if (safeOnBeforeRequest !== undefined) {
-        this._native.setup(
-          this._config,
-          (events) => {
-            this._dispatchEvents(events);
-          },
-          safeOnBeforeRequest
-        );
-      } else {
-        this._native.setup(this._config, (events) => {
-          this._dispatchEvents(events);
-        });
-      }
-    }
+    // Delegate setup to the driver
+    this._driver.setup(this._config, safeOnBeforeRequest);
   }
 
   addEventListener<TData = AnyMap>(
