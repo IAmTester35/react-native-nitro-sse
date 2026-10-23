@@ -11,13 +11,15 @@ final class SseConnectionHandlerTests: XCTestCase {
     
     private func createTestConfig(
         url: String = "http://localhost:33333/events",
-        headers: [String: String] = [:]
+        method: HttpMethod = .get,
+        headers: [String: String] = [:],
+        body: String? = nil
     ) -> SseConfig {
         return SseConfig(
             url: url,
-            method: .get,
+            method: method,
             headers: headers,
-            body: nil,
+            body: body,
             backgroundExecution: false,
             batchingIntervalMs: 0,
             maxBufferSize: 1000,
@@ -876,6 +878,50 @@ final class SseConnectionHandlerTests: XCTestCase {
         XCTAssertFalse(delegate.didOpenCalled, "HTTP 206 must NOT open the SSE stream per WHATWG SSE spec")
         XCTAssertTrue(delegate.didFailCalled, "HTTP 206 must fail the connection")
         XCTAssertEqual(delegate.failedResponse?.statusCode, 206)
+    }
+
+    func testCustomContentTypePreservedOnPostRequest() {
+        let config = createTestConfig(
+            method: .post,
+            headers: ["Content-Type": "application/x-www-form-urlencoded"],
+            body: "param1=val1&param2=val2"
+        )
+        
+        let delegate = TestDelegate()
+        let dispatcher = MockSseDispatcher()
+        let exp = expectation(description: "POST request sent with custom Content-Type")
+        
+        var interceptedRequest: URLRequest?
+        MockURLProtocol.setHandler { request in
+            interceptedRequest = request
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            let chunk = "data: ok\n\n".data(using: .utf8)!
+            return (response, [chunk], 0.0)
+        }
+        
+        delegate.onOpen = { exp.fulfill() }
+        
+        let source = SseConnectionHandler.createEventSource(
+            url: URL(string: config.url)!,
+            config: config,
+            lastProcessedId: nil,
+            delegate: delegate,
+            attemptVersion: 1,
+            dispatcher: dispatcher,
+            protocolClasses: [MockURLProtocol.self]
+        )
+        defer { source.stop() }
+        
+        wait(for: [exp], timeout: 2.0)
+        
+        XCTAssertEqual(interceptedRequest?.httpMethod, "POST")
+        let sentContentType = interceptedRequest?.value(forHTTPHeaderField: "Content-Type")
+        XCTAssertEqual(sentContentType, "application/x-www-form-urlencoded")
     }
 }
 

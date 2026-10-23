@@ -261,6 +261,83 @@ class SseEventReaderTest {
         // Subsequent call on exhausted source returns false
         assertFalse(reader.processNextEvent(callback))
     }
+
+    @Test
+    fun testUnterminatedLineExceeding16MBThrowsIOException() {
+        val buffer = Buffer()
+        // Write unterminated data exceeding MAX_SSE_LINE_LENGTH (16MB + 10 bytes)
+        val limit = 16 * 1024 * 1024
+        val chunk = ByteArray(limit + 10) { 'a'.code.toByte() }
+        buffer.write(chunk)
+
+        val reader = SseEventReader(buffer)
+        val callback = RecordingCallback()
+
+        try {
+            reader.processNextEvent(callback)
+            org.junit.Assert.fail("Should throw IOException when line exceeds 16MB")
+        } catch (e: java.io.IOException) {
+            assertTrue("Exception message should mention line limit", e.message?.contains("SSE line exceeded maximum limit") == true)
+        }
+    }
+
+    @Test
+    fun testEventDataExceeding16MBThrowsIOException() {
+        val buffer = Buffer()
+        val half = 8 * 1024 * 1024
+        val halfString = "a".repeat(half)
+
+        // Line 1: 8MB
+        buffer.writeUtf8("data: $halfString\n")
+        // Line 2: 8MB + 10 characters -> exceeds MAX_SSE_EVENT_DATA_SIZE
+        buffer.writeUtf8("data: ${halfString}bbbbbbbbbb\n\n")
+
+        val reader = SseEventReader(buffer)
+        val callback = RecordingCallback()
+
+        try {
+            reader.processNextEvent(callback)
+            org.junit.Assert.fail("Should throw IOException when event data exceeds 16MB")
+        } catch (e: java.io.IOException) {
+            assertTrue("Exception message should mention event data limit", e.message?.contains("SSE event data exceeded maximum limit") == true)
+        }
+    }
+
+    @Test
+    fun testSplitUtf8MultibyteEmojiAcrossChunks() {
+        val pipe = okio.Pipe(1024)
+        val sink = pipe.sink
+        val source = pipe.source.buffer()
+        val reader = SseEventReader(source)
+        val callback = RecordingCallback()
+
+        // Character "🚀" is UTF-8 4-bytes: 0xF0 0x9F 0x9A 0x80
+        val fullBytes = "data: Hello 🚀\n\n".toByteArray(Charsets.UTF_8)
+        val splitIndex = fullBytes.size - 4 // Split right before the last 2 bytes of the emoji and newlines
+
+        // Write first chunk including first 2 bytes of emoji
+        val firstChunk = Buffer().write(fullBytes, 0, splitIndex + 2)
+        sink.write(firstChunk, firstChunk.size)
+        sink.flush()
+
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val future = executor.submit(java.util.concurrent.Callable {
+            reader.processNextEvent(callback)
+        })
+
+        Thread.sleep(50)
+        // Write remainder of emoji and newlines while read is pending
+        val secondChunk = Buffer().write(fullBytes, splitIndex + 2, fullBytes.size - (splitIndex + 2))
+        sink.write(secondChunk, secondChunk.size)
+        sink.flush()
+        sink.close()
+
+        assertTrue(future.get(2, java.util.concurrent.TimeUnit.SECONDS))
+        assertEquals(1, callback.events.size)
+        assertEquals("Hello 🚀", callback.events[0].data)
+        executor.shutdown()
+    }
 }
+
 
 
