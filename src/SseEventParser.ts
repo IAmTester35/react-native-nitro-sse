@@ -26,6 +26,7 @@ export class SseEventParser {
   private _lastEventId?: string;
   private _isAtStreamStart: boolean = true;
   private _skipLeadingLf: boolean = false;
+  private _aborted: boolean = false;
 
   constructor(delegate: SseEventParserDelegate, initialLastEventId?: string) {
     this._delegate = delegate;
@@ -47,12 +48,14 @@ export class SseEventParser {
     this._lastEventId = initialLastEventId;
     this._isAtStreamStart = true;
     this._skipLeadingLf = false;
+    this._aborted = false;
   }
 
   /**
    * Signals end of stream (EOF) — flushes pending line and pending event if any.
    */
   endOfStream(): void {
+    if (this._aborted) return;
     if (this._buffer.length > 0) {
       const line = this._buffer;
       this._buffer = '';
@@ -77,7 +80,7 @@ export class SseEventParser {
    * Feeds a decoded UTF-8 text chunk into the streaming parser.
    */
   feed(chunk: string): void {
-    if (!chunk) return;
+    if (!chunk || this._aborted) return;
 
     let text = chunk;
 
@@ -98,42 +101,27 @@ export class SseEventParser {
       if (!text && !this._buffer) return;
     }
 
-    const fullText = this._buffer ? this._buffer + text : text;
+    // The carried buffer never contains CR/LF, so scanning can resume at its end.
+    const carried = this._buffer.length;
+    const fullText = carried ? this._buffer + text : text;
     this._buffer = '';
 
     const len = fullText.length;
     let start = 0;
-    let i = 0;
+    let i = carried;
     let parsedLinesInChunk = 0;
 
-    while (i < len) {
+    while (i < len && !this._aborted) {
       // Check maximum line length constraint before scanning further
       if (i - start > MAX_SSE_LINE_LENGTH) {
+        this._aborted = true;
         this._delegate.onParseError(
           new Error(
             `SSE line exceeded maximum limit of ${MAX_SSE_LINE_LENGTH} characters`
           )
         );
-        // Discard current overflowing line and advance
-        while (
-          i < len &&
-          fullText.charCodeAt(i) !== 0x0a &&
-          fullText.charCodeAt(i) !== 0x0d
-        ) {
-          i++;
-        }
-        if (
-          i < len &&
-          fullText.charCodeAt(i) === 0x0d &&
-          i + 1 < len &&
-          fullText.charCodeAt(i + 1) === 0x0a
-        ) {
-          i += 2;
-        } else if (i < len) {
-          i += 1;
-        }
-        start = i;
-        continue;
+        this._buffer = '';
+        return;
       }
 
       const code = fullText.charCodeAt(i);
@@ -242,6 +230,7 @@ export class SseEventParser {
           this._dataBuffer.length + separatorSize + value.length >
           MAX_SSE_EVENT_DATA_SIZE
         ) {
+          this._aborted = true;
           this._delegate.onParseError(
             new Error(
               `SSE event data exceeded maximum limit of ${MAX_SSE_EVENT_DATA_SIZE} characters`

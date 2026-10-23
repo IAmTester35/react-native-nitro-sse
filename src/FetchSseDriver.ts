@@ -111,11 +111,14 @@ class SseReconnectStrategy {
     } else {
       const randomFactor =
         1.0 - this._jitterFactor + Math.random() * (2 * this._jitterFactor);
-      delay = this._retryInterval * randomFactor;
+      delay =
+        Math.min(this._retryInterval, this._maxRetryInterval) * randomFactor;
     }
 
-    // Minimum floor of 1000ms enforced across all platforms
-    return Math.max(delay * 1000.0, 1000.0);
+    // Minimum floor of 1000ms enforced across all platforms, capped at max 32-bit signed int for timer safety
+    const MAX_TIMER_MS = 2_147_483_647;
+    const ms = Number.isFinite(delay) ? delay * 1000.0 : MAX_TIMER_MS;
+    return Math.min(Math.max(ms, 1000.0), MAX_TIMER_MS);
   }
 
   reset(): void {
@@ -156,7 +159,6 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
 
   private _wasRunningBeforeNetworkLoss = false;
   private _reconnectStrategy = new SseReconnectStrategy();
-  private _parser?: SseEventParser;
 
   // === Stats tracking ===
   private _rawBytesReceived = 0;
@@ -261,9 +263,10 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
   }
 
   stop(): void {
-    if (this._isRunning) {
+    if (this._isRunning || this._wasRunningBeforeNetworkLoss) {
       this._disconnectReason = 'user_stop';
     }
+    this._wasRunningBeforeNetworkLoss = false;
     this._stopInternal(true);
   }
 
@@ -507,10 +510,23 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
 
     let errorBody: string | undefined;
     if (statusCode >= 400 || statusCode === 204) {
+      const bodyTimer = setTimeout(
+        () => abortController.abort(),
+        connectionTimeoutMs
+      );
       try {
-        errorBody = await response.text();
+        const raw = await response.text();
+        errorBody = raw.length > 1024 ? `${raw.slice(0, 1024)}…` : raw;
       } catch {
         // Ignore body reading error
+      } finally {
+        clearTimeout(bodyTimer);
+      }
+      if (
+        !this._isRunning ||
+        attemptVersion !== this._connectionAttemptVersion
+      ) {
+        return;
       }
     }
 
@@ -674,7 +690,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     this._pushEvent({ type: 'open', statusCode });
 
     // 5. Initialize streaming reader and parser
-    this._parser = new SseEventParser(this, this._lastProcessedId);
+    const parser = new SseEventParser(this, this._lastProcessedId);
     const reader = response.body.getReader();
     this._activeReader = reader;
     const decoder = new TextDecoder('utf-8');
@@ -689,9 +705,19 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       ) {
         const { value, done } = await reader.read();
 
+        if (
+          !this._isRunning ||
+          attemptVersion !== this._connectionAttemptVersion
+        ) {
+          break;
+        }
+
         if (done) {
-          decoder.decode(); // flush trailing bytes
-          this._parser?.endOfStream();
+          const tail = decoder.decode();
+          if (tail) {
+            parser.feed(tail);
+          }
+          parser.endOfStream();
           break;
         }
 
@@ -708,7 +734,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
           this._resetReadTimeout(attemptVersion);
 
           const text = decoder.decode(value, { stream: true });
-          this._parser?.feed(text);
+          parser.feed(text);
         }
       }
     } catch (readErr) {
@@ -780,6 +806,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     this._connectedAt = undefined;
     this._isRunning = false;
     this._isReconnecting = false;
+    this._wasRunningBeforeNetworkLoss = false;
     this._connectionAttemptVersion++;
 
     this._cleanupTimers();

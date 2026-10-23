@@ -29,6 +29,8 @@ jobs:
 
       - name: Check if version changed
         id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
@@ -37,9 +39,21 @@ jobs:
           # Check if this specific version is already published
           PUBLISHED_VERSION=$(npm view "$NAME@$VERSION" version 2>/dev/null || echo "")
 
+          # Check if GitHub release already exists
+          RELEASE_EXISTS=false
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            RELEASE_EXISTS=true
+          fi
+
+          NPM_PUBLISHED=false
           if [ "$PUBLISHED_VERSION" = "$VERSION" ]; then
-            echo "Version $VERSION is already published on npm. Skipping."
-            echo "changed=false" >> $GITHUB_OUTPUT
+            NPM_PUBLISHED=true
+          fi
+
+          if [ "$NPM_PUBLISHED" = "true" ] && [ "$RELEASE_EXISTS" = "true" ]; then
+            echo "Version $VERSION is already published on npm and GitHub Release exists. Skipping."
+            echo "npm_publish=false" >> $GITHUB_OUTPUT
+            echo "gh_release=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
@@ -49,32 +63,44 @@ jobs:
             exit 1
           fi
 
-          if [[ "$BRANCH" == "main" ]] && ([[ "$VERSION" == *"beta"* ]] || [[ "$VERSION" == *"alpha"* ]]); then
-            echo "::error::Pre-release version $VERSION cannot be published from 'main'. Pre-releases must be published from 'beta'."
+          if [[ "$BRANCH" != "beta" ]] && ([[ "$VERSION" == *"beta"* ]] || [[ "$VERSION" == *"alpha"* ]]); then
+            echo "::error::Pre-release version $VERSION cannot be published from branch '$BRANCH'. Pre-releases must be published from 'beta'."
             exit 1
           fi
 
-          echo "Version $VERSION not found on npm. Proceeding to publish."
-          echo "changed=true" >> $GITHUB_OUTPUT
+          if [ "$NPM_PUBLISHED" = "false" ]; then
+            echo "npm_publish=true" >> $GITHUB_OUTPUT
+          else
+            echo "Version $VERSION already published on npm. Skipping npm publish."
+            echo "npm_publish=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [ "$RELEASE_EXISTS" = "false" ]; then
+            echo "gh_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "GitHub Release v$VERSION already exists. Skipping release creation."
+            echo "gh_release=false" >> $GITHUB_OUTPUT
+          fi
+
           echo "version=$VERSION" >> $GITHUB_OUTPUT
         shell: bash
 
       - name: Build package
-        if: steps.check.outputs.changed == 'true'
+        if: steps.check.outputs.npm_publish == 'true'
         run: yarn prepare
 
       - name: Extract Release Notes
-        if: steps.check.outputs.changed == 'true'
+        if: steps.check.outputs.gh_release == 'true'
         id: extract_changelog
         run: awk '/^## / {if (p) exit; p=1; next} p' CHANGELOG.md > RELEASE_NOTES.md
         shell: bash
 
       - name: Upgrade npm CLI for Trusted Publishing
-        if: steps.check.outputs.changed == 'true'
+        if: steps.check.outputs.npm_publish == 'true'
         run: npm install -g npm@11
 
       - name: Publish to npm
-        if: steps.check.outputs.changed == 'true'
+        if: steps.check.outputs.npm_publish == 'true'
         run: |
           if [[ "${{ steps.check.outputs.version }}" == *"beta"* ]]; then
             npm publish --access public --tag beta --provenance
@@ -86,7 +112,7 @@ jobs:
         shell: bash
 
       - name: Create GitHub Release
-        if: steps.check.outputs.changed == 'true'
+        if: steps.check.outputs.gh_release == 'true'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.check.outputs.version }}

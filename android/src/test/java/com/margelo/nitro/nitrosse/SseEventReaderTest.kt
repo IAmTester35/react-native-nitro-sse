@@ -305,22 +305,37 @@ class SseEventReaderTest {
 
     @Test
     fun testSplitUtf8MultibyteEmojiAcrossChunks() {
-        val buffer = Buffer()
+        val pipe = okio.Pipe(1024)
+        val sink = pipe.sink
+        val source = pipe.source.buffer()
+        val reader = SseEventReader(source)
+        val callback = RecordingCallback()
+
         // Character "🚀" is UTF-8 4-bytes: 0xF0 0x9F 0x9A 0x80
         val fullBytes = "data: Hello 🚀\n\n".toByteArray(Charsets.UTF_8)
         val splitIndex = fullBytes.size - 4 // Split right before the last 2 bytes of the emoji and newlines
 
-        buffer.write(fullBytes, 0, splitIndex + 2) // Includes first 2 bytes of emoji
+        // Write first chunk including first 2 bytes of emoji
+        val firstChunk = Buffer().write(fullBytes, 0, splitIndex + 2)
+        sink.write(firstChunk, firstChunk.size)
+        sink.flush()
 
-        val reader = SseEventReader(buffer)
-        val callback = RecordingCallback()
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val future = executor.submit(java.util.concurrent.Callable {
+            reader.processNextEvent(callback)
+        })
 
-        // Write remainder of emoji and newlines
-        buffer.write(fullBytes, splitIndex + 2, fullBytes.size - (splitIndex + 2))
+        Thread.sleep(50)
+        // Write remainder of emoji and newlines while read is pending
+        val secondChunk = Buffer().write(fullBytes, splitIndex + 2, fullBytes.size - (splitIndex + 2))
+        sink.write(secondChunk, secondChunk.size)
+        sink.flush()
+        sink.close()
 
-        assertTrue(reader.processNextEvent(callback))
+        assertTrue(future.get(2, java.util.concurrent.TimeUnit.SECONDS))
         assertEquals(1, callback.events.size)
         assertEquals("Hello 🚀", callback.events[0].data)
+        executor.shutdown()
     }
 }
 
