@@ -4,7 +4,6 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.util.Log
 
 typealias NetworkChangeHandler = (isAvailable: Boolean, interfaceChanged: Boolean, capabilities: NetworkCapabilities?) -> Unit
@@ -82,14 +81,7 @@ class SseNetworkMonitor(
             }
 
             try {
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-                    connectivityManager.registerDefaultNetworkCallback(callback)
-                } else {
-                    val request = NetworkRequest.Builder()
-                        .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                        .build()
-                    connectivityManager.registerNetworkCallback(request, callback)
-                }
+                connectivityManager.registerDefaultNetworkCallback(callback)
                 networkCallback = callback
             } catch (e: SecurityException) {
                 Log.e(TAG, "Failed to register network callback. Missing ACCESS_NETWORK_STATE permission.", e)

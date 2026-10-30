@@ -59,10 +59,10 @@ interface SseConnectionDelegate {
     fun connectionDidReceiveDataChunk(decompressedBytes: Long, requestId: String) {}
     fun connectionDidParseLines(count: Int, requestId: String) {}
     fun connectionDidEncounterParseError(requestId: String) {}
-    fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {
-        connectionDidFail(t, response, requestId)
+    fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {}
+    fun connectionDidFail(t: Throwable?, response: Response?, requestId: String) {
+        connectionDidFail(t, response, null, requestId)
     }
-    fun connectionDidFail(t: Throwable?, response: Response?, requestId: String) {}
     fun connectionDidClose(requestId: String)
 }
 
@@ -158,7 +158,8 @@ internal class SseEventReader(private val source: BufferedSource) {
     /**
      * Reads lines from source until one event (message or comment) is completed and dispatched.
      * Returns true if an event was dispatched, or false on EOF.
-     * Per WHATWG SSE spec: "Once the end of the file is reached, any pending data must be dispatched as an event."
+     * Per WHATWG SSE spec: "Once the end of the file is reached, any pending data must be discarded.
+     * (If the file ends in the middle of an event, before the final empty line, the incomplete event is not dispatched.)"
      */
     fun processNextEvent(callback: Callback): Boolean {
         var linesParsedInEvent = 0
@@ -168,16 +169,9 @@ internal class SseEventReader(private val source: BufferedSource) {
                 if (linesParsedInEvent > 0) {
                     callback.onLinesParsed(linesParsedInEvent)
                 }
-                if (hasData) {
-                    val data = dataBuffer.toString()
-                    val id = lastEventId
-                    val type = eventType
-                    dataBuffer.setLength(0)
-                    hasData = false
-                    eventType = null
-                    callback.onEvent(id, type, data)
-                    return true
-                }
+                dataBuffer.setLength(0)
+                hasData = false
+                eventType = null
                 return false
             }
             linesParsedInEvent++
@@ -412,24 +406,20 @@ class SseConnectionHandler(private val delegate: SseConnectionDelegate) {
 object SseNetworkMetricsTracker {
     private val rawBytesMap = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
     private val gzipMap = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
-    private val chunksMap = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
 
     fun recordRawBytes(requestId: String, bytes: Long, isGzip: Boolean) {
         rawBytesMap.computeIfAbsent(requestId) { java.util.concurrent.atomic.AtomicLong(0) }.addAndGet(bytes)
-        chunksMap.computeIfAbsent(requestId) { java.util.concurrent.atomic.AtomicLong(0) }.incrementAndGet()
         if (isGzip) {
             gzipMap[requestId] = true
         }
     }
 
     fun getRawBytes(requestId: String): Long? = rawBytesMap[requestId]?.get()
-    fun getChunks(requestId: String): Long? = chunksMap[requestId]?.get()
     fun isGzip(requestId: String): Boolean = gzipMap[requestId] == true
 
     fun clear(requestId: String) {
         rawBytesMap.remove(requestId)
         gzipMap.remove(requestId)
-        chunksMap.remove(requestId)
     }
 }
 

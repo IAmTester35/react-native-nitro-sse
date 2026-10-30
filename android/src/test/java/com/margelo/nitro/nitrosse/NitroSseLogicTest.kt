@@ -480,5 +480,21 @@ class NitroSseLogicTest {
         eventSource.cancel()
         server.shutdown()
     }
+
+    @Test
+    fun testConnectionDidFailDelegationNoRecursion() {
+        var called4Param = false
+        val delegate = object : SseConnectionDelegate {
+            override fun connectionDidOpen(response: Response, requestId: String) {}
+            override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, requestId: String) {}
+            override fun connectionDidClose(requestId: String) {}
+            override fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {
+                called4Param = true
+            }
+        }
+        // Invoking 3-param must route cleanly to 4-param
+        delegate.connectionDidFail(Exception("test"), null, "req-1")
+        assertTrue("3-parameter connectionDidFail must delegate to 4-parameter implementation", called4Param)
+    }
 }
 

@@ -1,7 +1,6 @@
 package com.margelo.nitro.nitrosse
 
 import okhttp3.Response
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.random.Random
@@ -17,10 +16,8 @@ class SseReconnectStrategy {
     private var maxReconnectAttempts: Int = -1
 
     private var backoffCounter = 0
-    private val _currentReconnectAttempts = AtomicInteger(0)
-    
-    val currentReconnectAttempts: Int
-        get() = _currentReconnectAttempts.get()
+    var currentReconnectAttempts = 0
+        private set
 
     fun configure(
         retryIntervalMs: Double,
@@ -44,7 +41,7 @@ class SseReconnectStrategy {
     }
 
     fun nextDelay(isError: Boolean): Long {
-        _currentReconnectAttempts.incrementAndGet()
+        currentReconnectAttempts++
         val baseDelay = if (isError) {
             val exponent = backoffCounter.toDouble()
             val base = min(retryIntervalMs * 2.0.pow(exponent), maxRetryIntervalMs)
@@ -63,16 +60,16 @@ class SseReconnectStrategy {
 
     fun hasReachedMaxAttempts(): Boolean {
         if (maxReconnectAttempts == -1) return false
-        return _currentReconnectAttempts.get() >= maxReconnectAttempts
+        return currentReconnectAttempts >= maxReconnectAttempts
     }
 
     fun recordAttempt(): Int {
-        return _currentReconnectAttempts.incrementAndGet()
+        return ++currentReconnectAttempts
     }
 
     fun reset() {
         backoffCounter = 0
-        _currentReconnectAttempts.set(0)
+        currentReconnectAttempts = 0
     }
 
     companion object {

@@ -243,7 +243,7 @@ class SseEventReaderTest {
     }
 
     @Test
-    fun testStreamEndingAtEofWithoutTrailingEmptyLineDispatchesPendingEvent() {
+    fun testStreamEndingAtEofWithoutTrailingEmptyLineDiscardsPendingEvent() {
         val buffer = Buffer()
         // Server sends data line without the second trailing empty line before closing
         buffer.writeUtf8("id: 101\nevent: final_event\ndata: last_payload\n")
@@ -251,15 +251,9 @@ class SseEventReaderTest {
         val reader = SseEventReader(buffer)
         val callback = RecordingCallback()
 
-        // WHATWG SSE: EOF must flush and dispatch any pending data event
-        assertTrue(reader.processNextEvent(callback))
-        assertEquals(1, callback.events.size)
-        assertEquals("101", callback.events[0].id)
-        assertEquals("final_event", callback.events[0].type)
-        assertEquals("last_payload", callback.events[0].data)
-
-        // Subsequent call on exhausted source returns false
+        // WHATWG SSE: EOF must discard incomplete event without trailing empty line
         assertFalse(reader.processNextEvent(callback))
+        assertEquals(0, callback.events.size)
     }
 
     @Test

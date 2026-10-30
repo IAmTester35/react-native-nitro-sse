@@ -521,11 +521,13 @@ class NitroSseCoordinatorTest {
         lastIdField.isAccessible = true
         
         // 1. Receive event with id "event-1"
+        sse.connectionDidUpdateLastEventId("event-1", currentReqId)
         sse.connectionDidReceiveMessage("event-1", "message", "hello", currentReqId)
         drainLoopers()
         assertEquals("event-1", lastIdField.get(sse))
         
         // 2. Receive event with empty id -> resets to null per WHATWG SSE spec
+        sse.connectionDidUpdateLastEventId("", currentReqId)
         sse.connectionDidReceiveMessage("", "message", "world", currentReqId)
         drainLoopers()
         assertNull(lastIdField.get(sse))
@@ -536,6 +538,7 @@ class NitroSseCoordinatorTest {
         assertNull(lastIdField.get(sse))
         
         // 4. Receive event with new id -> sets new id
+        sse.connectionDidUpdateLastEventId("event-2", currentReqId)
         sse.connectionDidReceiveMessage("event-2", "message", "foo", currentReqId)
         drainLoopers()
         assertEquals("event-2", lastIdField.get(sse))
@@ -579,6 +582,7 @@ class NitroSseCoordinatorTest {
         assertEquals(0.0, sse.getStats().totalBytesReceived, 0.001)
         
         // 1. Push message with data (12 B), id (4 B), type (6 B) -> total 22 B
+        sse.connectionDidUpdateLastEventId("id-1", currentReqId)
         sse.connectionDidReceiveMessage("id-1", "custom", "payload-data", currentReqId)
         drainLoopers()
         
@@ -591,6 +595,7 @@ class NitroSseCoordinatorTest {
         assertEquals(27.0, sse.getStats().totalBytesReceived, 0.001)
 
         // 3. Push message with a newly updated id ("id-2" = 4 B) and default type="message" -> 4 B (new id) + 5 B (data) = 9 B
+        sse.connectionDidUpdateLastEventId("id-2", currentReqId)
         sse.connectionDidReceiveMessage("id-2", "message", "world", currentReqId)
         drainLoopers()
 
@@ -603,12 +608,14 @@ class NitroSseCoordinatorTest {
         assertEquals(40.0, sse.getStats().totalBytesReceived, 0.001)
 
         // 5. Push message with empty id ("" = 0 B) resetting lastProcessedId per WHATWG SSE -> only data (5 B)
+        sse.connectionDidUpdateLastEventId("", currentReqId)
         sse.connectionDidReceiveMessage("", "message", "reset", currentReqId)
         drainLoopers()
 
         assertEquals(45.0, sse.getStats().totalBytesReceived, 0.001)
 
         // 6. Push message re-using "id-2" (4 B) after reset -> counts as new id because lastProcessedId was cleared -> 4 B + 5 B = 9 B
+        sse.connectionDidUpdateLastEventId("id-2", currentReqId)
         sse.connectionDidReceiveMessage("id-2", "message", "after", currentReqId)
         drainLoopers()
 
@@ -625,6 +632,36 @@ class NitroSseCoordinatorTest {
         org.mockito.Mockito.any<T>()
         @Suppress("UNCHECKED_CAST")
         return { _: Any? -> } as T
+    }
+    @Test
+    fun testConnectionFailureDoesNotLeakPlainHttpBytesIntoSessionRawBytesOffset() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        sse.setup(config) {}
+        drainLoopers()
+
+        sse.start()
+        drainLoopers()
+
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId").apply { isAccessible = true }
+        val currentReqId = reqIdField.get(sse) as String
+
+        // Simulate receiving 100 bytes over plain HTTP (non-gzip)
+        SseNetworkMetricsTracker.recordRawBytes(currentReqId, 100L, isGzip = false)
+        sse.connectionDidReceiveDataChunk(100L, currentReqId)
+        drainLoopers()
+
+        val offsetField = NitroSse::class.java.getDeclaredField("sessionRawBytesOffset").apply { isAccessible = true }
+
+        // Fail connection
+        sse.connectionDidFail(java.io.IOException("Transient drop"), null, null, currentReqId)
+        drainLoopers()
+
+        // Non-gzip bytes must NOT be accumulated into sessionRawBytesOffset
+        assertEquals(0.0, offsetField.get(sse) as Double, 0.001)
+
+        sse.stop()
+        drainLoopers()
     }
 
     @Test
@@ -938,6 +975,7 @@ class NitroSseCoordinatorTest {
         assertNull(lastIdField.get(sse))
 
         // 1. Receive event with id="evt-100"
+        sse.connectionDidUpdateLastEventId("evt-100", currentReqId)
         sse.connectionDidReceiveMessage("evt-100", "message", "payload", currentReqId)
         drainLoopers()
         assertEquals("evt-100", lastIdField.get(sse))
@@ -948,11 +986,13 @@ class NitroSseCoordinatorTest {
         assertEquals("evt-100", lastIdField.get(sse))
 
         // 3. Receive event with id="evt-101" -> updates to new id
+        sse.connectionDidUpdateLastEventId("evt-101", currentReqId)
         sse.connectionDidReceiveMessage("evt-101", "message", "payload3", currentReqId)
         drainLoopers()
         assertEquals("evt-101", lastIdField.get(sse))
 
         // 4. Receive event with empty id="" -> resets lastProcessedId to null per WHATWG SSE spec
+        sse.connectionDidUpdateLastEventId("", currentReqId)
         sse.connectionDidReceiveMessage("", "message", "reset", currentReqId)
         drainLoopers()
         assertNull(lastIdField.get(sse))
@@ -1387,6 +1427,93 @@ class NitroSseCoordinatorTest {
         val errorEvent = emittedEvents.find { it.type == SseEventType.ERROR }
         assertNotNull("Error event must be emitted on transport timeout", errorEvent)
         org.junit.Assert.assertNotEquals("Transport timeout must not report 200 statusCode", 200.0, errorEvent?.statusCode ?: 0.0, 0.0)
+    }
+
+    @Test
+    fun testNetworkInterfaceChangeIsDebounced() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId").apply { isAccessible = true }
+        val actualReqId = reqIdField.get(sse) as String
+        val eventSourceField = NitroSse::class.java.getDeclaredField("eventSource").apply { isAccessible = true }
+        (eventSourceField.get(sse) as? SseEventSource)?.cancel()
+
+        val response = createResponse(200, "OK", "text/event-stream")
+        sse.connectionDidOpen(response, actualReqId)
+        drainLoopers()
+
+        val versionField = NitroSse::class.java.getDeclaredField("connectionAttemptVersion").apply { isAccessible = true }
+        val versionObj = versionField.get(sse) as java.util.concurrent.atomic.AtomicInteger
+        val initialVersion = versionObj.get()
+
+        val mockCaps = org.mockito.Mockito.mock(android.net.NetworkCapabilities::class.java)
+
+        // Rapid flapping: 3 interface changes within debounce window
+        sse.handleNetworkChange(isAvailable = true, interfaceChanged = true, capabilities = mockCaps)
+        sse.handleNetworkChange(isAvailable = true, interfaceChanged = true, capabilities = mockCaps)
+        sse.handleNetworkChange(isAvailable = true, interfaceChanged = true, capabilities = mockCaps)
+        dispatcher.executePending()
+
+        // Before advancing virtual time by debounce window (1000ms), version must NOT have changed
+        assertEquals("Debounce should prevent immediate restart", initialVersion, versionObj.get())
+
+        // Advance virtual time by 1000ms
+        dispatcher.advanceTimeBy(1000)
+        drainLoopers()
+
+        // Debounced restart executed (stopInternal + restart increments by 2)
+        assertEquals("Debounced restart should execute once", initialVersion + 2, versionObj.get())
+        sse.stop()
+        drainLoopers()
+    }
+
+    @Test
+    fun testNetworkLossCancelsPendingDebouncedRestart() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId").apply { isAccessible = true }
+        val actualReqId = reqIdField.get(sse) as String
+        val eventSourceField = NitroSse::class.java.getDeclaredField("eventSource").apply { isAccessible = true }
+        (eventSourceField.get(sse) as? SseEventSource)?.cancel()
+
+        val response = createResponse(200, "OK", "text/event-stream")
+        sse.connectionDidOpen(response, actualReqId)
+        drainLoopers()
+
+        val versionField = NitroSse::class.java.getDeclaredField("connectionAttemptVersion").apply { isAccessible = true }
+        val versionObj = versionField.get(sse) as java.util.concurrent.atomic.AtomicInteger
+        val initialVersion = versionObj.get()
+
+        val mockCaps = org.mockito.Mockito.mock(android.net.NetworkCapabilities::class.java)
+
+        // Trigger interface change
+        sse.handleNetworkChange(isAvailable = true, interfaceChanged = true, capabilities = mockCaps)
+        dispatcher.executePending()
+
+        // Before debounce fires, network is lost
+        sse.handleNetworkChange(isAvailable = false, interfaceChanged = false, capabilities = null)
+        drainLoopers()
+        val lostVersion = versionObj.get()
+
+        // Advance virtual time by 1000ms
+        dispatcher.advanceTimeBy(1000)
+        drainLoopers()
+
+        // The debounced restart must have been cancelled; stream remains paused
+        assertEquals(SseState.PAUSED, sse.getState())
+        assertEquals("Debounced restart must be cancelled on network loss", lostVersion, versionObj.get())
+        sse.stop()
+        drainLoopers()
     }
 }
 
