@@ -422,7 +422,7 @@ final class NitroSseWireProtocolTests: XCTestCase {
         XCTAssertEqual(nsError?.localizedDescription, "SSE event data exceeded maximum limit of 16777216 bytes")
     }
 
-    func testStreamEndingAtEofWithoutTrailingEmptyLineDispatchesPendingEvent() {
+    func testStreamEndingAtEofWithoutTrailingEmptyLineDiscardsPendingEvent() {
         let parser = SseEventParser()
         let delegate = MockParserDelegate()
         parser.delegate = delegate
@@ -434,13 +434,10 @@ final class NitroSseWireProtocolTests: XCTestCase {
         // Before EOF, no event dispatched yet because of missing blank line
         XCTAssertEqual(delegate.events.count, 0)
 
-        // WHATWG SSE: EOF triggers flush of pending data event
+        // WHATWG SSE: EOF discards pending incomplete data event
         parser.endOfStream()
 
-        XCTAssertEqual(delegate.events.count, 1)
-        XCTAssertEqual(delegate.events.first?.id, "999")
-        XCTAssertEqual(delegate.events.first?.type, "finish")
-        XCTAssertEqual(delegate.events.first?.data, "payload_at_eof")
+        XCTAssertEqual(delegate.events.count, 0)
     }
 
     func testBareCarriageReturnAcrossChunkBoundaryWhenNextChunkDoesNotStartWithLf() {
@@ -471,12 +468,10 @@ final class NitroSseWireProtocolTests: XCTestCase {
 
         XCTAssertEqual(delegate.events.count, 0)
 
-        // endOfStream must strip the trailing \r before decoding and dispatching
+        // endOfStream must discard incomplete event
         parser.endOfStream()
 
-        XCTAssertEqual(delegate.events.count, 1)
-        XCTAssertEqual(delegate.events.first?.id, "123")
-        XCTAssertEqual(delegate.events.first?.data, "value_at_eof")
+        XCTAssertEqual(delegate.events.count, 0)
     }
 }
 

@@ -29,7 +29,7 @@ class SseEventBuffer {
         onFlush: @escaping (_ events: [SseEvent]) -> Void
     ) {
         self.batchingIntervalMs = batchingIntervalMs
-        if maxBufferSize.isNaN || !maxBufferSize.isFinite || maxBufferSize <= 0 || maxBufferSize > Double(Int.max) {
+        if !maxBufferSize.isFinite || maxBufferSize <= 0 || maxBufferSize > Double(Int.max) {
             self.maxBufferSize = 1000
         } else {
             self.maxBufferSize = Int(maxBufferSize)
@@ -47,12 +47,10 @@ class SseEventBuffer {
             peakBufferedEvents = eventBuffer.count
         }
         
-        if eventBuffer.count >= maxBufferSize && batchingIntervalMs > 0 {
-            bufferOverflowCount += 1
-            cancelPendingTimer()
+        if batchingIntervalMs <= 0 {
             flush()
-        } else if eventBuffer.count >= maxBufferSize || batchingIntervalMs <= 0 {
-            cancelPendingTimer()
+        } else if eventBuffer.count >= maxBufferSize {
+            bufferOverflowCount += 1
             flush()
         } else if pendingTimer == nil, let dispatcher = dispatcher {
             pendingTimer = dispatcher.asyncAfter(delay: batchingIntervalMs / 1000.0) { [weak self] in
@@ -106,7 +104,7 @@ class SseEventBuffer {
                 return AnyMap.fromDictionaryIgnoreIncompatible(dictionary)
             }
         } catch {
-            print("[NitroSse] Failed to parse JSON: \(error.localizedDescription)")
+            // Silently return nil without blocking dispatcher on synchronous console logging
         }
         return nil
     }
