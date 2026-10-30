@@ -1,5 +1,13 @@
 # Changelog
 
+## No version yet
+
+### Fixes & Improvements
+
+- **Network Debounce (iOS & Android)**: Debounced network interface transitions (1s) to prevent connection thrashing during WiFi/cellular flapping.
+- **WHATWG Spec Compliance**: Incomplete events without a trailing empty line are discarded on EOF instead of dispatched.
+- **Parser Improvements (TypeScript)**: Enhanced UTF-8 BOM handling and multiline data framing.
+
 ## 3.2.0 (2026-10-20)
 
 ### Features
