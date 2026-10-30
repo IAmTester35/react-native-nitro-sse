@@ -1,4 +1,4 @@
-import { FetchSseDriver } from '../FetchSseDriver';
+import { FetchSseDriver, SseReconnectStrategy } from '../FetchSseDriver';
 import type { SseConfig, SseEvent } from '../SseInterface';
 
 describe('FetchSseDriver', () => {
@@ -1037,5 +1037,142 @@ describe('FetchSseDriver', () => {
     expect(err).toBeDefined();
     expect(err?.message).toBe('Connection reset by peer');
     expect(err?.statusCode).toBeUndefined();
+  });
+
+  test('Issue 2.2 repro: SseReconnectStrategy rejects non-finite Infinity and falls back to default', () => {
+    const strategy = new SseReconnectStrategy();
+    strategy.configure(Infinity, Infinity, 0.5, Infinity);
+    expect(strategy.nextDelayMs(false)).toBeLessThan(5000);
+  });
+
+  test('Issue 2.1 repro: HTTP 204 does not call response.text()', async () => {
+    const textMock = jest.fn().mockResolvedValue('');
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 204,
+      headers: new Headers(),
+      text: textMock,
+      body: null,
+    });
+
+    driver.setup({ url: TEST_URL });
+    driver.start();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(driver.getState()).toBe('failed');
+    expect(textMock).not.toHaveBeenCalled();
+  });
+
+  test('Issue 2.8 repro: connection timer handle reset to undefined on expiration', () => {
+    driver.setup({ url: TEST_URL, connectionTimeoutMs: 100 });
+    globalThis.fetch = jest
+      .fn()
+      .mockImplementation(() => new Promise(() => {})); // Never resolves
+
+    driver.start();
+    expect((driver as any)._connectionTimer).toBeDefined();
+
+    jest.advanceTimersByTime(150);
+    expect((driver as any)._connectionTimer).toBeUndefined();
+  });
+
+  test('Issue 1.8 repro: _failAndStop increments _connectionAttemptVersion exactly once', () => {
+    driver.setup({ url: TEST_URL });
+    const versionBefore = (driver as any)._connectionAttemptVersion;
+    (driver as any)._failAndStop('Test error');
+    const versionAfter = (driver as any)._connectionAttemptVersion;
+    expect(versionAfter - versionBefore).toBe(1);
+  });
+
+  test('Issue 1.2 repro: _stopInternal does not invoke _flushBatch twice consecutively when closing', () => {
+    driver.setup({ url: TEST_URL, batchingIntervalMs: 50 });
+    (driver as any)._isRunning = true;
+    (driver as any)._state = 'open';
+    const flushSpy = jest.spyOn(driver as any, '_flushBatch');
+    (driver as any)._stopInternal(true);
+    // Line 814 flushed pre-close, line 817 (_updateState('closed')) flushed post-close.
+    // Line 818 would cause a 3rd redundant call!
+    expect(flushSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test('Issue 1.3 repro: _pushEvent does not call _cancelBatchTimer twice consecutively per flush', () => {
+    driver.setup({ url: TEST_URL, batchingIntervalMs: 100, maxBufferSize: 2 });
+    const cancelSpy = jest.spyOn(driver as any, '_cancelBatchTimer');
+    // Push event to fill buffer to maxBufferSize
+    (driver as any)._pushEvent({ type: 'message', data: '1' });
+    (driver as any)._pushEvent({ type: 'message', data: '2' });
+    // Without fix: cancelSpy called 3 times (1 inside _flushBatch on overflow, 1 right before in _pushEvent, etc.)
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('Issue 2.7 repro: POST request without body does not check headers with Object.keys', async () => {
+    const keysSpy = jest.spyOn(Object, 'keys');
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: new ReadableStream(),
+    });
+
+    driver.setup({ url: TEST_URL, method: 'post' });
+    keysSpy.mockClear();
+    driver.start();
+    await Promise.resolve();
+
+    const mergedHeadersChecked = keysSpy.mock.calls.some(
+      ([obj]) =>
+        obj &&
+        typeof obj === 'object' &&
+        (obj as any).Accept === 'text/event-stream'
+    );
+    expect(mergedHeadersChecked).toBe(false);
+    keysSpy.mockRestore();
+  });
+
+  test('Issue 1.1 repro: onIdUpdate and onEvent do not double-count last-event-id bytes', () => {
+    driver.setup({ url: TEST_URL });
+    const bytesBefore = driver.getStats().totalBytesReceived;
+    driver.onIdUpdate('event-123'); // 9 bytes
+    expect(driver.getStats().totalBytesReceived - bytesBefore).toBe(9);
+
+    const bytesAfterId = driver.getStats().totalBytesReceived;
+    driver.onEvent('event-123', undefined, 'hello'); // 5 bytes for hello
+    expect(driver.getStats().totalBytesReceived - bytesAfterId).toBe(5);
+  });
+
+  test('Issue 1.5 verification: reconnect count increments accurately on reconnection attempt', async () => {
+    driver.setup({ url: TEST_URL });
+    globalThis.fetch = jest.fn().mockImplementation(async () => ({
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: new ReadableStream(),
+    }));
+
+    driver.start();
+    await Promise.resolve();
+    expect(driver.getStats().reconnectCount).toBe(0);
+
+    // Restart simulates reconnecting
+    driver.restart();
+    expect(driver.getState()).toBe('connecting');
+    await Promise.resolve();
+    expect(driver.getStats().reconnectCount).toBe(1);
+  });
+
+  test('Issue 2.8 repro: readTimeoutTimer handle reset to undefined on expiration', () => {
+    driver.setup({ url: TEST_URL, readTimeoutMs: 100 });
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: new ReadableStream(),
+    });
+
+    driver.start();
+    (driver as any)._resetReadTimeout(
+      (driver as any)._connectionAttemptVersion
+    );
+    expect((driver as any)._readTimeoutTimer).toBeDefined();
+
+    jest.advanceTimersByTime(150);
+    expect((driver as any)._readTimeoutTimer).toBeUndefined();
   });
 });

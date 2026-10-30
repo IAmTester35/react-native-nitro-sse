@@ -34,7 +34,7 @@ function getUtf8ByteCount(str: string): number {
 /**
  * Calculates exponential backoff with full symmetric jitter matching iOS/Android.
  */
-class SseReconnectStrategy {
+export class SseReconnectStrategy {
   private _backoffCounter = 0;
   private _currentReconnectAttempts = 0;
   private _retryInterval = 1.0; // in seconds
@@ -49,8 +49,8 @@ class SseReconnectStrategy {
     maxReconnectAttempts?: number
   ): void {
     if (
-      retryIntervalMs !== undefined &&
-      !Number.isNaN(retryIntervalMs) &&
+      typeof retryIntervalMs === 'number' &&
+      Number.isFinite(retryIntervalMs) &&
       retryIntervalMs >= 0
     ) {
       this._retryInterval = retryIntervalMs / 1000.0;
@@ -59,8 +59,8 @@ class SseReconnectStrategy {
     }
 
     if (
-      maxRetryIntervalMs !== undefined &&
-      !Number.isNaN(maxRetryIntervalMs) &&
+      typeof maxRetryIntervalMs === 'number' &&
+      Number.isFinite(maxRetryIntervalMs) &&
       maxRetryIntervalMs >= 0
     ) {
       this._maxRetryInterval = maxRetryIntervalMs / 1000.0;
@@ -68,15 +68,15 @@ class SseReconnectStrategy {
       this._maxRetryInterval = 30.0;
     }
 
-    if (jitterFactor !== undefined && !Number.isNaN(jitterFactor)) {
+    if (typeof jitterFactor === 'number' && Number.isFinite(jitterFactor)) {
       this._jitterFactor = Math.min(Math.max(0.0, jitterFactor), 1.0);
     } else {
       this._jitterFactor = 0.5;
     }
 
     if (
-      maxReconnectAttempts !== undefined &&
-      !Number.isNaN(maxReconnectAttempts) &&
+      typeof maxReconnectAttempts === 'number' &&
+      Number.isFinite(maxReconnectAttempts) &&
       maxReconnectAttempts >= 0
     ) {
       this._maxReconnectAttempts = maxReconnectAttempts;
@@ -96,24 +96,16 @@ class SseReconnectStrategy {
 
   nextDelayMs(isError: boolean): number {
     this._currentReconnectAttempts++;
-    let delay: number;
+    const base = isError
+      ? Math.min(
+          this._retryInterval * Math.pow(2.0, this._backoffCounter++),
+          this._maxRetryInterval
+        )
+      : Math.min(this._retryInterval, this._maxRetryInterval);
 
-    if (isError) {
-      const exponent = this._backoffCounter;
-      const base = Math.min(
-        this._retryInterval * Math.pow(2.0, exponent),
-        this._maxRetryInterval
-      );
-      this._backoffCounter++;
-      const randomFactor =
-        1.0 - this._jitterFactor + Math.random() * (2 * this._jitterFactor);
-      delay = base * randomFactor;
-    } else {
-      const randomFactor =
-        1.0 - this._jitterFactor + Math.random() * (2 * this._jitterFactor);
-      delay =
-        Math.min(this._retryInterval, this._maxRetryInterval) * randomFactor;
-    }
+    const randomFactor =
+      1.0 - this._jitterFactor + Math.random() * (2 * this._jitterFactor);
+    const delay = base * randomFactor;
 
     // Minimum floor of 1000ms enforced across all platforms, capped at max 32-bit signed int for timer safety
     const MAX_TIMER_MS = 2_147_483_647;
@@ -127,7 +119,11 @@ class SseReconnectStrategy {
   }
 
   updateRetryInterval(retryMs: number): void {
-    if (!Number.isNaN(retryMs) && retryMs >= 0) {
+    if (
+      typeof retryMs === 'number' &&
+      Number.isFinite(retryMs) &&
+      retryMs >= 0
+    ) {
       this._retryInterval = retryMs / 1000.0;
     }
   }
@@ -280,6 +276,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     this._flushBatch();
 
     this._isRunning = true;
+    this._isReconnecting = true;
     this._connectionAttemptVersion++;
     this._updateState('reconnecting');
     this._establishConnection(this._connectionAttemptVersion);
@@ -343,7 +340,6 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
   dispose(): void {
     this.stop();
     this._teardownNetworkListeners();
-    this._batchBuffer = [];
   }
 
   // =========================================================================
@@ -450,6 +446,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
 
     const connectionTimeoutMs = this._config.connectionTimeoutMs ?? 15000;
     this._connectionTimer = setTimeout(() => {
+      this._connectionTimer = undefined;
       if (attemptVersion === this._connectionAttemptVersion) {
         this._disconnectReason = 'timeout';
         abortController.abort();
@@ -465,15 +462,13 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       credentials: 'same-origin',
     };
 
-    if (method === 'POST') {
+    if (method === 'POST' && this._config.body) {
+      fetchOptions.body = this._config.body;
       const hasContentType = Object.keys(mergedHeaders).some(
         (k) => k.toLowerCase() === 'content-type'
       );
-      if (!hasContentType && this._config.body) {
+      if (!hasContentType) {
         mergedHeaders['Content-Type'] = 'application/json';
-      }
-      if (this._config.body) {
-        fetchOptions.body = this._config.body;
       }
     }
 
@@ -509,7 +504,13 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     this._lastStatusCode = statusCode;
 
     let errorBody: string | undefined;
-    if (statusCode >= 400 || statusCode === 204) {
+    if (
+      statusCode >= 400 &&
+      statusCode !== 401 &&
+      statusCode !== 403 &&
+      statusCode !== 408 &&
+      statusCode !== 429
+    ) {
       const bodyTimer = setTimeout(
         () => abortController.abort(),
         connectionTimeoutMs
@@ -681,7 +682,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     // 4. Connection established successfully
     this._reconnectStrategy.reset();
     this._consecutiveAuthErrors = 0;
-    if (this._isReconnecting || this._state === 'reconnecting') {
+    if (this._isReconnecting) {
       this._reconnectCount++;
       this._isReconnecting = false;
     }
@@ -796,6 +797,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     this._cleanupTransport();
 
     this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = undefined;
       if (this._isRunning && newVersion === this._connectionAttemptVersion) {
         this._establishConnection(newVersion);
       }
@@ -815,12 +817,10 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
 
     if (emitClosed && this._state !== 'failed') {
       this._updateState('closed');
-      this._flushBatch();
     }
   }
 
   private _failAndStop(message: string, statusCode?: number): void {
-    this._connectionAttemptVersion++;
     this._recordError(
       message,
       statusCode !== undefined ? String(statusCode) : undefined
@@ -874,6 +874,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     if (readTimeoutMs <= 0) return;
 
     this._readTimeoutTimer = setTimeout(() => {
+      this._readTimeoutTimer = undefined;
       if (
         this._isRunning &&
         attemptVersion === this._connectionAttemptVersion
@@ -883,7 +884,6 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         const errorMsg = 'Read timeout';
         this._recordError(errorMsg, undefined);
         this._pushEvent({ type: 'error', message: errorMsg });
-        this._cleanupTransport();
         this._scheduleReconnect(true, undefined, attemptVersion);
       }
     }, readTimeoutMs);
@@ -938,13 +938,8 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
 
     if (this._batchBuffer.length >= maxBufferSize && batchingIntervalMs > 0) {
       this._bufferOverflowCount++;
-      this._cancelBatchTimer();
       this._flushBatch();
-    } else if (
-      this._batchBuffer.length >= maxBufferSize ||
-      batchingIntervalMs <= 0
-    ) {
-      this._cancelBatchTimer();
+    } else if (batchingIntervalMs <= 0) {
       this._flushBatch();
     } else if (!this._batchTimer) {
       this._batchTimer = setTimeout(() => {
@@ -996,11 +991,6 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     const eventTypeSize =
       eventType === 'message' ? 0 : getUtf8ByteCount(eventType);
     this._totalBytesReceived += encodedDataSize + eventTypeSize;
-
-    if (id !== undefined && id !== this._lastProcessedId) {
-      this._totalBytesReceived += getUtf8ByteCount(id);
-      this._lastProcessedId = id;
-    }
 
     this._totalEventsReceived++;
 
