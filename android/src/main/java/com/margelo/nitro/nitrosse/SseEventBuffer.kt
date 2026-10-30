@@ -48,24 +48,21 @@ class SseEventBuffer(
     fun getBufferFlushCount(): Long = synchronized(eventBuffer) { bufferFlushCount }
     fun getBufferOverflowCount(): Long = synchronized(eventBuffer) { bufferOverflowCount }
 
+    private fun appendEventLocked(event: SseEvent) {
+        eventBuffer.add(event)
+        if (eventBuffer.size > peakBufferedEvents) {
+            peakBufferedEvents = eventBuffer.size
+        }
+    }
+
     fun push(event: SseEvent) {
         if (batchingIntervalMs <= 0.0) {
             if (dispatcher == null || dispatcher.isCurrentDispatcher()) {
-                synchronized(eventBuffer) {
-                    eventBuffer.add(event)
-                    if (eventBuffer.size > peakBufferedEvents) {
-                        peakBufferedEvents = eventBuffer.size
-                    }
-                }
+                synchronized(eventBuffer) { appendEventLocked(event) }
                 flush()
             } else {
                 dispatcher.post {
-                    synchronized(eventBuffer) {
-                        eventBuffer.add(event)
-                        if (eventBuffer.size > peakBufferedEvents) {
-                            peakBufferedEvents = eventBuffer.size
-                        }
-                    }
+                    synchronized(eventBuffer) { appendEventLocked(event) }
                     flush()
                 }
             }
@@ -74,10 +71,7 @@ class SseEventBuffer(
 
         var shouldFlush = false
         synchronized(eventBuffer) {
-            eventBuffer.add(event)
-            if (eventBuffer.size > peakBufferedEvents) {
-                peakBufferedEvents = eventBuffer.size
-            }
+            appendEventLocked(event)
             if (eventBuffer.size >= maxBufferSize) {
                 bufferOverflowCount++
                 shouldFlush = true
@@ -86,13 +80,9 @@ class SseEventBuffer(
 
         if (shouldFlush) {
             if (dispatcher == null || dispatcher.isCurrentDispatcher()) {
-                dispatcher?.removeCallbacks(flushRunnable)
                 flush()
             } else {
-                dispatcher.post {
-                    dispatcher.removeCallbacks(flushRunnable)
-                    flush()
-                }
+                dispatcher.post { flush() }
             }
         } else if (!isFlushPending.getAndSet(true)) {
             dispatcher?.postDelayed(flushRunnable, batchingIntervalMs.toLong())

@@ -50,27 +50,11 @@ object JsonUtils {
      * Throws [org.json.JSONException] on malformed JSON objects.
      */
     fun parseJsonToMap(data: String): Map<String, Any?>? {
-        val len = data.length
-        var firstChar = ' '
-        var idx = 0
-        var needsSubstring = false
-        while (idx < len) {
-            val c = data[idx]
-            if (c > ' ') {
-                if (c.isWhitespace()) {
-                    needsSubstring = true
-                } else {
-                    firstChar = c
-                    break
-                }
-            }
-            idx++
-        }
-        if (firstChar != '{') {
+        val trimmed = data.trimStart()
+        if (!trimmed.startsWith('{')) {
             return null
         }
-        val jsonStr = if (needsSubstring) data.substring(idx) else data
-        val jsonObject = JSONObject(jsonStr)
+        val jsonObject = JSONObject(trimmed)
         return jsonObjectToMap(jsonObject)
     }
 
