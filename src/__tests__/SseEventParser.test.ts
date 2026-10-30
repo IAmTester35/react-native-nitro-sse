@@ -138,16 +138,12 @@ describe('SseEventParser', () => {
     );
   });
 
-  test('dispatches pending event at endOfStream (EOF)', () => {
+  test('discards incomplete event at endOfStream (EOF)', () => {
     parser.feed('data: final_unclosed');
     expect(delegate.onEvent).not.toHaveBeenCalled();
 
     parser.endOfStream();
-    expect(delegate.onEvent).toHaveBeenCalledWith(
-      undefined,
-      undefined,
-      'final_unclosed'
-    );
+    expect(delegate.onEvent).not.toHaveBeenCalled();
   });
 
   test('ignores unknown field names silently', () => {
@@ -209,6 +205,57 @@ describe('SseEventParser', () => {
       undefined,
       undefined,
       'Xin chào 🇻🇳 🚀'
+    );
+  });
+
+  test('buffers many tiny fragments without line breaks correctly', () => {
+    const message = 'data: streaming payload across many tiny chunks\n\n';
+    // Feed one character at a time to test fragment accumulation
+    for (const char of message) {
+      parser.feed(char);
+    }
+    expect(delegate.onEvent).toHaveBeenCalledTimes(1);
+    expect(delegate.onEvent).toHaveBeenCalledWith(
+      undefined,
+      undefined,
+      'streaming payload across many tiny chunks'
+    );
+  });
+
+  test('handles colonless fields per WHATWG specification', () => {
+    // Colonless 'data' line appends empty string; colonless 'event' resets eventType
+    parser.feed('data\nevent\n\n');
+    expect(delegate.onEvent).toHaveBeenCalledWith(undefined, undefined, '');
+  });
+
+  test('Issue 2.6 repro: aborts parser and rejects subsequent chunks when trailing unclosed fragment exceeds MAX_SSE_LINE_LENGTH', () => {
+    const hugeTrailing =
+      'data: valid\n\n' + 'x'.repeat(MAX_SSE_LINE_LENGTH + 10);
+    parser.feed(hugeTrailing);
+    expect(delegate.onParseError).toHaveBeenCalledTimes(1);
+
+    // Subsequent feed should be ignored because parser is aborted
+    parser.feed('data: ignored\n\n');
+    expect(delegate.onEvent).toHaveBeenCalledTimes(1);
+    expect(delegate.onEvent).toHaveBeenCalledWith(
+      undefined,
+      undefined,
+      'valid'
+    );
+  });
+
+  test('Issue 2.6 repro: aborts parser on slow-path trailing unclosed fragment exceeding MAX_SSE_LINE_LENGTH', () => {
+    parser.feed('data: valid\r\n\r\n');
+    parser.feed(':\r' + 'x'.repeat(MAX_SSE_LINE_LENGTH + 10));
+    expect(delegate.onParseError).toHaveBeenCalledTimes(1);
+
+    // Subsequent feed should be ignored because parser is aborted
+    parser.feed('data: ignored\n\n');
+    expect(delegate.onEvent).toHaveBeenCalledTimes(1);
+    expect(delegate.onEvent).toHaveBeenCalledWith(
+      undefined,
+      undefined,
+      'valid'
     );
   });
 });
