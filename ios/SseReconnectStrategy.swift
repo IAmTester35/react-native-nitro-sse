@@ -63,16 +63,16 @@ class SseReconnectStrategy {
     func nextDelay(isError: Bool) -> TimeInterval {
         currentReconnectAttempts += 1
         
-        let delay: TimeInterval
+        let base: TimeInterval
         if isError {
             let exponent = Double(backoffCounter)
-            let base = min(retryInterval * pow(2.0, exponent), maxRetryInterval)
+            base = min(retryInterval * pow(2.0, exponent), maxRetryInterval)
             backoffCounter += 1
-            delay = base * (1.0 - jitterFactor + Double.random(in: 0...(2 * jitterFactor)))
         } else {
-            delay = retryInterval * (1.0 - jitterFactor + Double.random(in: 0...(2 * jitterFactor)))
+            base = retryInterval
         }
         
+        let delay = base * (1.0 - jitterFactor + Double.random(in: 0...(2 * jitterFactor)))
         return max(delay, 1.0)
     }
     
@@ -93,15 +93,6 @@ class SseReconnectStrategy {
     static func extractRetryAfterSeconds(from response: HTTPURLResponse) -> TimeInterval? {
         guard let retryAfterHeader = response.value(forHTTPHeaderField: "Retry-After") ?? (response.allHeaderFields["Retry-After"] as? String) else { return nil }
         return parseRetryAfterHeader(retryAfterHeader)
-    }
-
-    /// Parses `Retry-After` HTTP headers per RFC 7231 (integer seconds or RFC 1123 date) from NSError userInfo.
-    static func extractRetryAfterSeconds(from error: Error) -> TimeInterval? {
-        let nsError = error as NSError
-        if let response = nsError.userInfo["response"] as? HTTPURLResponse {
-            return extractRetryAfterSeconds(from: response)
-        }
-        return nil
     }
 
     private static func parseRetryAfterHeader(_ retryAfterHeader: String) -> TimeInterval? {

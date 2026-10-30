@@ -90,29 +90,13 @@ internal class SseEventParser {
         isAtStreamStart = true
     }
     
-    /// Flushes any pending data or un-terminated line when the stream reaches EOF.
-    /// Per WHATWG SSE specification: "Once the end of the file is reached, any pending data must be dispatched as an event."
+    /// Signals end of stream (EOF).
+    /// Per WHATWG SSE specification: "Once the end of the file is reached, any pending data must be discarded. (If the file ends in the middle of an event, before the final empty line, the incomplete event is not dispatched.)"
     func endOfStream() {
-        if !buffer.isEmpty {
-            if buffer.last == 0x0D {
-                buffer.removeLast()
-            }
-            let line = String(decoding: buffer, as: UTF8.self)
-            buffer.removeAll()
-            processLine(line)
-            delegate?.parserDidParseLines(1)
-        }
-        if hasData {
-            let eventData = dataBuffer
-            let id = lastEventId
-            let type = eventType
-            
-            dataBuffer = ""
-            hasData = false
-            eventType = nil
-            
-            delegate?.parserDidReceiveEvent(id: id, type: type, data: eventData)
-        }
+        buffer.removeAll()
+        dataBuffer = ""
+        hasData = false
+        eventType = nil
     }
     
     func feed(data: Data) {
@@ -286,8 +270,8 @@ internal class SseEventParser {
         if line.hasPrefix(":") {
             // WHATWG SSE: Lines starting with ':' are comments (often used for keepalive/heartbeat).
             // Normalizes comment by removing only a single leading space per WHATWG SSE specification.
-            let rawComment = String(line.dropFirst())
-            let comment = rawComment.hasPrefix(" ") ? String(rawComment.dropFirst()) : rawComment
+            let rawComment = line.dropFirst()
+            let comment = rawComment.hasPrefix(" ") ? String(rawComment.dropFirst()) : String(rawComment)
             delegate?.parserDidReceiveComment(comment)
             return
         }
@@ -298,8 +282,9 @@ internal class SseEventParser {
         
         if let colon = colonIndex {
             field = String(line[..<colon])
-            let rawValue = String(line[line.index(after: colon)...])
-            value = rawValue.hasPrefix(" ") ? String(rawValue.dropFirst()) : rawValue
+            let rawValue = line[line.index(after: colon)...]
+            let trimmed = rawValue.hasPrefix(" ") ? rawValue.dropFirst() : rawValue
+            value = String(trimmed)
         } else {
             field = line
             value = ""
@@ -331,7 +316,7 @@ internal class SseEventParser {
         case "event":
             eventType = value.isEmpty ? nil : value
         case "retry":
-            if !value.isEmpty && value.allSatisfy({ $0.isASCII && $0.isNumber }), let retryVal = Int64(value), retryVal >= 0 {
+            if !value.isEmpty && value.allSatisfy({ $0.isASCII && $0.isNumber }), let retryVal = Int64(value) {
                 delegate?.parserDidReceiveRetry(retryMs: retryVal)
             }
         default:
@@ -445,7 +430,6 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
             
             guard let httpResponse = response as? HTTPURLResponse else {
                 let error = NSError(domain: "NitroSse", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid non-HTTP response"])
-                self.isFinished = true
                 self.dispatchTerminalFailure(error: error, response: nil, errorBody: nil)
                 completionHandler(.cancel)
                 return
@@ -461,7 +445,6 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
                     code: 204,
                     userInfo: [NSLocalizedDescriptionKey: "HTTP 204 No Content"]
                 )
-                self.isFinished = true
                 self.dispatchTerminalFailure(error: error, response: httpResponse, errorBody: nil)
                 completionHandler(.cancel)
                 return
@@ -469,7 +452,6 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
             
             // Validate HTTP Status Code (Collect bounded body if statusCode is not 200)
             guard statusCode == 200 else {
-                self.isFinished = true
                 if httpResponse.expectedContentLength == 0 {
                     let error = NSError(domain: "NitroSse", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP \(statusCode)"])
                     self.dispatchTerminalFailure(error: error, response: httpResponse, errorBody: nil)
@@ -494,7 +476,6 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
                     code: -2001,
                     userInfo: [NSLocalizedDescriptionKey: "Invalid Content-Type: expected text/event-stream but received '\(contentType)'"]
                 )
-                self.isFinished = true
                 self.dispatchTerminalFailure(error: error, response: httpResponse, errorBody: nil)
                 completionHandler(.cancel)
                 return
@@ -637,31 +618,12 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
 /// Factory creating native `RealSseEventSource` instances configured with custom timeouts, headers, and HTTP methods.
 enum SseConnectionHandler {
     
-    /// Instantiates and starts a native `SseEventSource` connection using `SseConfig` and session parameters.
-    static func createEventSource(
+    /// Constructs a standardized and sanitized URLRequest for SSE streaming.
+    static func createRequest(
         url: URL,
         config: SseConfig,
-        lastProcessedId: String?,
-        delegate: SseConnectionDelegate,
-        attemptVersion: Int,
-        dispatcher: SseDispatcher,
-        protocolClasses: [AnyClass]? = nil
-    ) -> SseEventSource {
-        let sessionConfig = URLSessionConfiguration.default
-        let rawReadTimeout = (config.readTimeoutMs ?? 300000.0) / 1000.0
-        // Use timeoutIntervalForRequest (resets on incoming chunks) rather than timeoutIntervalForResource.
-        // Setting timeoutIntervalForResource would hard-cap the total lifetime of persistent SSE streams.
-        // A non-positive timeout interval is treated as infinite fallback sentinel (7 days) to prevent immediate timeout.
-        let readTimeout = rawReadTimeout > 0 ? rawReadTimeout : 604800.0
-        sessionConfig.timeoutIntervalForRequest = readTimeout
-        
-        if let protocolClasses = protocolClasses {
-            sessionConfig.protocolClasses = protocolClasses
-        }
-        
-        let rawConnectionTimeout = (config.connectionTimeoutMs ?? 15000.0) / 1000.0
-        let connectionTimeout = rawConnectionTimeout > 0 ? rawConnectionTimeout : 0.0
-        
+        lastProcessedId: String?
+    ) -> URLRequest {
         var request = URLRequest(url: url)
         request.httpMethod = config.method?.stringValue.uppercased() ?? "GET"
         
@@ -690,9 +652,39 @@ enum SseConnectionHandler {
         if let body = config.body {
             request.httpBody = body.data(using: .utf8)
         }
+        return request
+    }
+    
+    /// Instantiates and starts a native `SseEventSource` connection using `SseConfig` and session parameters.
+    static func createEventSource(
+        url: URL,
+        config: SseConfig,
+        lastProcessedId: String?,
+        delegate: SseConnectionDelegate,
+        attemptVersion: Int,
+        dispatcher: SseDispatcher,
+        protocolClasses: [AnyClass]? = nil,
+        request: URLRequest? = nil
+    ) -> SseEventSource {
+        let sessionConfig = URLSessionConfiguration.default
+        let rawReadTimeout = (config.readTimeoutMs ?? 300000.0) / 1000.0
+        // Use timeoutIntervalForRequest (resets on incoming chunks) rather than timeoutIntervalForResource.
+        // Setting timeoutIntervalForResource would hard-cap the total lifetime of persistent SSE streams.
+        // A non-positive timeout interval is treated as infinite fallback sentinel (7 days) to prevent immediate timeout.
+        let readTimeout = rawReadTimeout > 0 ? rawReadTimeout : 604800.0
+        sessionConfig.timeoutIntervalForRequest = readTimeout
+        
+        if let protocolClasses = protocolClasses {
+            sessionConfig.protocolClasses = protocolClasses
+        }
+        
+        let rawConnectionTimeout = (config.connectionTimeoutMs ?? 15000.0) / 1000.0
+        let connectionTimeout = rawConnectionTimeout > 0 ? rawConnectionTimeout : 0.0
+        
+        let actualRequest = request ?? createRequest(url: url, config: config, lastProcessedId: lastProcessedId)
         
         let source = RealSseEventSource(delegate: delegate, attemptVersion: attemptVersion, dispatcher: dispatcher, initialLastEventId: lastProcessedId)
-        source.start(request: request, sessionConfig: sessionConfig, connectionTimeout: connectionTimeout)
+        source.start(request: actualRequest, sessionConfig: sessionConfig, connectionTimeout: connectionTimeout)
         return source
     }
 }
