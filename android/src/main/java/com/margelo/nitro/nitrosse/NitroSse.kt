@@ -159,12 +159,13 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 .build()
             
             if (lifecycleManager == null) {
+                val weakThis = java.lang.ref.WeakReference(this)
                 lifecycleManager = SseLifecycleManager(
                     lifecycleProvider = { androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle },
                     mainDispatcher = mainDispatcher,
                     sseDispatcher = sseDispatcher!!,
-                    onBackground = { handleAppBackground() },
-                    onForeground = { handleAppForeground() }
+                    onBackground = { weakThis.get()?.handleAppBackground() },
+                    onForeground = { weakThis.get()?.handleAppForeground() }
                 )
                 lifecycleManager?.startObserving()
             }
@@ -191,8 +192,9 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     private fun startNetworkMonitoring() {
         val context = NitroModules.applicationContext ?: return
         if (networkMonitor == null) {
+            val weakThis = java.lang.ref.WeakReference(this)
             networkMonitor = SseNetworkMonitor(context, sseDispatcher) { isAvailable, interfaceChanged, capabilities ->
-                handleNetworkChange(isAvailable, interfaceChanged, capabilities)
+                weakThis.get()?.handleNetworkChange(isAvailable, interfaceChanged, capabilities)
             }
         }
         networkMonitor?.start()

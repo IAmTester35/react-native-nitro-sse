@@ -18,7 +18,7 @@ class SseEventBuffer(
 
     var onFlushError: ((Exception) -> Unit)? = null
 
-    private val eventBuffer = mutableListOf<SseEvent>()
+    private val eventBuffer = java.util.ArrayDeque<SseEvent>()
     private val isFlushPending = AtomicBoolean(false)
     
     private var batchingIntervalMs: Double = 0.0
@@ -32,15 +32,20 @@ class SseEventBuffer(
 
     fun configure(batchingIntervalMs: Double, maxBufferSize: Int) {
         this.batchingIntervalMs = if (!batchingIntervalMs.isNaN() && !batchingIntervalMs.isInfinite() && batchingIntervalMs >= 0) batchingIntervalMs else 0.0
-        this.maxBufferSize = if (maxBufferSize > 0) maxBufferSize else 1000
+        this.maxBufferSize = if (maxBufferSize > 0) minOf(maxBufferSize, HARD_MAX_BUFFER_SIZE) else 1000
     }
 
     fun setCallback(newCallback: (Array<SseEvent>) -> Unit) {
         this.onFlush = newCallback
     }
 
+    companion object {
+        private const val HARD_MAX_BUFFER_SIZE = 10000
+    }
+
     fun clearCallback() {
         this.onFlush = {}
+        this.onFlushError = null
     }
 
     fun getEventsBuffered(): Int = synchronized(eventBuffer) { eventBuffer.size }
@@ -48,11 +53,18 @@ class SseEventBuffer(
     fun getBufferFlushCount(): Long = synchronized(eventBuffer) { bufferFlushCount }
     fun getBufferOverflowCount(): Long = synchronized(eventBuffer) { bufferOverflowCount }
 
-    private fun appendEventLocked(event: SseEvent) {
-        eventBuffer.add(event)
+    private fun appendEventLocked(event: SseEvent): Boolean {
+        var evicted = false
+        if (eventBuffer.size >= HARD_MAX_BUFFER_SIZE) {
+            eventBuffer.removeFirst()
+            bufferOverflowCount++
+            evicted = true
+        }
+        eventBuffer.addLast(event)
         if (eventBuffer.size > peakBufferedEvents) {
             peakBufferedEvents = eventBuffer.size
         }
+        return evicted
     }
 
     fun push(event: SseEvent) {
@@ -71,9 +83,11 @@ class SseEventBuffer(
 
         var shouldFlush = false
         synchronized(eventBuffer) {
-            appendEventLocked(event)
+            val evicted = appendEventLocked(event)
             if (eventBuffer.size >= maxBufferSize) {
-                bufferOverflowCount++
+                if (!evicted) {
+                    bufferOverflowCount++
+                }
                 shouldFlush = true
             }
         }
