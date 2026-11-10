@@ -22,13 +22,24 @@ function getUtf8ByteCount(str: string): number {
     } else if (code <= 0x7ff) {
       bytes += 2;
     } else if (code >= 0xd800 && code <= 0xdbff) {
-      bytes += 4;
-      i++;
+      if (i + 1 < str.length) {
+        const next = str.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          bytes += 4;
+          i++;
+          continue;
+        }
+      }
+      bytes += 3;
     } else {
       bytes += 3;
     }
   }
   return bytes;
+}
+
+function isValidNonNegative(val: unknown): val is number {
+  return typeof val === 'number' && Number.isFinite(val) && val >= 0;
 }
 
 /**
@@ -48,21 +59,13 @@ export class SseReconnectStrategy {
     jitterFactor?: number,
     maxReconnectAttempts?: number
   ): void {
-    if (
-      typeof retryIntervalMs === 'number' &&
-      Number.isFinite(retryIntervalMs) &&
-      retryIntervalMs >= 0
-    ) {
+    if (isValidNonNegative(retryIntervalMs)) {
       this._retryInterval = retryIntervalMs / 1000.0;
     } else {
       this._retryInterval = 1.0;
     }
 
-    if (
-      typeof maxRetryIntervalMs === 'number' &&
-      Number.isFinite(maxRetryIntervalMs) &&
-      maxRetryIntervalMs >= 0
-    ) {
+    if (isValidNonNegative(maxRetryIntervalMs)) {
       this._maxRetryInterval = maxRetryIntervalMs / 1000.0;
     } else {
       this._maxRetryInterval = 30.0;
@@ -74,11 +77,7 @@ export class SseReconnectStrategy {
       this._jitterFactor = 0.5;
     }
 
-    if (
-      typeof maxReconnectAttempts === 'number' &&
-      Number.isFinite(maxReconnectAttempts) &&
-      maxReconnectAttempts >= 0
-    ) {
+    if (isValidNonNegative(maxReconnectAttempts)) {
       this._maxReconnectAttempts = maxReconnectAttempts;
     } else {
       this._maxReconnectAttempts = -1;
@@ -119,11 +118,7 @@ export class SseReconnectStrategy {
   }
 
   updateRetryInterval(retryMs: number): void {
-    if (
-      typeof retryMs === 'number' &&
-      Number.isFinite(retryMs) &&
-      retryMs >= 0
-    ) {
+    if (isValidNonNegative(retryMs)) {
       this._retryInterval = retryMs / 1000.0;
     }
   }
@@ -271,9 +266,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       return;
     }
     this._connectedAt = undefined;
-    this._cleanupTimers();
-    this._cleanupTransport();
-    this._flushBatch();
+    this._teardownConnection();
 
     this._isRunning = true;
     this._isReconnecting = true;
@@ -827,9 +820,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     this._wasRunningBeforeNetworkLoss = false;
     this._connectionAttemptVersion++;
 
-    this._cleanupTimers();
-    this._cleanupTransport();
-    this._flushBatch();
+    this._teardownConnection();
 
     if (emitClosed && this._state !== 'failed') {
       this._updateState('closed');
@@ -844,6 +835,12 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     this._pushEvent({ type: 'error', message, statusCode });
     this._updateState('failed');
     this._stopInternal(false);
+  }
+
+  private _teardownConnection(): void {
+    this._cleanupTimers();
+    this._cleanupTransport();
+    this._flushBatch();
   }
 
   private _cleanupTransport(): void {
@@ -983,6 +980,16 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     }
   }
 
+  private _recordActivity(now: number): void {
+    if (this._lastActivityTime > 0) {
+      const gap = now - this._lastActivityTime;
+      if (gap > this._maxEventGapMs) {
+        this._maxEventGapMs = gap;
+      }
+    }
+    this._lastActivityTime = now;
+  }
+
   // =========================================================================
   // SseEventParserDelegate Implementation
   // =========================================================================
@@ -994,13 +1001,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
   ): void {
     const now = Date.now();
     this._lastEventTime = now;
-    if (this._lastActivityTime > 0) {
-      const gap = now - this._lastActivityTime;
-      if (gap > this._maxEventGapMs) {
-        this._maxEventGapMs = gap;
-      }
-    }
-    this._lastActivityTime = now;
+    this._recordActivity(now);
 
     const eventType = type ?? 'message';
     const encodedDataSize = getUtf8ByteCount(data);
@@ -1011,7 +1012,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     this._totalEventsReceived++;
 
     let parsedData: AnyMap | undefined;
-    if (this._config?.autoParseJSON && data.trimStart().startsWith('{')) {
+    if (this._config?.autoParseJSON && /^\s*\{/.test(data)) {
       try {
         const obj = JSON.parse(data);
         if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
@@ -1035,13 +1036,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
   onComment(comment: string): void {
     const now = Date.now();
     this._lastHeartbeatTime = now;
-    if (this._lastActivityTime > 0) {
-      const gap = now - this._lastActivityTime;
-      if (gap > this._maxEventGapMs) {
-        this._maxEventGapMs = gap;
-      }
-    }
-    this._lastActivityTime = now;
+    this._recordActivity(now);
     this._totalBytesReceived += getUtf8ByteCount(comment);
     this._commentsReceived++;
 
@@ -1090,8 +1085,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         this._wasRunningBeforeNetworkLoss = true;
         this._disconnectReason = 'network_error';
         this._connectionAttemptVersion++;
-        this._cleanupTimers();
-        this._cleanupTransport();
+        this._teardownConnection();
         this._updateState('paused');
         this._isRunning = false;
       }
