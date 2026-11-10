@@ -3,7 +3,8 @@ buildscript {
     kotlinVersion: "2.0.21",
     minSdkVersion: 24,
     compileSdkVersion: 36,
-    targetSdkVersion: 36
+    targetSdkVersion: 36,
+    ndkVersion: "27.1.12297006"
   ]
 
   ext.getExtOrDefault = { prop ->
@@ -46,6 +47,7 @@ if (jacocoGradle.exists()) {
 android {
   namespace "com.margelo.nitro.nitrosse"
 
+  ndkVersion getExtOrDefault("ndkVersion")
   compileSdkVersion getExtOrDefault("compileSdkVersion")
 
   defaultConfig {

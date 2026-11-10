@@ -15,6 +15,7 @@ import java.lang.reflect.Method
  */
 object NetworkInspector {
     private const val TAG = "NitroSseNetworkInspector"
+    private const val MAX_INSPECTOR_BODY_BYTES = 64 * 1024L
 
     private val isDebuggingEnabledMethod: Method?
     private val reportRequestStartMethod: Method?
@@ -82,10 +83,16 @@ object NetworkInspector {
     fun reportRequestStart(requestId: String, request: Request) {
         if (!isEnabled()) return
         try {
-            val body = request.body?.let {
-                val buffer = Buffer()
-                it.writeTo(buffer)
-                buffer.readUtf8()
+            val body = request.body?.let { reqBody ->
+                val contentLen = reqBody.contentLength()
+                if (reqBody.isOneShot() || reqBody.isDuplex() || contentLen > MAX_INSPECTOR_BODY_BYTES) {
+                    "[Body omitted or exceeds ${MAX_INSPECTOR_BODY_BYTES}B]"
+                } else {
+                    val buffer = Buffer()
+                    reqBody.writeTo(buffer)
+                    val bytesToRead = minOf(buffer.size, MAX_INSPECTOR_BODY_BYTES)
+                    buffer.readUtf8(bytesToRead)
+                }
             } ?: ""
 
             reportRequestStartMethod?.invoke(

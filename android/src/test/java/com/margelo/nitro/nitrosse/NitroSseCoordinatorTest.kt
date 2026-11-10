@@ -665,6 +665,37 @@ class NitroSseCoordinatorTest {
     }
 
     @Test
+    fun testSseNetworkMetricsTrackerDropsTrailingReadsAfterClearAndDoesNotLeak() {
+        SseNetworkMetricsTracker.reset()
+        val testReqId = "test-req-leak-prevention"
+        SseNetworkMetricsTracker.recordRawBytes(testReqId, 500L, isGzip = true)
+        assertEquals(500L, SseNetworkMetricsTracker.getRawBytes(testReqId))
+        assertTrue(SseNetworkMetricsTracker.isGzip(testReqId))
+
+        // Clear request (simulate stream teardown/failure)
+        SseNetworkMetricsTracker.clear(testReqId)
+        assertNull(SseNetworkMetricsTracker.getRawBytes(testReqId))
+        assertFalse(SseNetworkMetricsTracker.isGzip(testReqId))
+
+        // Simulate trailing socket read arriving from OkHttp AFTER clear()
+        SseNetworkMetricsTracker.recordRawBytes(testReqId, 250L, isGzip = true)
+
+        // Trailing read MUST be dropped and must NOT resurrect the request in memory
+        assertNull(SseNetworkMetricsTracker.getRawBytes(testReqId))
+        assertFalse(SseNetworkMetricsTracker.isGzip(testReqId))
+
+        // Verify FIFO eviction past MAX_CLEARED_ENTRIES (200) never evicts the newly cleared requestId
+        for (i in 1..250) {
+            val id = "req-fifo-$i"
+            SseNetworkMetricsTracker.recordRawBytes(id, 100L, isGzip = false)
+            SseNetworkMetricsTracker.clear(id)
+            // Immediately test trailing read right after clear when size exceeds 200
+            SseNetworkMetricsTracker.recordRawBytes(id, 50L, isGzip = true)
+            assertNull("Newly cleared request $id must not be evicted by its own insertion", SseNetworkMetricsTracker.getRawBytes(id))
+        }
+    }
+
+    @Test
     fun testOnBeforeRequestHeadersDoNotMutateBaseConfig() {
         val sse = NitroSse(dispatcher)
         val initialHeaders = mapOf("X-Base" to "base-val")

@@ -79,6 +79,7 @@ internal class SseEventReader(private val source: BufferedSource) {
         fun onLinesParsed(count: Int) {}
     }
 
+    private var firstDataLine: String? = null
     private val dataBuffer = StringBuilder()
     private var hasData = false
     private var eventType: String? = null
@@ -169,6 +170,7 @@ internal class SseEventReader(private val source: BufferedSource) {
                 if (linesParsedInEvent > 0) {
                     callback.onLinesParsed(linesParsedInEvent)
                 }
+                firstDataLine = null
                 dataBuffer.setLength(0)
                 hasData = false
                 eventType = null
@@ -178,10 +180,13 @@ internal class SseEventReader(private val source: BufferedSource) {
             if (line.isEmpty()) {
                 if (hasData) {
                     callback.onLinesParsed(linesParsedInEvent)
-                    val data = dataBuffer.toString()
+                    val data = firstDataLine ?: dataBuffer.toString()
                     val id = lastEventId
                     val type = eventType
-                    dataBuffer.setLength(0)
+                    firstDataLine = null
+                    if (dataBuffer.isNotEmpty()) {
+                        dataBuffer.setLength(0)
+                    }
                     hasData = false
                     eventType = null
                     callback.onEvent(id, type, data)
@@ -190,43 +195,50 @@ internal class SseEventReader(private val source: BufferedSource) {
                 // Delimiter / keepalive empty line without data
             } else if (line.startsWith(":")) {
                 callback.onLinesParsed(linesParsedInEvent)
-                val rawComment = line.substring(1)
-                val commentText = if (rawComment.startsWith(" ")) rawComment.substring(1) else rawComment
-                callback.onComment(commentText)
+                val commentStart = if (line.length > 1 && line[1] == ' ') 2 else 1
+                callback.onComment(line.substring(commentStart))
                 return true
             } else {
                 val colonIndex = line.indexOf(':')
-                val field: String
-                val value: String
-                if (colonIndex != -1) {
-                    field = line.substring(0, colonIndex)
-                    val rawValue = line.substring(colonIndex + 1)
-                    value = if (rawValue.startsWith(" ")) rawValue.substring(1) else rawValue
+                val fieldLen = if (colonIndex != -1) colonIndex else line.length
+                val valueStart = if (colonIndex != -1) {
+                    if (colonIndex + 1 < line.length && line[colonIndex + 1] == ' ') colonIndex + 2 else colonIndex + 1
                 } else {
-                    field = line
-                    value = ""
+                    line.length
                 }
-                when (field) {
-                    "data" -> {
-                        if (dataBuffer.length + value.length > MAX_SSE_EVENT_DATA_SIZE) {
+
+                when {
+                    fieldLen == 4 && line.startsWith("data") -> {
+                        val value = if (valueStart < line.length) line.substring(valueStart) else ""
+                        val currentLength = if (!hasData) 0 else firstDataLine?.length ?: dataBuffer.length
+                        if (currentLength + value.length > MAX_SSE_EVENT_DATA_SIZE) {
                             throw IOException("SSE event data exceeded maximum limit of $MAX_SSE_EVENT_DATA_SIZE characters")
                         }
-                        if (hasData) {
-                            dataBuffer.append("\n")
+                        if (!hasData) {
+                            firstDataLine = value
+                            hasData = true
+                        } else {
+                            if (firstDataLine != null) {
+                                dataBuffer.setLength(0)
+                                dataBuffer.append(firstDataLine)
+                                firstDataLine = null
+                            }
+                            dataBuffer.append('\n').append(value)
                         }
-                        dataBuffer.append(value)
-                        hasData = true
                     }
-                    "id" -> {
+                    fieldLen == 2 && line.startsWith("id") -> {
+                        val value = if (valueStart < line.length) line.substring(valueStart) else ""
                         if (!value.contains('\u0000')) {
                             lastEventId = if (value.isEmpty()) null else value
                             callback.onIdUpdate(lastEventId)
                         }
                     }
-                    "event" -> {
+                    fieldLen == 5 && line.startsWith("event") -> {
+                        val value = if (valueStart < line.length) line.substring(valueStart) else ""
                         eventType = if (value.isEmpty()) null else value
                     }
-                    "retry" -> {
+                    fieldLen == 5 && line.startsWith("retry") -> {
+                        val value = if (valueStart < line.length) line.substring(valueStart) else ""
                         // WHATWG SSE: If field value consists solely of ASCII digits 0-9, set reconnection time. Otherwise ignore.
                         if (value.isNotEmpty() && value.all { it in '0'..'9' }) {
                             val retryMs = value.toLongOrNull()
@@ -235,6 +247,7 @@ internal class SseEventReader(private val source: BufferedSource) {
                             }
                         }
                     }
+                    // Unrecognized fields are ignored without allocating field/value substrings
                 }
             }
         }
@@ -402,24 +415,53 @@ class SseConnectionHandler(private val delegate: SseConnectionDelegate) {
 
 /**
  * Shared tracker recording raw network socket transport metrics from InspectorNetworkInterceptor.
+ * Implements bounded caching and cleared-request guards to eliminate memory leaks from trailing socket reads.
  */
 object SseNetworkMetricsTracker {
-    private val rawBytesMap = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
-    private val gzipMap = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private const val MAX_ENTRIES = 100
+    private const val MAX_CLEARED_ENTRIES = 200
 
+    private class MetricsEntry(var bytes: Long = 0L, var isGzip: Boolean = false)
+
+    private val entries = object : LinkedHashMap<String, MetricsEntry>(32, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MetricsEntry>?): Boolean =
+            size > MAX_ENTRIES
+    }
+
+    private val clearedRequests = object : LinkedHashMap<String, Boolean>(64, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean =
+            size > MAX_CLEARED_ENTRIES
+    }
+
+    @Synchronized
     fun recordRawBytes(requestId: String, bytes: Long, isGzip: Boolean) {
-        rawBytesMap.computeIfAbsent(requestId) { java.util.concurrent.atomic.AtomicLong(0) }.addAndGet(bytes)
+        // Drop trailing socket reads after request has been cleared/cancelled to prevent resurrected memory leaks
+        if (clearedRequests.containsKey(requestId)) return
+
+        val entry = entries.getOrPut(requestId) { MetricsEntry() }
+        entry.bytes += bytes
         if (isGzip) {
-            gzipMap[requestId] = true
+            entry.isGzip = true
         }
     }
 
-    fun getRawBytes(requestId: String): Long? = rawBytesMap[requestId]?.get()
-    fun isGzip(requestId: String): Boolean = gzipMap[requestId] == true
+    @Synchronized
+    fun getRawBytes(requestId: String): Long? = entries[requestId]?.bytes
 
+    @Synchronized
+    fun isGzip(requestId: String): Boolean = entries[requestId]?.isGzip == true
+
+    @Synchronized
     fun clear(requestId: String) {
-        rawBytesMap.remove(requestId)
-        gzipMap.remove(requestId)
+        entries.remove(requestId)
+        // Remember that this request is cleared (with true FIFO eviction) so subsequent trailing socket reads are discarded
+        clearedRequests[requestId] = true
+    }
+
+    @Synchronized
+    fun reset() {
+        entries.clear()
+        clearedRequests.clear()
     }
 }
 

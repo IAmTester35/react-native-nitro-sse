@@ -331,6 +331,80 @@ class SseEventReaderTest {
         assertEquals("Hello 🚀", callback.events[0].data)
         executor.shutdown()
     }
+
+    @Test
+    fun testChunkSplitAcrossFieldColonAndLeadingSpace() {
+        val pipe = okio.Pipe(1024)
+        val sink = pipe.sink
+        val source = pipe.source.buffer()
+        val reader = SseEventReader(source)
+        val callback = RecordingCallback()
+
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val future = executor.submit(java.util.concurrent.Callable {
+            reader.processNextEvent(callback)
+        })
+
+        // Split across "da", "ta", ":", " ", " ", "hello\n\n"
+        val fragments = listOf("da", "ta", ":", " ", " ", "hello\n\n")
+        for (fragment in fragments) {
+            val chunk = Buffer().writeUtf8(fragment)
+            sink.write(chunk, chunk.size)
+            sink.flush()
+            Thread.sleep(10)
+        }
+        sink.close()
+
+        assertTrue(future.get(2, java.util.concurrent.TimeUnit.SECONDS))
+        assertEquals(1, callback.events.size)
+        // Only the first space after ':' is stripped; the second space is preserved
+        assertEquals(" hello", callback.events[0].data)
+        executor.shutdown()
+    }
+
+    @Test
+    fun testMultipleColonsInJsonDataValue() {
+        val buffer = Buffer()
+        val jsonValue = "{\"url\":\"https://example.com:8080/stream\",\"ratio\":\"16:9:1\"}"
+        buffer.writeUtf8("data: $jsonValue\n\n")
+
+        val reader = SseEventReader(buffer)
+        val callback = RecordingCallback()
+
+        assertTrue(reader.processNextEvent(callback))
+        assertEquals(1, callback.events.size)
+        assertEquals(jsonValue, callback.events[0].data)
+    }
+
+    @Test
+    fun testMultilineTransitionFromEmptyFirstLineToNonEmptySecondLine() {
+        val buffer = Buffer()
+        // Event 1: empty first data line ("data") followed by "data: second line"
+        // Event 2: "data: first" -> empty "data:" -> "data: third"
+        buffer.writeUtf8("data\ndata: second line\n\ndata: first\ndata:\ndata: third\n\n")
+
+        val reader = SseEventReader(buffer)
+        val callback = RecordingCallback()
+
+        assertTrue(reader.processNextEvent(callback))
+        assertTrue(reader.processNextEvent(callback))
+        assertEquals(2, callback.events.size)
+        assertEquals("\nsecond line", callback.events[0].data)
+        assertEquals("first\n\nthird", callback.events[1].data)
+    }
+
+    @Test
+    fun testUnknownFieldsWithAndWithoutColonAreIgnored() {
+        val buffer = Buffer()
+        buffer.writeUtf8("custom_field: some_value\nbare_unknown_field\ndata_extra: ignored\ndata: valid_payload\n\n")
+
+        val reader = SseEventReader(buffer)
+        val callback = RecordingCallback()
+
+        assertTrue(reader.processNextEvent(callback))
+        assertEquals(1, callback.events.size)
+        assertEquals("valid_payload", callback.events[0].data)
+    }
 }
 
 
