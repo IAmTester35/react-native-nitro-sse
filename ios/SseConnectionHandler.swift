@@ -113,7 +113,7 @@ internal class SseEventParser {
             if buffer.isEmpty && currentData.count >= 3 {
                 let sIdx = currentData.startIndex
                 if currentData[sIdx] == 0xEF && currentData[sIdx + 1] == 0xBB && currentData[sIdx + 2] == 0xBF {
-                    currentData = currentData.subdata(in: (sIdx + 3)..<currentData.endIndex)
+                    currentData = currentData[(sIdx + 3)..<currentData.endIndex]
                 }
                 isAtStreamStart = false
             } else {
@@ -150,9 +150,8 @@ internal class SseEventParser {
             // Handle CR/CRLF split across chunk boundary
             if buffer.last == 0x0D {
                 buffer.removeLast()
-                let line = String(decoding: buffer, as: UTF8.self)
+                processLineBytes(buffer)
                 buffer.removeAll()
-                processLine(line)
                 parsedLinesInChunk += 1
                 if currentData.first == 0x0A {
                     readIndex = currentData.startIndex + 1
@@ -164,10 +163,9 @@ internal class SseEventParser {
                     buffer.removeAll()
                     return
                 }
-                buffer.append(currentData.subdata(in: firstLine.content))
-                let line = String(decoding: buffer, as: UTF8.self)
+                buffer.append(currentData[firstLine.content])
+                processLineBytes(buffer)
                 buffer.removeAll()
-                processLine(line)
                 parsedLinesInChunk += 1
                 readIndex = firstLine.nextIndex
             } else {
@@ -183,7 +181,7 @@ internal class SseEventParser {
             }
         }
         
-        // Scan remaining lines directly from currentData without buffering full chunk
+        // Scan remaining lines directly from currentData using zero-copy slices
         while readIndex < endIndex {
             guard let lineRange = findNextLine(in: currentData, from: readIndex) else {
                 break
@@ -196,24 +194,23 @@ internal class SseEventParser {
                 return
             }
             
-            let lineData = currentData.subdata(in: lineRange.content)
+            let lineSlice = currentData[lineRange.content]
             readIndex = lineRange.nextIndex
             
-            let line = String(decoding: lineData, as: UTF8.self)
-            processLine(line)
+            processLineBytes(lineSlice)
             parsedLinesInChunk += 1
         }
         
         // Save trailing incomplete line fragment into buffer
         if readIndex < endIndex {
-            let trailingData = currentData.subdata(in: readIndex..<endIndex)
-            if buffer.count + trailingData.count > MAX_SSE_LINE_LENGTH {
+            let trailingSlice = currentData[readIndex..<endIndex]
+            if buffer.count + trailingSlice.count > MAX_SSE_LINE_LENGTH {
                 let error = NSError(domain: "NitroSse", code: -2002, userInfo: [NSLocalizedDescriptionKey: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes"])
                 delegate?.parserDidFail(error: error)
                 buffer.removeAll()
                 return
             }
-            buffer.append(trailingData)
+            buffer.append(trailingSlice)
         }
     }
     
@@ -222,36 +219,43 @@ internal class SseEventParser {
         let nextIndex: Int
     }
     
-    /// Finds next line in data from startIndex handling \r\n, \r, and \n.
+    /// Finds next line in data from startIndex handling \r\n, \r, and \n using UnsafeRawBufferPointer.
     /// If data ends with \r at the very end, returns nil to defer until next chunk so \r\n can be resolved.
     private func findNextLine(in data: Data, from startIndex: Int) -> LineRange? {
         let endIndex = data.endIndex
         guard startIndex < endIndex else { return nil }
+        let baseIndex = data.startIndex
         
-        var index = startIndex
-        while index < endIndex {
-            let byte = data[index]
-            if byte == 0x0A { // \n (LF)
-                return LineRange(content: startIndex..<index, nextIndex: index + 1)
-            } else if byte == 0x0D { // \r (CR)
-                if index + 1 < endIndex {
-                    if data[index + 1] == 0x0A { // \r\n (CRLF)
-                        return LineRange(content: startIndex..<index, nextIndex: index + 2)
-                    } else { // Single \r
-                        return LineRange(content: startIndex..<index, nextIndex: index + 1)
+        return data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> LineRange? in
+            var offset = startIndex - baseIndex
+            let endOffset = endIndex - baseIndex
+            while offset < endOffset {
+                let byte = raw[offset]
+                if byte == 0x0A { // \n (LF)
+                    let foundIndex = baseIndex + offset
+                    return LineRange(content: startIndex..<foundIndex, nextIndex: foundIndex + 1)
+                } else if byte == 0x0D { // \r (CR)
+                    let foundIndex = baseIndex + offset
+                    if offset + 1 < endOffset {
+                        if raw[offset + 1] == 0x0A { // \r\n (CRLF)
+                            return LineRange(content: startIndex..<foundIndex, nextIndex: foundIndex + 2)
+                        } else { // Single \r
+                            return LineRange(content: startIndex..<foundIndex, nextIndex: foundIndex + 1)
+                        }
+                    } else {
+                        // Buffer ends with \r; wait for next chunk to verify if it is \r\n
+                        return nil
                     }
-                } else {
-                    // Buffer ends with \r; wait for next chunk to verify if it is \r\n
-                    return nil
                 }
+                offset += 1
             }
-            index += 1
+            return nil
         }
-        return nil
     }
     
-    private func processLine(_ line: String) {
-        if line.isEmpty {
+    /// Parses a single SSE line directly from raw UTF-8 bytes without allocating intermediate line or field Strings.
+    private func processLineBytes(_ lineData: Data) {
+        if lineData.isEmpty {
             // Empty line dispatches the current event per WHATWG specification
             if hasData {
                 let eventData = dataBuffer
@@ -267,61 +271,73 @@ internal class SseEventParser {
             return
         }
         
-        if line.hasPrefix(":") {
-            // WHATWG SSE: Lines starting with ':' are comments (often used for keepalive/heartbeat).
-            // Normalizes comment by removing only a single leading space per WHATWG SSE specification.
-            let rawComment = line.dropFirst()
-            let comment = rawComment.hasPrefix(" ") ? String(rawComment.dropFirst()) : String(rawComment)
-            delegate?.parserDidReceiveComment(comment)
-            return
-        }
-        
-        let colonIndex = line.firstIndex(of: ":")
-        let field: String
-        var value: String
-        
-        if let colon = colonIndex {
-            field = String(line[..<colon])
-            let rawValue = line[line.index(after: colon)...]
-            let trimmed = rawValue.hasPrefix(" ") ? rawValue.dropFirst() : rawValue
-            value = String(trimmed)
-        } else {
-            field = line
-            value = ""
-        }
-        
-        switch field {
-        case "data":
-            let separatorSize = hasData ? 1 : 0
-            if dataBuffer.utf8.count + separatorSize + value.utf8.count > MAX_SSE_EVENT_DATA_SIZE {
-                let error = NSError(domain: "NitroSse", code: -2003, userInfo: [NSLocalizedDescriptionKey: "SSE event data exceeded maximum limit of \(MAX_SSE_EVENT_DATA_SIZE) bytes"])
-                delegate?.parserDidFail(error: error)
-                dataBuffer = ""
-                hasData = false
+        lineData.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            let count = raw.count
+            guard count > 0 else { return }
+            
+            if raw[0] == 0x3A { // ':'
+                // WHATWG SSE: Lines starting with ':' are comments (often used for keepalive/heartbeat).
+                // Normalizes comment by removing only a single leading space (0x20) per WHATWG SSE specification.
+                let commentStart = (count > 1 && raw[1] == 0x20) ? 2 : 1
+                let commentSlice = UnsafeRawBufferPointer(rebasing: raw[commentStart..<count])
+                let comment = String(decoding: commentSlice, as: UTF8.self)
+                delegate?.parserDidReceiveComment(comment)
                 return
             }
-            if hasData {
-                dataBuffer.append("\n")
-                dataBuffer.append(value)
+            
+            var colonOffset: Int? = nil
+            for i in 0..<count {
+                if raw[i] == 0x3A { // ':'
+                    colonOffset = i
+                    break
+                }
+            }
+            
+            let fieldLen = colonOffset ?? count
+            let valStart: Int
+            if let colon = colonOffset {
+                valStart = (colon + 1 < count && raw[colon + 1] == 0x20) ? (colon + 2) : (colon + 1)
             } else {
-                dataBuffer = value
-                hasData = true
+                valStart = count
             }
-        case "id":
-            // WHATWG: If field value contains a U+0000 NULL character, the field must be ignored.
-            if !value.contains("\0") {
-                lastEventId = value.isEmpty ? nil : value
-                delegate?.parserDidUpdateLastEventId(lastEventId)
+            let valueSlice = UnsafeRawBufferPointer(rebasing: raw[valStart..<count])
+            
+            // Match field names directly on ASCII bytes: "data", "id", "event", "retry"
+            if fieldLen == 4 && raw[0] == 0x64 && raw[1] == 0x61 && raw[2] == 0x74 && raw[3] == 0x61 { // "data"
+                let value = String(decoding: valueSlice, as: UTF8.self)
+                let separatorSize = hasData ? 1 : 0
+                if dataBuffer.utf8.count + separatorSize + value.utf8.count > MAX_SSE_EVENT_DATA_SIZE {
+                    let error = NSError(domain: "NitroSse", code: -2003, userInfo: [NSLocalizedDescriptionKey: "SSE event data exceeded maximum limit of \(MAX_SSE_EVENT_DATA_SIZE) bytes"])
+                    delegate?.parserDidFail(error: error)
+                    dataBuffer = ""
+                    hasData = false
+                    return
+                }
+                if hasData {
+                    dataBuffer.append("\n")
+                    dataBuffer.append(value)
+                } else {
+                    dataBuffer = value
+                    hasData = true
+                }
+            } else if fieldLen == 2 && raw[0] == 0x69 && raw[1] == 0x64 { // "id"
+                // WHATWG: If field value contains a U+0000 NULL character, the field must be ignored.
+                let value = String(decoding: valueSlice, as: UTF8.self)
+                if !value.contains("\0") {
+                    lastEventId = value.isEmpty ? nil : value
+                    delegate?.parserDidUpdateLastEventId(lastEventId)
+                }
+            } else if fieldLen == 5 && raw[0] == 0x65 && raw[1] == 0x76 && raw[2] == 0x65 && raw[3] == 0x6E && raw[4] == 0x74 { // "event"
+                eventType = valueSlice.isEmpty ? nil : String(decoding: valueSlice, as: UTF8.self)
+            } else if fieldLen == 5 && raw[0] == 0x72 && raw[1] == 0x65 && raw[2] == 0x74 && raw[3] == 0x72 && raw[4] == 0x79 { // "retry"
+                if !valueSlice.isEmpty && valueSlice.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) {
+                    let value = String(decoding: valueSlice, as: UTF8.self)
+                    if let retryVal = Int64(value) {
+                        delegate?.parserDidReceiveRetry(retryMs: retryVal)
+                    }
+                }
             }
-        case "event":
-            eventType = value.isEmpty ? nil : value
-        case "retry":
-            if !value.isEmpty && value.allSatisfy({ $0.isASCII && $0.isNumber }), let retryVal = Int64(value) {
-                delegate?.parserDidReceiveRetry(retryMs: retryVal)
-            }
-        default:
-            // Unrecognized fields are ignored per WHATWG specification
-            break
+            // Unrecognized fields are ignored per WHATWG specification without allocating Strings
         }
     }
 }

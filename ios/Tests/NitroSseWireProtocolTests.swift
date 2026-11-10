@@ -473,5 +473,61 @@ final class NitroSseWireProtocolTests: XCTestCase {
 
         XCTAssertEqual(delegate.events.count, 0)
     }
+
+    func testChunkSplitAcrossFieldColonAndLeadingSpace() {
+        let parser = SseEventParser()
+        let delegate = MockParserDelegate()
+        parser.delegate = delegate
+
+        // Split right across "da", "ta", ":", " ", " ", "hello\n", "\n"
+        let fragments = ["da", "ta", ":", " ", " ", "hello\n", "\n"]
+        for fragment in fragments {
+            parser.feed(data: fragment.data(using: .utf8)!)
+        }
+
+        XCTAssertEqual(delegate.events.count, 1)
+        // Only the first space after ':' is stripped; the second space is preserved
+        XCTAssertEqual(delegate.events.first?.data, " hello")
+    }
+
+    func testMultipleColonsInJsonDataValue() {
+        let parser = SseEventParser()
+        let delegate = MockParserDelegate()
+        parser.delegate = delegate
+
+        let jsonValue = "{\"url\":\"https://example.com:8080/stream\",\"ratio\":\"16:9:1\"}"
+        let raw = "data: \(jsonValue)\n\n"
+        parser.feed(data: raw.data(using: .utf8)!)
+
+        XCTAssertEqual(delegate.events.count, 1)
+        XCTAssertEqual(delegate.events.first?.data, jsonValue)
+    }
+
+    func testMultilineTransitionFromEmptyFirstLineToNonEmptySecondLine() {
+        let parser = SseEventParser()
+        let delegate = MockParserDelegate()
+        parser.delegate = delegate
+
+        // Event 1: empty first data line ("data") followed by "data: second line"
+        // Event 2: "data: first" -> empty "data:" -> "data: third"
+        let raw = "data\ndata: second line\n\ndata: first\ndata:\ndata: third\n\n"
+        parser.feed(data: raw.data(using: .utf8)!)
+
+        XCTAssertEqual(delegate.events.count, 2)
+        XCTAssertEqual(delegate.events[0].data, "\nsecond line")
+        XCTAssertEqual(delegate.events[1].data, "first\n\nthird")
+    }
+
+    func testUnknownFieldsWithAndWithoutColonAreIgnored() {
+        let parser = SseEventParser()
+        let delegate = MockParserDelegate()
+        parser.delegate = delegate
+
+        let raw = "custom_field: some_value\nbare_unknown_field\ndata_extra: ignored\ndata: valid_payload\n\n"
+        parser.feed(data: raw.data(using: .utf8)!)
+
+        XCTAssertEqual(delegate.events.count, 1)
+        XCTAssertEqual(delegate.events.first?.data, "valid_payload")
+    }
 }
 

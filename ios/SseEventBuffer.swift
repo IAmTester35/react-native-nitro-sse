@@ -32,12 +32,14 @@ class SseEventBuffer {
         if !maxBufferSize.isFinite || maxBufferSize <= 0 || maxBufferSize > Double(Int.max) {
             self.maxBufferSize = 1000
         } else {
-            self.maxBufferSize = Int(maxBufferSize)
+            self.maxBufferSize = min(Int(maxBufferSize), Self.hardMaxBufferSize)
         }
         self.dispatcher = dispatcher
         self.onFlush = onFlush
     }
     
+    private static let hardMaxBufferSize: Int = 10000
+
     /// Appends an event to the queue. Triggers immediate flush if buffer capacity is reached or batching is disabled (interval <= 0).
     func push(_ event: SseEvent) {
         dispatcher?.assertOnQueue()
