@@ -40,6 +40,12 @@ private val CRLF_DELIMITERS = ByteString.of('\r'.code.toByte(), '\n'.code.toByte
 class InvalidContentTypeException(message: String) : IOException(message)
 
 /**
+ * Exception indicating an SSE parser resource limit violation (line length or accumulated event data size).
+ * Typed counterpart of iOS NitroSse error codes -2002 / -2003; treated as fatal (no reconnect).
+ */
+class SseParserLimitException(message: String) : IOException(message)
+
+/**
  * Interface representing an active SSE stream connection that can be cancelled.
  */
 interface SseEventSource {
@@ -122,7 +128,7 @@ internal class SseEventReader(private val source: BufferedSource) {
             val newlineIndex = buffer.indexOfElement(CRLF_DELIMITERS, scanned)
             if (newlineIndex != -1L) {
                 if (newlineIndex > MAX_SSE_LINE_LENGTH) {
-                    throw IOException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
+                    throw SseParserLimitException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
                 }
                 val b = buffer[newlineIndex]
                 val line = buffer.readUtf8(newlineIndex)
@@ -143,13 +149,13 @@ internal class SseEventReader(private val source: BufferedSource) {
             }
 
             if (buffer.size > MAX_SSE_LINE_LENGTH) {
-                throw IOException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
+                throw SseParserLimitException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
             }
 
             scanned = buffer.size
             if (!source.request(buffer.size + 1)) {
                 if (buffer.size > MAX_SSE_LINE_LENGTH) {
-                    throw IOException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
+                    throw SseParserLimitException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
                 }
                 return if (buffer.size > 0) buffer.readUtf8() else null
             }
@@ -212,7 +218,7 @@ internal class SseEventReader(private val source: BufferedSource) {
                         val value = if (valueStart < line.length) line.substring(valueStart) else ""
                         val currentLength = if (!hasData) 0 else firstDataLine?.length ?: dataBuffer.length
                         if (currentLength + value.length > MAX_SSE_EVENT_DATA_SIZE) {
-                            throw IOException("SSE event data exceeded maximum limit of $MAX_SSE_EVENT_DATA_SIZE characters")
+                            throw SseParserLimitException("SSE event data exceeded maximum limit of $MAX_SSE_EVENT_DATA_SIZE characters")
                         }
                         if (!hasData) {
                             firstDataLine = value
@@ -382,10 +388,7 @@ internal class RealSseEventSource(
             }
         } catch (e: Exception) {
             if (!isCancelled) {
-                if (e is InvalidContentTypeException ||
-                    e.message?.contains("SSE line exceeded") == true ||
-                    e.message?.contains("SSE event data exceeded") == true
-                ) {
+                if (e is SseParserLimitException) {
                     delegate.connectionDidEncounterParseError(requestId)
                 }
                 delegate.connectionDidFail(e, null, null, requestId)

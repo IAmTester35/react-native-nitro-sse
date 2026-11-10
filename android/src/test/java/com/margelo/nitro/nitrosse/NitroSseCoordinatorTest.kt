@@ -157,6 +157,57 @@ class NitroSseCoordinatorTest {
     }
 
     @Test
+    fun testStopAfterQueuedRestartWins() {
+        val sse = NitroSse(dispatcher)
+        sse.setup(createMockConfig()) { _ -> }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        // Both calls originate from the JS thread before the dispatcher drains: the queued restart task
+        // must not resurrect the stream after stop() has been issued.
+        sse.restart()
+        sse.stop()
+        drainLoopers()
+
+        assertFalse("stop() issued after restart() must leave the client stopped", sse.isConnected())
+        assertEquals(SseState.CLOSED, sse.getState())
+
+        // No delayed reconnect may revive the stream either.
+        dispatcher.advanceTimeBy(60000)
+        drainLoopers()
+        assertFalse(sse.isConnected())
+        assertEquals(SseState.CLOSED, sse.getState())
+    }
+
+    @Test
+    fun testRestartDetachesActiveRequestImmediately() {
+        val sse = NitroSse(dispatcher)
+        val emittedEvents = mutableListOf<SseEvent>()
+        sse.setup(createMockConfig()) { events -> emittedEvents.addAll(events) }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId").apply { isAccessible = true }
+        val oldReqId = reqIdField.get(sse) as String
+
+        sse.restart()
+        assertNull("restart must clear the active requestId synchronously", reqIdField.get(sse))
+        // Late failure from the retired socket must be rejected as stale and not hijack the restart.
+        sse.connectionDidFail(java.io.IOException("stale-socket-failure"), null, null, oldReqId)
+        drainLoopers()
+
+        assertTrue(sse.isConnected())
+        assertTrue(
+            "Stale socket failure must not surface as an ERROR event",
+            emittedEvents.none { it.type == SseEventType.ERROR && it.message == "stale-socket-failure" }
+        )
+        sse.stop()
+        drainLoopers()
+    }
+
+    @Test
     fun testCoordinatorHandlesFatalError400() {
         val sse = NitroSse(dispatcher)
         val config = createMockConfig()
@@ -979,6 +1030,11 @@ class NitroSseCoordinatorTest {
 
         assertFalse("Client must not remain connected", sse.isConnected())
         assertEquals("Client must permanently transition to FAILED state", SseState.FAILED, sse.getState())
+        assertEquals(
+            "Invalid Content-Type is a server/protocol error (iOS parity), not a parser error",
+            SseDisconnectReason.SERVER_ERROR,
+            sse.getStats().disconnectReason
+        )
 
         val errorEvent = emittedEvents.find { it.type == SseEventType.ERROR }
         assertNotNull(errorEvent)
@@ -1420,7 +1476,7 @@ class NitroSseCoordinatorTest {
         reqIdField.isAccessible = true
         val actualReqId = reqIdField.get(sse) as String
 
-        val error = java.io.IOException("SSE line exceeded maximum limit of 16777216 bytes")
+        val error = SseParserLimitException("SSE line exceeded maximum limit of 16777216 bytes")
         sse.connectionDidFail(error, null, null, actualReqId)
         drainLoopers()
 
@@ -1497,8 +1553,8 @@ class NitroSseCoordinatorTest {
         dispatcher.advanceTimeBy(1000)
         drainLoopers()
 
-        // Debounced restart executed (stopInternal + restart increments by 2)
-        assertEquals("Debounced restart should execute once", initialVersion + 2, versionObj.get())
+        // Debounced restart executed exactly once (restart() claims a single new attempt version)
+        assertEquals("Debounced restart should execute once", initialVersion + 1, versionObj.get())
         sse.stop()
         drainLoopers()
     }

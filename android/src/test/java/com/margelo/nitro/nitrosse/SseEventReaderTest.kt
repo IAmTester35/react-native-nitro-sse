@@ -271,6 +271,7 @@ class SseEventReaderTest {
             reader.processNextEvent(callback)
             org.junit.Assert.fail("Should throw IOException when line exceeds 16MB")
         } catch (e: java.io.IOException) {
+            assertTrue("Must be typed SseParserLimitException", e is SseParserLimitException)
             assertTrue("Exception message should mention line limit", e.message?.contains("SSE line exceeded maximum limit") == true)
         }
     }
@@ -293,6 +294,7 @@ class SseEventReaderTest {
             reader.processNextEvent(callback)
             org.junit.Assert.fail("Should throw IOException when event data exceeds 16MB")
         } catch (e: java.io.IOException) {
+            assertTrue("Must be typed SseParserLimitException", e is SseParserLimitException)
             assertTrue("Exception message should mention event data limit", e.message?.contains("SSE event data exceeded maximum limit") == true)
         }
     }
