@@ -91,3 +91,4 @@ example/benchmark-results/*.json
 *.tsbuildinfo
 
 html-standard.*
+.kotlin/

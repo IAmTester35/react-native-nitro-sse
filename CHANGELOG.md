@@ -2,11 +2,21 @@
 
 ## No version yet
 
-### Fixes & Improvements
+### Performance
 
-- **Network Debounce (iOS & Android)**: Debounced network interface transitions (1s) to prevent connection thrashing during WiFi/cellular flapping.
-- **WHATWG Spec Compliance**: Incomplete events without a trailing empty line are discarded on EOF instead of dispatched.
-- **Parser Improvements (TypeScript)**: Enhanced UTF-8 BOM handling and multiline data framing.
+- Reduced memory allocations during event parsing across iOS, Android, and TypeScript.
+
+### Fixed
+
+- **Android**: Prevented memory leaks in `SseNetworkMetricsTracker`, `SseLifecycleManager`, and `SseNetworkMonitor`.
+- **Parser**: Discarded incomplete events on stream EOF per WHATWG spec, and fixed UTF-8 BOM and multiline data handling in TypeScript.
+- **Network**: Added a 1s debounce on network interface changes (WiFi ↔ Cellular) to avoid reconnect thrashing.
+- **Buffer**: Capped `maxBufferSize` at 10,000 events to prevent out-of-memory crashes under JS backpressure.
+- **DevTools**: Limited Android inspected request bodies to 64 KB and skipped streaming bodies.
+
+### Dependencies
+
+- Upgraded `react-native-nitro-modules` and `nitrogen` to 0.37.2.
 
 ## 3.2.0 (2026-10-20)
 
