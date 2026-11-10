@@ -228,6 +228,7 @@ const server = http.createServer((req, res) => {
 
     const targetTotal = rate * durationSec;
     const padding = 'x'.repeat(Math.max(1, payloadSize - 50));
+    const payloadSuffix = `,"pad":"${padding}"}\n\n`;
 
     let sent = 0;
     let timer = null;
@@ -249,14 +250,10 @@ const server = http.createServer((req, res) => {
       );
 
       let buffer = '';
+      const now = Date.now();
       for (let i = 0; i < toSend && sent < targetTotal; i++) {
         sent++;
-        const payload = JSON.stringify({
-          id: sent,
-          ts: Date.now(),
-          pad: padding,
-        });
-        buffer += `id: ${sent}\nevent: benchmark\ndata: ${payload}\n\n`;
+        buffer += `id: ${sent}\nevent: benchmark\ndata: {"id":${sent},"ts":${now}${payloadSuffix}`;
       }
 
       if (buffer.length > 0) {

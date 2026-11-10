@@ -19,6 +19,7 @@ export interface BenchmarkScenario {
   targetRate: number; // events/sec
   batchingIntervalMs: number;
   autoParseJSON: boolean;
+  jsParseJSON?: boolean; // When true (with autoParseJSON: false), runs JSON.parse(item.data) on the JS thread
   durationSec: number;
   payloadSize?: number;
 }
@@ -58,8 +59,10 @@ export interface BenchmarkStdDev {
 export interface BenchmarkResult {
   name: string;
   targetRate: number;
+   payloadSize?: number;
   batchingIntervalMs: number;
   autoParseJSON: boolean;
+  jsParseJSON?: boolean;
   expectedEvents: number;
   totalEvents: number;
   deliveryRatePercent: number;
@@ -78,6 +81,7 @@ export interface BenchmarkResult {
 export interface BenchmarkMatrixOptions {
   iterations?: number;
   warmup?: boolean;
+  scenarios?: BenchmarkScenario[];
 }
 
 export interface BenchmarkReport {
@@ -200,6 +204,99 @@ export const DEFAULT_BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     targetRate: 10000,
     batchingIntervalMs: 50,
     autoParseJSON: true,
+    durationSec: 4,
+  },
+];
+
+/**
+ * Payload copy & JSON parsing comparison matrix (1 KB, 100 KB, 1 MB).
+ * Compares Raw (no parse) vs JS JSON.parse vs Native autoParseJSON (AnyMap).
+ */
+export const PAYLOAD_BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
+  // 1 KB Payload (500 ev/s -> ~500 KB/s)
+  {
+    name: '1 KB | 500 ev/s | Raw',
+    targetRate: 500,
+    payloadSize: 1024,
+    batchingIntervalMs: 0,
+    autoParseJSON: false,
+    jsParseJSON: false,
+    durationSec: 4,
+  },
+  {
+    name: '1 KB | 500 ev/s | JS JSON.parse',
+    targetRate: 500,
+    payloadSize: 1024,
+    batchingIntervalMs: 0,
+    autoParseJSON: false,
+    jsParseJSON: true,
+    durationSec: 4,
+  },
+  {
+    name: '1 KB | 500 ev/s | Native JSON',
+    targetRate: 500,
+    payloadSize: 1024,
+    batchingIntervalMs: 0,
+    autoParseJSON: true,
+    jsParseJSON: false,
+    durationSec: 4,
+  },
+
+  // 100 KB Payload (50 ev/s -> ~5 MB/s)
+  {
+    name: '100 KB | 50 ev/s | Raw',
+    targetRate: 50,
+    payloadSize: 102400,
+    batchingIntervalMs: 0,
+    autoParseJSON: false,
+    jsParseJSON: false,
+    durationSec: 4,
+  },
+  {
+    name: '100 KB | 50 ev/s | JS JSON.parse',
+    targetRate: 50,
+    payloadSize: 102400,
+    batchingIntervalMs: 0,
+    autoParseJSON: false,
+    jsParseJSON: true,
+    durationSec: 4,
+  },
+  {
+    name: '100 KB | 50 ev/s | Native JSON',
+    targetRate: 50,
+    payloadSize: 102400,
+    batchingIntervalMs: 0,
+    autoParseJSON: true,
+    jsParseJSON: false,
+    durationSec: 4,
+  },
+
+  // 1 MB Payload (10 ev/s -> ~10 MB/s)
+  {
+    name: '1 MB | 10 ev/s | Raw',
+    targetRate: 10,
+    payloadSize: 1048576,
+    batchingIntervalMs: 0,
+    autoParseJSON: false,
+    jsParseJSON: false,
+    durationSec: 4,
+  },
+  {
+    name: '1 MB | 10 ev/s | JS JSON.parse',
+    targetRate: 10,
+    payloadSize: 1048576,
+    batchingIntervalMs: 0,
+    autoParseJSON: false,
+    jsParseJSON: true,
+    durationSec: 4,
+  },
+  {
+    name: '1 MB | 10 ev/s | Native JSON',
+    targetRate: 10,
+    payloadSize: 1048576,
+    batchingIntervalMs: 0,
+    autoParseJSON: true,
+    jsParseJSON: false,
     durationSec: 4,
   },
 ];
@@ -420,8 +517,10 @@ export async function runSingleScenario(
       const result: BenchmarkResult = {
         name: scenario.name,
         targetRate: scenario.targetRate,
+        payloadSize: scenario.payloadSize ?? 128,
         batchingIntervalMs: scenario.batchingIntervalMs,
         autoParseJSON: scenario.autoParseJSON,
+        jsParseJSON: scenario.jsParseJSON,
         expectedEvents,
         totalEvents: eventCount,
         deliveryRatePercent,
@@ -485,9 +584,12 @@ export async function runSingleScenario(
           if (!item) continue;
 
           // Exclude protocol lifecycle events (STATE, OPEN, CLOSE)
+          // Bound string length check (< 128) so 100KB/1MB payloads are not scanned on every event
           const isCloseEvent =
             item.event === 'close' ||
-            (typeof item.data === 'string' && item.data.includes('"status":"finished"'));
+            (typeof item.data === 'string' &&
+              item.data.length < 128 &&
+              item.data.includes('"status":"finished"'));
           const isStateOrOpen = item.type === 'state' || item.type === 'open';
           if (isCloseEvent || isStateOrOpen) {
             continue;
@@ -511,11 +613,21 @@ export async function runSingleScenario(
           currentSecondBucketCount++;
 
           // Extract timestamp:
-          // In JSON mode: native AnyMap produces typed object (0 JS parsing overhead).
-          // In Raw mode: zero-allocation integer char-code scanning (avoids creating 40,000 substring allocations in heap).
+          // 1. Native JSON mode: native AnyMap produces typed object on background thread.
+          // 2. JS JSON.parse mode: parses full JSON string on JS thread via Hermes JSON.parse.
+          // 3. Raw mode: zero-allocation integer char-code scanning (baseline without full parse).
           let eventTs = 0;
           if (item.parsedData && typeof item.parsedData.ts === 'number') {
             eventTs = item.parsedData.ts;
+          } else if (scenario.jsParseJSON && typeof item.data === 'string') {
+            try {
+              const parsed = JSON.parse(item.data) as { ts?: number };
+              if (typeof parsed.ts === 'number') {
+                eventTs = parsed.ts;
+              }
+            } catch {
+              // Ignore malformed JSON in benchmark
+            }
           } else if (typeof item.data === 'string') {
             const tsIdx = item.data.indexOf('"ts":');
             if (tsIdx !== -1) {
@@ -583,7 +695,8 @@ export async function runSseBenchmarkMatrix(
   options?: BenchmarkMatrixOptions
 ): Promise<BenchmarkReport> {
   const results: BenchmarkResult[] = [];
-  const total = DEFAULT_BENCHMARK_SCENARIOS.length;
+  const activeScenarios = options?.scenarios ?? DEFAULT_BENCHMARK_SCENARIOS;
+  const total = activeScenarios.length;
   const iterations = Math.max(1, options?.iterations ?? 1);
   const shouldWarmup = options?.warmup ?? true;
 
@@ -613,7 +726,7 @@ export async function runSseBenchmarkMatrix(
   }
 
   for (let i = 0; i < total; i++) {
-    const scenario = DEFAULT_BENCHMARK_SCENARIOS[i];
+    const scenario = activeScenarios[i];
     if (!scenario) continue;
     onProgress?.({ current: i + 1, total, scenario: scenario.name });
     console.log(`[Benchmark] Running [${i + 1}/${total}]: ${scenario.name}...`);
