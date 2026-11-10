@@ -10,13 +10,18 @@ import {
 } from 'react-native';
 import {
   runSseBenchmarkMatrix,
+  DEFAULT_BENCHMARK_SCENARIOS,
+  PAYLOAD_BENCHMARK_SCENARIOS,
   type BenchmarkReport,
   type BenchmarkResult,
 } from './sseBenchmark';
 import { getBenchmarkServerUrl } from './config';
 
+type SuiteMode = 'payload' | 'throughput' | 'all';
+
 export const SseBenchmarkView: React.FC = () => {
   const [host, setHost] = useState(getBenchmarkServerUrl());
+  const [suiteMode, setSuiteMode] = useState<SuiteMode>('payload');
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState('Ready');
   const [results, setResults] = useState<BenchmarkResult[]>([]);
@@ -28,6 +33,13 @@ export const SseBenchmarkView: React.FC = () => {
     setResults([]);
     setStatus('Running...');
 
+    const scenarios =
+      suiteMode === 'payload'
+        ? PAYLOAD_BENCHMARK_SCENARIOS
+        : suiteMode === 'throughput'
+          ? DEFAULT_BENCHMARK_SCENARIOS
+          : [...PAYLOAD_BENCHMARK_SCENARIOS, ...DEFAULT_BENCHMARK_SCENARIOS];
+
     try {
       const report: BenchmarkReport = await runSseBenchmarkMatrix(
         host,
@@ -36,7 +48,8 @@ export const SseBenchmarkView: React.FC = () => {
           if (result) {
             setResults((prev) => [...prev, result]);
           }
-        }
+        },
+        { scenarios }
       );
       setStatus(`Completed v${report.libraryVersion}: ${report.results.length} scenarios`);
     } catch (e) {
@@ -45,7 +58,7 @@ export const SseBenchmarkView: React.FC = () => {
     } finally {
       setRunning(false);
     }
-  }, [host, running]);
+  }, [host, running, suiteMode]);
 
   return (
     <View style={styles.container}>
@@ -81,6 +94,32 @@ export const SseBenchmarkView: React.FC = () => {
         />
       </View>
 
+      <View style={styles.suiteSelectorRow}>
+        {(
+          [
+            { key: 'payload', label: 'Payload (1KB–1MB)' },
+            { key: 'throughput', label: 'Throughput (128B)' },
+            { key: 'all', label: 'All (23)' },
+          ] as const
+        ).map((item) => {
+          const active = suiteMode === item.key;
+          return (
+            <TouchableOpacity
+              key={item.key}
+              disabled={running}
+              onPress={() => setSuiteMode(item.key)}
+              style={[styles.suiteChip, active && styles.suiteChipActive]}
+            >
+              <Text
+                style={[styles.suiteChipText, active && styles.suiteChipTextActive]}
+              >
+                {item.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
       <ScrollView style={styles.scrollArea} contentContainerStyle={styles.resultsList}>
         {results.length === 0 && !running && (
           <Text style={styles.emptyText}>Tap &quot;Run Matrix&quot; to begin stress test</Text>
@@ -92,7 +131,7 @@ export const SseBenchmarkView: React.FC = () => {
               <Text style={styles.cardTitle}>{r.name}</Text>
               <View style={styles.badge}>
                 <Text style={styles.badgeText}>
-                  {r.autoParseJSON ? 'JSON' : 'RAW'}
+                  {r.autoParseJSON ? 'NATIVE JSON' : r.jsParseJSON ? 'JS PARSE' : 'RAW'}
                 </Text>
               </View>
             </View>
@@ -210,6 +249,35 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     fontSize: 13,
     color: '#111827',
+  },
+  suiteSelectorRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#F3F4F6',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+    gap: 8,
+  },
+  suiteChip: {
+    flex: 1,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    backgroundColor: '#E5E7EB',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  suiteChipActive: {
+    backgroundColor: '#2563EB',
+  },
+  suiteChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#374151',
+  },
+  suiteChipTextActive: {
+    color: '#FFFFFF',
   },
   scrollArea: {
     flex: 1,
