@@ -97,7 +97,7 @@ export function warnInsecureCredentials(
   const trimmedUrl = url.trim();
   const lowerUrl = trimmedUrl.toLowerCase();
   if (lowerUrl.startsWith('http://') && !isLoopbackUrl(trimmedUrl)) {
-    const hasSensitiveHeader = Object.keys(headers).some((key) =>
+    const hasSensitiveHeader = Object.keys(headers ?? {}).some((key) =>
       SENSITIVE_HEADER_REGEX.test(key.trim())
     );
     if (hasSensitiveHeader) {
