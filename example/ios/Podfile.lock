@@ -14,7 +14,7 @@ PODS:
   - hermes-engine (260318099.0.4):
     - hermes-engine/Pre-built (= 260318099.0.4)
   - hermes-engine/Pre-built (260318099.0.4)
-  - NitroModules (0.37.1):
+  - NitroModules (0.37.2):
     - hermes-engine
     - RCTRequired
     - RCTTypeSafety
@@ -2099,7 +2099,7 @@ SPEC CHECKSUMS:
   fmt: ba0886e864ebb21d14c98b2e12e164b8002f5b93
   glog: 3cf7cb46f743c4bc758ae3e6d9c15bd1b4cfd6d4
   hermes-engine: a1158910bb7e300b9e3d2f1e2d433f817ec1a4b5
-  NitroModules: c32f969b7c536e0b6b401a9dfdb35bb4eba071ef
+  NitroModules: f1a11047ebbb0202a7d0033d6e99ad0527d34b00
   NitroSse: 02f65b8af14c6929e36faaa459dfce9c84d5af3b
   RCT-Folly: 82921e585c0400eda46fac1068297aa9dfb035e4
   RCTDeprecation: e134f2a2c096a6450f5fcbbe949531f913a2ff04
@@ -2183,4 +2183,4 @@ SPEC CHECKSUMS:
 
 PODFILE CHECKSUM: 75f58bbd212786bfbb6c258eec101e39cc1b9fb9
 
-COCOAPODS: 1.16.2
+COCOAPODS: 1.17.0
