@@ -161,6 +161,8 @@ export class SseEventParser {
     }
 
     // A terminator arrived: join any accumulated fragments + current chunk once.
+    // Accumulated fragments are guaranteed not to contain CR or LF, so scanning resumes at `carried`.
+    const carried = this._pendingLength;
     let fullText: string;
     if (this._pendingFragments.length > 0) {
       this._pendingFragments.push(text);
@@ -175,10 +177,10 @@ export class SseEventParser {
     let parsedLinesInChunk = 0;
 
     // Fast-path: When there are no carriage returns in fullText (the vast majority of SSE streams),
-    // scan using native SIMD-accelerated indexOf('\n') instead of a per-character JS loop.
+    // scan using native SIMD-accelerated indexOf('\n') starting at `carried` instead of 0.
     if (!hasCr) {
       let start = 0;
-      let nextLf = fullText.indexOf('\n', start);
+      let nextLf = fullText.indexOf('\n', carried);
 
       while (nextLf !== -1 && !this._aborted) {
         if (nextLf - start > MAX_SSE_LINE_LENGTH) {
@@ -224,7 +226,7 @@ export class SseEventParser {
 
     // Slow-path: Handles streams with CR, CRLF, and bare CR line endings
     let start = 0;
-    let i = 0;
+    let i = carried;
 
     while (i < len && !this._aborted) {
       if (i - start > MAX_SSE_LINE_LENGTH) {
