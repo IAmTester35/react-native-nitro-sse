@@ -225,24 +225,34 @@ export function useNitroSse<
   const isHeadersUndefined = headers === undefined;
   const currentHeaderKeys =
     headers && typeof headers === 'object' ? Object.keys(headers).sort() : [];
-  const prevHeaderKeysRef = useRef<string[] | undefined>(undefined);
-  const headerRemovalTokenRef = useRef(0);
+  const [prevHeaderKeys, setPrevHeaderKeys] = useState<string[] | undefined>(
+    () =>
+      headers && typeof headers === 'object'
+        ? Object.keys(headers).sort()
+        : undefined
+  );
+  const [headerRemovalToken, setHeaderRemovalToken] = useState(0);
 
-  if (prevHeaderKeysRef.current !== undefined && headers !== undefined) {
+  let currentRemovalToken = headerRemovalToken;
+  if (prevHeaderKeys !== undefined && headers !== undefined) {
     const currentKeysSet = new Set(currentHeaderKeys);
-    const isKeyRemoved = prevHeaderKeysRef.current.some(
-      (k) => !currentKeysSet.has(k)
-    );
+    const isKeyRemoved = prevHeaderKeys.some((k) => !currentKeysSet.has(k));
     if (isKeyRemoved) {
-      headerRemovalTokenRef.current++;
+      currentRemovalToken = headerRemovalToken + 1;
+      setPrevHeaderKeys(currentHeaderKeys);
+      setHeaderRemovalToken(currentRemovalToken);
+    } else if (currentHeaderKeys.length !== prevHeaderKeys.length) {
+      setPrevHeaderKeys(currentHeaderKeys);
     }
+  } else if (prevHeaderKeys === undefined && headers !== undefined) {
+    setPrevHeaderKeys(currentHeaderKeys);
   }
-  prevHeaderKeysRef.current = currentHeaderKeys;
 
   const configKey = safeSerializeConfig(restConfig);
   const headersKey = safeSerializeConfig(headers);
 
   // Instantiates the SseClient, attaches typed event listeners, applies configuration, and disposes on unmount
+  // react-doctor-disable-next-line effect-needs-cleanup -- clientInstance.dispose() completely releases all event listeners and native socket streams
   useEffect(() => {
     let clientInstance: SseClient | null = null;
 
@@ -251,7 +261,7 @@ export function useNitroSse<
         autoStart &&
         typeof __DEV__ !== 'undefined' &&
         __DEV__ &&
-        restConfig.url !== undefined
+        restConfigRef.current.url !== undefined
       ) {
         console.warn(
           '[useNitroSse] Missing or empty url in options. Connection will not start until a valid URL is provided.'
@@ -260,7 +270,7 @@ export function useNitroSse<
       setState('idle');
       clientRef.current = null;
       setClient(null);
-      return;
+      return () => {};
     }
 
     try {
@@ -283,7 +293,6 @@ export function useNitroSse<
 
       clientInstance.setup(config);
 
-      // Attach typed event listeners
       clientInstance.addEventListener<TMessage>('message', (e) => {
         try {
           callbacksRef.current.onMessage?.(e);
@@ -369,7 +378,7 @@ export function useNitroSse<
           err
         );
       }
-      return;
+      return () => {};
     }
 
     return () => {
@@ -378,14 +387,13 @@ export function useNitroSse<
       setClient(null);
     };
     // Recreate client if headers becomes undefined or keys are removed to purge stale native headers
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     configKey,
     autoStart,
     hasBeforeRequest,
     hasValidUrl,
     isHeadersUndefined,
-    headerRemovalTokenRef.current,
+    currentRemovalToken,
   ]);
 
   // Synchronize headers dynamically without reconnecting or tearing down active socket
