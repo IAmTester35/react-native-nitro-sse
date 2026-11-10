@@ -18,11 +18,11 @@ Server-Sent Events (SSE) client for React Native built on Nitro Modules (JSI) wi
 
 ## Platform Support
 
-| Platform | Implementation |
-| :------- | :------------- |
-| **iOS** | Nitro Modules (JSI) + URLSession |
-| **Android** | Nitro Modules (JSI) + OkHttp |
-| **Web** | Pure JS `FetchSseDriver` (Fetch Streams) |
+| Platform    | Implementation                           |
+| :---------- | :--------------------------------------- |
+| **iOS**     | Nitro Modules (JSI) + URLSession         |
+| **Android** | Nitro Modules (JSI) + OkHttp             |
+| **Web**     | Pure JS `FetchSseDriver` (Fetch Streams) |
 
 ---
 
@@ -41,7 +41,7 @@ yarn add react-native-nitro-sse react-native-nitro-modules
 
 | react-native-nitro-sse | react-native-nitro-modules |
 | :--------------------- | :------------------------- |
-| **3.0.0+**             | **0.37.1**                 |
+| **3.0.0+**             | **0.37.2**                 |
 | **2.3.0 - 2.4.2**      | **0.35.9**                 |
 | **2.2.0 - 2.2.3**      | **0.35.4**                 |
 | **2.0.0 - 2.1.1**      | **0.35.2**                 |
