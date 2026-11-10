@@ -1,30 +1,46 @@
 package com.margelo.nitro.nitrosse
 
+import android.net.NetworkCapabilities
 import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
 import android.util.Log
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.facebook.proguard.annotations.DoNotStrip
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
-import okio.utf8Size
 import com.margelo.nitro.NitroModules
 import com.margelo.nitro.core.Promise
+import java.io.InterruptedIOException
+import java.lang.ref.WeakReference
+import java.net.SocketTimeoutException
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.random.Random
-import android.net.NetworkCapabilities
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okio.utf8Size
 
 /**
  * Core Android implementation of [HybridNitroSseSpec] managing Server-Sent Events (SSE).
  *
  * Coordinates OkHttp SSE connection state, exponential backoff retries, event buffering,
- * network interface transitions, and Android app lifecycle hibernation. Uses a single-threaded
- * background [SseDispatcher] to ensure thread-safe state mutations and avoid blocking the JS UI thread.
+ * network interface transitions, and Android app lifecycle hibernation.
+ *
+ * Threading & Synchronization Model:
+ * - [SseDispatcher] (dedicated [HandlerThread]): Serializes asynchronous connection workflows,
+ *   reconnection scheduling, backoff timers, and event buffering/flushing.
+ * - Intrinsic Monitor ([synchronized]): Guards shared mutable state (metrics, active config,
+ *   timestamps) to enable thread-safe synchronous reads from the JS/JSI thread (e.g. [getStats])
+ *   and high-throughput in-line metric updates from OkHttp network callbacks without creating
+ *   excessive Runnable allocations on the dispatcher.
+ * - Lock-free & Atomic Primitives ([AtomicBoolean], [AtomicInteger], [@Volatile]): Guarantee immediate
+ *   cross-thread visibility and atomic state transitions for lifecycle flags ([isRunning], [requestId]).
  */
 @DoNotStrip
 class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDelegate {
@@ -54,7 +70,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     private var wasRunningBeforePaused = false
     private val consecutiveAuthErrors = AtomicInteger(0)
     
-    private var sseDispatcherThread: android.os.HandlerThread? = null
+    private var sseDispatcherThread: HandlerThread? = null
     internal var sseDispatcher: SseDispatcher? = null
     
     // Transport Metrics
@@ -91,7 +107,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
 
     private val connectionAttemptVersion = AtomicInteger(0)
     private var lastProcessedId: String? = null
-    private var currentState = java.util.concurrent.atomic.AtomicReference(SseState.IDLE)
+    private var currentState = AtomicReference(SseState.IDLE)
     private var wasRunningBeforeNetworkLoss = false
     private var interceptorTimeoutRunnable: Runnable? = null
     private var networkRestartRunnable: Runnable? = null
@@ -104,7 +120,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     private var networkMonitor: SseNetworkMonitor? = null
     private var lifecycleManager: SseLifecycleManager? = null
     private val connectionHandler = SseConnectionHandler(this)
-    private val mainDispatcher = AndroidSseDispatcher(Handler(android.os.Looper.getMainLooper()))
+    private val mainDispatcher = AndroidSseDispatcher(Handler(Looper.getMainLooper()))
 
     companion object {
         private const val TAG = "NitroSse"
@@ -130,7 +146,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             }
             
             if (sseDispatcher == null) {
-                sseDispatcherThread = android.os.HandlerThread("NitroSseThread").apply { start() }
+                sseDispatcherThread = HandlerThread("NitroSseThread").apply { start() }
                 sseDispatcher = AndroidSseDispatcher(Handler(sseDispatcherThread!!.looper))
             }
 
@@ -159,9 +175,9 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 .build()
             
             if (lifecycleManager == null) {
-                val weakThis = java.lang.ref.WeakReference(this)
+                val weakThis = WeakReference(this)
                 lifecycleManager = SseLifecycleManager(
-                    lifecycleProvider = { androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle },
+                    lifecycleProvider = { ProcessLifecycleOwner.get().lifecycle },
                     mainDispatcher = mainDispatcher,
                     sseDispatcher = sseDispatcher!!,
                     onBackground = { weakThis.get()?.handleAppBackground() },
@@ -192,7 +208,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     private fun startNetworkMonitoring() {
         val context = NitroModules.applicationContext ?: return
         if (networkMonitor == null) {
-            val weakThis = java.lang.ref.WeakReference(this)
+            val weakThis = WeakReference(this)
             networkMonitor = SseNetworkMonitor(context, sseDispatcher) { isAvailable, interfaceChanged, capabilities ->
                 weakThis.get()?.handleNetworkChange(isAvailable, interfaceChanged, capabilities)
             }
@@ -391,8 +407,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             sseDispatcher?.postDelayed(timeoutRunnable, timeoutMs)
 
             try {
-                // Note: Safe-calls (?.) protect against null/unmocked Promise chains in unit tests and JS bridging.
-                // Parameter non-null intrinsics and synchronous errors route to catch(e: Throwable) / safeHandleError.
+                // Safe-calls (?.) protect against null/unmocked Promise chains in unit tests and JS bridging.
                 interceptor.invoke()?.then { promise2 ->
                     promise2?.then { newHeaders ->
                         sseDispatcher?.post {
@@ -402,19 +417,13 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                                 interceptorTimeoutRunnable = null
                                 val connectionConfig = synchronized(this) {
                                     val base = config ?: return@post
-                                    val mergedHeaders = (base.headers ?: emptyMap()).toMutableMap()
-                                    newHeaders.forEach { (k, v) -> mergedHeaders[k] = v }
-                                    base.copy(headers = mergedHeaders)
+                                    base.copy(headers = (base.headers ?: emptyMap()) + newHeaders)
                                 }
                                 executeConnection(version, connectionConfig)
                             }
                         }
-                    }?.catch { error ->
-                        safeHandleError(error)
-                    }
-                }?.catch { error ->
-                    safeHandleError(error)
-                }
+                    }?.catch(safeHandleError)
+                }?.catch(safeHandleError)
             } catch (e: Throwable) {
                 safeHandleError(e)
             }
@@ -584,12 +593,10 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     }
 
     override fun connectionDidEncounterParseError(requestId: String) {
-        sseDispatcher?.post {
-            if (requestId != this@NitroSse.requestId) return@post
-            synchronized(this@NitroSse) {
-                parseErrors += 1.0
-                disconnectReason = SseDisconnectReason.PARSER_ERROR
-            }
+        synchronized(this) {
+            if (requestId != this.requestId) return
+            parseErrors += 1.0
+            disconnectReason = SseDisconnectReason.PARSER_ERROR
         }
     }
 
@@ -667,17 +674,16 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         }
     }
 
-
     override fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {
         sseDispatcher?.post {
             // Note on Stale Callback Protection:
-            // Android uses a unique UUID `requestId` per connection attempt rather than an integer `attemptVersion`.
+            // Android uses a unique UUID `requestId` per connection attempt alongside `connectionAttemptVersion`.
             // When a connection fails, stops, or restarts, `this@NitroSse.requestId` is immediately cleared (set to null)
-            // or replaced with a new UUID. Thus, any delayed or asynchronous error/close callbacks from a canceled/previous
-            // socket are safely and strictly rejected by `if (requestId != this@NitroSse.requestId) return@post`.
+            // or replaced with a new UUID. Any delayed or asynchronous error/close callbacks from a canceled/previous
+            // OkHttp socket are safely and strictly rejected by `if (requestId != this@NitroSse.requestId) return@post`.
             if (requestId != this@NitroSse.requestId || !isRunning.get()) return@post
             val statusCode = response?.code ?: -1
-            val isTimeout = t is java.net.SocketTimeoutException || t is java.io.InterruptedIOException || t?.message?.contains("timeout", ignoreCase = true) == true
+            val isTimeout = t is SocketTimeoutException || t is InterruptedIOException || t?.message?.contains("timeout", ignoreCase = true) == true
             val isParserLimit = t?.message?.contains("SSE line exceeded maximum limit", ignoreCase = true) == true ||
                 t?.message?.contains("SSE event data exceeded maximum limit", ignoreCase = true) == true ||
                 t is InvalidContentTypeException
