@@ -816,7 +816,17 @@ extension NitroSse: SseConnectionDelegate {
         }()
         
         let reportedStatusCode: Int = httpStatusCode ?? nsError.code
-        let isParserLimit = (nsError.domain == "NitroSse" && (nsError.code == -2001 || nsError.code == -2002 || nsError.code == -2003))
+        let isTimeout = (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut) ||
+            reportedStatusCode == NSURLErrorTimedOut ||
+            nsError.localizedDescription.lowercased().contains("timed out")
+        
+        // Parser resource violations (-2002 line length, -2003 event data size)
+        let isParserLimit = (nsError.domain == "NitroSse" && (nsError.code == -2002 || nsError.code == -2003))
+
+        let rawContentType = response?.value(forHTTPHeaderField: "Content-Type") ?? (response?.allHeaderFields["Content-Type"] as? String) ?? ""
+        let mimeType = rawContentType.split(separator: ";").first?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+        let isInvalidContentType = (nsError.domain == "NitroSse" && nsError.code == -2001) ||
+            ((200..<300).contains(response?.statusCode ?? 0) && mimeType != "text/event-stream")
         
         if let resp = response {
             self.lastStatusCode = Double(resp.statusCode)
@@ -824,11 +834,9 @@ extension NitroSse: SseConnectionDelegate {
         
         if isParserLimit || self.currentAttemptHasParseError {
             self.disconnectReason = .parserError
-        } else if let http = httpStatusCode, http >= 400 || http == 204 {
+        } else if isInvalidContentType || httpStatusCode == 204 || (httpStatusCode ?? 0) >= 400 {
             self.disconnectReason = .serverError
-        } else if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut {
-            self.disconnectReason = .timeout
-        } else if nsError.localizedDescription.lowercased().contains("timed out") {
+        } else if isTimeout {
             self.disconnectReason = .timeout
         } else {
             self.disconnectReason = .networkError
@@ -867,18 +875,13 @@ extension NitroSse: SseConnectionDelegate {
         }
 
         // Strict WHATWG SSE: permanently close without reconnecting on non-event-stream Content-Type.
-        let rawContentType = response?.value(forHTTPHeaderField: "Content-Type") ?? (response?.allHeaderFields["Content-Type"] as? String) ?? ""
-        let mimeType = rawContentType.split(separator: ";").first?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
-        let isInvalidContentType = (nsError.domain == "NitroSse" && nsError.code == -2001) ||
-            (response != nil && response!.statusCode >= 200 && response!.statusCode < 300 && mimeType != "text/event-stream")
         if isInvalidContentType {
             self.failAndStop(message: "Invalid Content-Type: expected text/event-stream. Stopping.", statusCode: Double(reportedStatusCode))
             return
         }
 
         // Parser resource violations (-2002 line length, -2003 event data size) are fatal and must not reconnect
-        let isParserLimitError = (nsError.domain == "NitroSse" && (nsError.code == -2002 || nsError.code == -2003))
-        if isParserLimitError {
+        if isParserLimit {
             self.failAndStop(message: nsError.localizedDescription, statusCode: Double(reportedStatusCode))
             return
         }
@@ -902,10 +905,13 @@ extension NitroSse: SseConnectionDelegate {
             return
         }
 
-        let isFatal = (httpStatusCode != nil && httpStatusCode! >= 400 && httpStatusCode! <= 499 && httpStatusCode! != 401 && httpStatusCode! != 403 && httpStatusCode! != 408 && httpStatusCode! != 429)
-        if isFatal, let fatalHttp = httpStatusCode {
-            let bodyText = errorBody?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let fatalMessage = (bodyText?.isEmpty == false) ? "Fatal Error (\(fatalHttp)): \(bodyText!)" : "Fatal Error (\(fatalHttp)). Stopping."
+        if let fatalHttp = httpStatusCode, (400...499).contains(fatalHttp), ![401, 403, 408, 429].contains(fatalHttp) {
+            let fatalMessage: String
+            if let bodyText = errorBody?.trimmingCharacters(in: .whitespacesAndNewlines), !bodyText.isEmpty {
+                fatalMessage = "Fatal Error (\(fatalHttp)): \(bodyText)"
+            } else {
+                fatalMessage = "Fatal Error (\(fatalHttp)). Stopping."
+            }
             self.failAndStop(message: fatalMessage, statusCode: Double(fatalHttp))
             return
         }
@@ -932,7 +938,6 @@ extension NitroSse: SseConnectionDelegate {
         }
 
         // Map request timeout to stale state before initiating reconnect.
-        let isTimeout = (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut) || reportedStatusCode == -1001
         if isTimeout {
             self.updateState(.stale)
         }
