@@ -6,7 +6,12 @@ module.exports = {
     },
     {
       include: /\/node_modules\//,
-      presets: ['module:@react-native/babel-preset'],
+      presets: [
+        [
+          'module:@react-native/babel-preset',
+          { enableBabelRuntime: '^7.25.0' },
+        ],
+      ],
     },
   ],
 };
