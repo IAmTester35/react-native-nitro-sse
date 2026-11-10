@@ -393,11 +393,12 @@ describe('FetchSseDriver', () => {
 
     expect(driver.getState()).toBe('reconnecting');
     const errorEvent = dispatchedEvents.find((e) => e.type === 'error');
-    expect(errorEvent?.retry).toBe(2000);
-    expect(errorEvent?.message).toContain('Retry-After received: 2s');
+    expect(errorEvent?.retry).toBeGreaterThanOrEqual(2500);
+    expect(errorEvent?.retry).toBeLessThanOrEqual(3500);
+    expect(errorEvent?.message).toMatch(/Retry-After received: [23]s/);
 
-    // Advance 2s for the scheduled reconnect
-    jest.advanceTimersByTime(2000);
+    // Advance for the scheduled reconnect (2s + up to 1.5s jitter)
+    jest.advanceTimersByTime(4000);
     await flushMicrotasks();
 
     // 2nd failure exceeds maxReconnectAttempts = 1 -> should fail and stop
@@ -500,7 +501,7 @@ describe('FetchSseDriver', () => {
     const interceptor = jest
       .fn()
       .mockRejectedValue(new Error('Token refresh failed'));
-    const config: SseConfig = { url: TEST_URL };
+    const config: SseConfig = { url: TEST_URL, maxAuthRetries: 0 };
     driver.setup(config, interceptor);
 
     driver.start();
@@ -511,6 +512,37 @@ describe('FetchSseDriver', () => {
     const err = dispatchedEvents.find((e) => e.type === 'error');
     expect(err?.message).toContain('Interceptor Error: Token refresh failed');
     expect(err?.statusCode).toBe(-1);
+  });
+
+  test('retries when onBeforeRequest throws up to maxAuthRetries', async () => {
+    const interceptor = jest
+      .fn()
+      .mockRejectedValue(new Error('Token refresh failed'));
+    const config: SseConfig = {
+      url: TEST_URL,
+      maxAuthRetries: 1,
+      retryIntervalMs: 1000,
+      jitterFactor: 0,
+    };
+    driver.setup(config, interceptor);
+
+    driver.start();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(driver.getState()).toBe('reconnecting');
+    expect(interceptor).toHaveBeenCalledTimes(1);
+
+    jest.advanceTimersByTime(2000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(interceptor).toHaveBeenCalledTimes(2);
+    expect(driver.getState()).toBe('failed');
+    const fatal = dispatchedEvents.find((e) =>
+      e.message?.includes('Auth retry limit reached')
+    );
+    expect(fatal).toBeDefined();
   });
 
   test('initializes lastProcessedId from config.headers case-insensitively', () => {
@@ -809,7 +841,7 @@ describe('FetchSseDriver', () => {
     const errorEvent = dispatchedEvents.find((e) => e.type === 'error');
     expect(errorEvent?.statusCode).toBe(429);
     expect(errorEvent?.retry).toBeGreaterThanOrEqual(1000);
-    expect(errorEvent?.retry).toBeLessThanOrEqual(6000);
+    expect(errorEvent?.retry).toBeLessThanOrEqual(7500);
   });
 
   test('bounds negative and extreme Retry-After header to maxRetryIntervalMs', async () => {
@@ -831,7 +863,8 @@ describe('FetchSseDriver', () => {
     await Promise.resolve();
 
     const errorEvent = dispatchedEvents.find((e) => e.type === 'error');
-    expect(errorEvent?.retry).toBe(5000); // clamped to maxRetryIntervalMs
+    expect(errorEvent?.retry).toBeGreaterThanOrEqual(5500); // clamped to 5000 + 500..1500 jitter
+    expect(errorEvent?.retry).toBeLessThanOrEqual(6500);
   });
 
   test('parser resource limit violation during live stream transitions to failed without reconnecting', async () => {

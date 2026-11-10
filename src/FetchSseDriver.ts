@@ -388,12 +388,28 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         )
           return;
         this._recordError('Interceptor Error', undefined);
-        this._failAndStop(
-          `Interceptor Error: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-          -1
-        );
+
+        const errorMsg = `Interceptor Error: ${
+          err instanceof Error ? err.message : String(err)
+        }`;
+        this._pushEvent({
+          type: 'error',
+          statusCode: -1,
+          message: errorMsg,
+        });
+
+        this._consecutiveAuthErrors++;
+        const maxAuthRetries = this._config.maxAuthRetries ?? 3;
+        if (this._consecutiveAuthErrors > maxAuthRetries) {
+          this._disconnectReason = 'server_error';
+          this._failAndStop(
+            `Auth retry limit reached (${maxAuthRetries}). Stopping.`,
+            -1
+          );
+          return;
+        }
+
+        this._scheduleReconnect(true, undefined, attemptVersion);
         return;
       }
     }
@@ -505,11 +521,11 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
 
     let errorBody: string | undefined;
     if (
-      statusCode >= 400 &&
-      statusCode !== 401 &&
-      statusCode !== 403 &&
-      statusCode !== 408 &&
-      statusCode !== 429
+      response.status >= 400 &&
+      response.status !== 401 &&
+      response.status !== 403 &&
+      response.status !== 408 &&
+      response.status !== 429
     ) {
       const bodyTimer = setTimeout(
         () => abortController.abort(),
@@ -607,16 +623,16 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
           0,
           Math.min(rawRetryAfterMs, maxIntervalMs)
         );
+        const jitter = 500 + Math.floor(Math.random() * 1001); // 0.5s - 1.5s matching Native
+        const totalDelayMs = boundedRetryMs + jitter;
 
         this._pushEvent({
           type: 'error',
           statusCode,
-          retry: boundedRetryMs,
-          message: `Retry-After received: ${Math.round(
-            boundedRetryMs / 1000
-          )}s`,
+          retry: totalDelayMs,
+          message: `Retry-After received: ${Math.round(totalDelayMs / 1000)}s`,
         });
-        this._scheduleReconnect(true, boundedRetryMs, attemptVersion);
+        this._scheduleReconnect(true, totalDelayMs, attemptVersion);
         return;
       }
 
@@ -1088,8 +1104,9 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       }
     };
 
-    window.addEventListener('offline', this._offlineListener);
-    window.addEventListener('online', this._onlineListener);
+    const target: EventTarget = window;
+    target.addEventListener('offline', this._offlineListener);
+    target.addEventListener('online', this._onlineListener);
   }
 
   private _teardownNetworkListeners(): void {
@@ -1098,12 +1115,13 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       typeof window.removeEventListener !== 'function'
     )
       return;
+    const target: EventTarget = window;
     if (this._offlineListener) {
-      window.removeEventListener('offline', this._offlineListener);
+      target.removeEventListener('offline', this._offlineListener);
       this._offlineListener = undefined;
     }
     if (this._onlineListener) {
-      window.removeEventListener('online', this._onlineListener);
+      target.removeEventListener('online', this._onlineListener);
       this._onlineListener = undefined;
     }
   }
