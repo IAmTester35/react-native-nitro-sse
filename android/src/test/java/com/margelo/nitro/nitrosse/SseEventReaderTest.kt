@@ -407,7 +407,22 @@ class SseEventReaderTest {
         assertEquals(1, callback.events.size)
         assertEquals("valid_payload", callback.events[0].data)
     }
+
+    @Test
+    fun testEventDataLimitCountsNewlineSeparatorBetweenDataLines() {
+        // Two lines of MAX/2 chars each are individually valid, but joined with '\n' they total MAX + 1.
+        val half = MAX_SSE_EVENT_DATA_SIZE / 2
+        val part = "a".repeat(half)
+        val buffer = Buffer().writeUtf8("data: $part\ndata: $part\n\n")
+        val reader = SseEventReader(buffer)
+        val callback = RecordingCallback()
+
+        try {
+            reader.processNextEvent(callback)
+            org.junit.Assert.fail("Expected SseParserLimitException: separator must count towards the limit")
+        } catch (e: SseParserLimitException) {
+            assertTrue(e.message!!.contains("SSE event data exceeded maximum limit"))
+        }
+        assertTrue(callback.events.isEmpty())
+    }
 }
-
-
-
