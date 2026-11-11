@@ -1161,15 +1161,24 @@ describe('FetchSseDriver', () => {
     keysSpy.mockRestore();
   });
 
-  test('Issue 1.1 repro: onIdUpdate and onEvent do not double-count last-event-id bytes', () => {
+  test('Issue 1.1 repro: onIdUpdate and onEvent do not double-count last-event-id bytes', async () => {
     driver.setup({ url: TEST_URL });
-    const bytesBefore = driver.getStats().totalBytesReceived;
-    driver.onIdUpdate('event-123'); // 9 bytes
-    expect(driver.getStats().totalBytesReceived - bytesBefore).toBe(9);
+    const stream = createMockStream([
+      'id: event-123\ndata: hello\n\n', // 9 bytes ('event-123') + 5 bytes ('hello') = 14
+      'id: event-123\ndata: world\n\n', // retained id (0 bytes) + 5 bytes ('world') = 19
+    ]);
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: stream,
+    });
 
-    const bytesAfterId = driver.getStats().totalBytesReceived;
-    driver.onEvent('event-123', undefined, 'hello'); // 5 bytes for hello
-    expect(driver.getStats().totalBytesReceived - bytesAfterId).toBe(5);
+    driver.start();
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+    }
+
+    expect(driver.getStats().totalBytesReceived).toBe(19);
   });
 
   test('Issue 1.5 verification: reconnect count increments accurately on reconnection attempt', async () => {
@@ -1208,4 +1217,92 @@ describe('FetchSseDriver', () => {
     jest.advanceTimersByTime(150);
     expect((driver as any)._readTimeoutTimer).toBeUndefined();
   });
+
+  test('synchronous stop() in listener aborts parser and drops remaining events in chunk without dangling timers', async () => {
+    const receivedMessages: string[] = [];
+    driver = new FetchSseDriver((events) => {
+      for (const ev of events) {
+        if (ev.type === 'message' && ev.data) {
+          receivedMessages.push(ev.data);
+          if (ev.data === 'first') {
+            driver.stop();
+          }
+        }
+      }
+    });
+    driver.setup({ url: TEST_URL, batchingIntervalMs: 0 });
+
+    const stream = createMockStream(['data: first\n\ndata: second\n\n']);
+
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: stream,
+    });
+
+    driver.start();
+    await jest.runAllTicks();
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+    }
+
+    expect(receivedMessages).toEqual(['first']);
+    expect(driver.getState()).toBe('closed');
+    expect((driver as any)._batchTimer).toBeUndefined();
+  });
+
+  test('restart() resets reconnectStrategy and consecutiveAuthErrors', () => {
+    driver.setup({ url: TEST_URL, maxReconnectAttempts: 2, maxAuthRetries: 2 });
+    (driver as any)._reconnectStrategy.recordAttempt();
+    (driver as any)._reconnectStrategy.recordAttempt();
+    expect((driver as any)._reconnectStrategy.hasReachedMaxAttempts()).toBe(
+      true
+    );
+
+    (driver as any)._consecutiveAuthErrors = 5;
+
+    globalThis.fetch = jest.fn().mockReturnValue(new Promise(() => {}));
+    driver.restart();
+
+    expect((driver as any)._consecutiveAuthErrors).toBe(0);
+    expect((driver as any)._reconnectStrategy.hasReachedMaxAttempts()).toBe(
+      false
+    );
+  });
+
+  test('caps maxBufferSize at 10,000 events like native platforms', () => {
+    driver.setup({
+      url: TEST_URL,
+      batchingIntervalMs: 1000,
+      maxBufferSize: 15000,
+    });
+
+    for (let i = 0; i < 10_000; i++) {
+      (driver as any)._pushEvent({ type: 'message', data: String(i) });
+    }
+
+    // Flushed at the hard cap (10,000) instead of buffering up to the configured 15,000.
+    const stats = driver.getStats();
+    expect(stats.bufferOverflowCount).toBe(1);
+    expect(stats.eventsBuffered).toBe(0);
+    expect(dispatchedEvents.length).toBe(10_000);
+  });
+
+  test.each([0, -5, NaN, Infinity])(
+    'falls back to default maxBufferSize (1000) for invalid value %p',
+    (invalid) => {
+      driver.setup({
+        url: TEST_URL,
+        batchingIntervalMs: 1000,
+        maxBufferSize: invalid,
+      });
+
+      for (let i = 0; i < 1000; i++) {
+        (driver as any)._pushEvent({ type: 'message', data: String(i) });
+      }
+
+      expect(driver.getStats().bufferOverflowCount).toBe(1);
+      expect(dispatchedEvents.length).toBe(1000);
+    }
+  );
 });
