@@ -217,7 +217,9 @@ internal class SseEventReader(private val source: BufferedSource) {
                     fieldLen == 4 && line.startsWith("data") -> {
                         val value = if (valueStart < line.length) line.substring(valueStart) else ""
                         val currentLength = if (!hasData) 0 else firstDataLine?.length ?: dataBuffer.length
-                        if (currentLength + value.length > MAX_SSE_EVENT_DATA_SIZE) {
+                        // Account for the '\n' joining this line to the previous ones (parity with iOS / TypeScript).
+                        val separatorSize = if (hasData) 1 else 0
+                        if (currentLength + separatorSize + value.length > MAX_SSE_EVENT_DATA_SIZE) {
                             throw SseParserLimitException("SSE event data exceeded maximum limit of $MAX_SSE_EVENT_DATA_SIZE characters")
                         }
                         if (!hasData) {
