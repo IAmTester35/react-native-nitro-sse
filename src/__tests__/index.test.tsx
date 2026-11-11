@@ -1124,9 +1124,8 @@ describe('NitroSseModule Unit Tests', () => {
 
         NitroSseModule.dispose();
 
-        if (nativeCallback) {
-          nativeCallback([{ type: 'message', data: 'late event' }]);
-        }
+        expect(nativeCallback).toBeDefined();
+        nativeCallback([{ type: 'message', data: 'late event' }]);
 
         expect(messageListener).not.toHaveBeenCalled();
       });
