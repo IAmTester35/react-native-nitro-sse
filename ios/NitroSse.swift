@@ -609,6 +609,9 @@ class NitroSse: HybridNitroSseSpec {
         self.isRunning = false
         if emitClosed && !isDispatcherDestroyed && self.currentState != .failed {
             self.updateState(.closed)
+        } else if isDispatcherDestroyed && self.currentState != .failed {
+            // JS callback is unusable: record the terminal state silently so getState() stays accurate.
+            self.currentState = .closed
         }
         if isDispatcherDestroyed {
             self.eventBuffer.clear()
