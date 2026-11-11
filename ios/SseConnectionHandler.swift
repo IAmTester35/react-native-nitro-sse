@@ -76,6 +76,9 @@ internal class SseEventParser {
     private var eventType: String? = nil
     private var lastEventId: String? = nil
     private var isAtStreamStart: Bool = true
+    /// Set once a resource limit violation (-2002 / -2003) is reported; all further input is ignored
+    /// until `reset()`, mirroring `_aborted` in the TypeScript parser and `SseParserLimitException` on Android.
+    private var isAborted: Bool = false
     
     init(initialLastEventId: String? = nil) {
         self.lastEventId = initialLastEventId
@@ -88,6 +91,17 @@ internal class SseEventParser {
         eventType = nil
         lastEventId = initialLastEventId
         isAtStreamStart = true
+        isAborted = false
+    }
+    
+    /// Reports a fatal parser limit violation exactly once and stops all further parsing.
+    private func abort(code: Int, message: String) {
+        guard !isAborted else { return }
+        isAborted = true
+        buffer.removeAll()
+        dataBuffer = ""
+        hasData = false
+        delegate?.parserDidFail(error: NSError(domain: "NitroSse", code: code, userInfo: [NSLocalizedDescriptionKey: message]))
     }
     
     /// Signals end of stream (EOF).
@@ -100,7 +114,7 @@ internal class SseEventParser {
     }
     
     func feed(data: Data) {
-        guard !data.isEmpty else { return }
+        guard !data.isEmpty, !isAborted else { return }
         var parsedLinesInChunk = 0
         defer {
             if parsedLinesInChunk > 0 {
@@ -158,9 +172,7 @@ internal class SseEventParser {
                 }
             } else if let firstLine = findNextLine(in: currentData, from: readIndex) {
                 if buffer.count + firstLine.content.count > MAX_SSE_LINE_LENGTH {
-                    let error = NSError(domain: "NitroSse", code: -2002, userInfo: [NSLocalizedDescriptionKey: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes"])
-                    delegate?.parserDidFail(error: error)
-                    buffer.removeAll()
+                    abort(code: -2002, message: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes")
                     return
                 }
                 buffer.append(currentData[firstLine.content])
@@ -171,9 +183,7 @@ internal class SseEventParser {
             } else {
                 // currentData has no line ending: append chunk to buffer if within limit
                 if buffer.count + currentData.count > MAX_SSE_LINE_LENGTH {
-                    let error = NSError(domain: "NitroSse", code: -2002, userInfo: [NSLocalizedDescriptionKey: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes"])
-                    delegate?.parserDidFail(error: error)
-                    buffer.removeAll()
+                    abort(code: -2002, message: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes")
                     return
                 }
                 buffer.append(currentData)
@@ -182,15 +192,13 @@ internal class SseEventParser {
         }
         
         // Scan remaining lines directly from currentData using zero-copy slices
-        while readIndex < endIndex {
+        while readIndex < endIndex && !isAborted {
             guard let lineRange = findNextLine(in: currentData, from: readIndex) else {
                 break
             }
             
             if lineRange.content.count > MAX_SSE_LINE_LENGTH {
-                let error = NSError(domain: "NitroSse", code: -2002, userInfo: [NSLocalizedDescriptionKey: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes"])
-                delegate?.parserDidFail(error: error)
-                buffer.removeAll()
+                abort(code: -2002, message: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes")
                 return
             }
             
@@ -201,13 +209,13 @@ internal class SseEventParser {
             parsedLinesInChunk += 1
         }
         
+        if isAborted { return }
+        
         // Save trailing incomplete line fragment into buffer
         if readIndex < endIndex {
             let trailingSlice = currentData[readIndex..<endIndex]
             if buffer.count + trailingSlice.count > MAX_SSE_LINE_LENGTH {
-                let error = NSError(domain: "NitroSse", code: -2002, userInfo: [NSLocalizedDescriptionKey: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes"])
-                delegate?.parserDidFail(error: error)
-                buffer.removeAll()
+                abort(code: -2002, message: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes")
                 return
             }
             buffer.append(trailingSlice)
@@ -307,10 +315,7 @@ internal class SseEventParser {
                 let value = String(decoding: valueSlice, as: UTF8.self)
                 let separatorSize = hasData ? 1 : 0
                 if dataBuffer.utf8.count + separatorSize + value.utf8.count > MAX_SSE_EVENT_DATA_SIZE {
-                    let error = NSError(domain: "NitroSse", code: -2003, userInfo: [NSLocalizedDescriptionKey: "SSE event data exceeded maximum limit of \(MAX_SSE_EVENT_DATA_SIZE) bytes"])
-                    delegate?.parserDidFail(error: error)
-                    dataBuffer = ""
-                    hasData = false
+                    abort(code: -2003, message: "SSE event data exceeded maximum limit of \(MAX_SSE_EVENT_DATA_SIZE) bytes")
                     return
                 }
                 if hasData {
