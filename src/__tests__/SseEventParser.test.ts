@@ -258,4 +258,96 @@ describe('SseEventParser', () => {
       'valid'
     );
   });
+
+  test('WHATWG: does not commit lastEventId before blank line and discards pending ID on endOfStream', () => {
+    parser.reset('initial_id');
+    parser.feed('id: 5\ndata: partial');
+    expect(delegate.onIdUpdate).not.toHaveBeenCalled();
+    expect(parser.lastEventId).toBe('initial_id');
+
+    parser.endOfStream();
+    expect(delegate.onIdUpdate).not.toHaveBeenCalled();
+    expect(parser.lastEventId).toBe('initial_id');
+
+    // Next stream reconnects with initial_id, not 5
+    parser.feed('data: next\n\n');
+    expect(delegate.onEvent).toHaveBeenCalledWith(
+      'initial_id',
+      undefined,
+      'next'
+    );
+  });
+
+  test('WHATWG: commits lastEventId on blank line even when event has no data', () => {
+    parser.feed('id: 42\n\n');
+    expect(delegate.onIdUpdate).toHaveBeenCalledWith('42');
+    expect(parser.lastEventId).toBe('42');
+    expect(delegate.onEvent).not.toHaveBeenCalled();
+  });
+
+  test('WHATWG: resets eventType on blank line even when event has no data', () => {
+    parser.feed('event: ping\n\n');
+    expect(delegate.onEvent).not.toHaveBeenCalled();
+
+    parser.feed('data: hello\n\n');
+    expect(delegate.onEvent).toHaveBeenCalledWith(
+      undefined,
+      undefined,
+      'hello'
+    );
+  });
+
+  test('exhaustive chunk-boundary split produces identical events', () => {
+    const testPayloads = [
+      'data: simple\n\n',
+      'data: crlf_message\r\n\r\n',
+      'data: bare_cr_1\rdata: bare_cr_2\r\r',
+      '\uFEFFevent: custom\nid: 123\ndata: line1\ndata: line2\n\n',
+      'data: Tiếng Việt có dấu 🇻🇳 và emoji 🚀\r\n\r\n',
+      'event: ping\n\nid: 99\ndata: message\n\n',
+    ];
+
+    for (const payload of testPayloads) {
+      const expectedEvents: any[] = [];
+      const expectedComments: any[] = [];
+      const baselineDelegate: SseEventParserDelegate = {
+        onEvent: (id, type, data) => expectedEvents.push({ id, type, data }),
+        onComment: (comment) => expectedComments.push(comment),
+        onRetry: () => {},
+        onIdUpdate: () => {},
+        onParseError: (err) => {
+          throw err;
+        },
+        onLinesParsed: () => {},
+      };
+      const baselineParser = new SseEventParser(baselineDelegate);
+      baselineParser.feed(payload);
+      baselineParser.endOfStream();
+
+      for (let split = 0; split <= payload.length; split++) {
+        const actualEvents: any[] = [];
+        const actualComments: any[] = [];
+        const testDelegate: SseEventParserDelegate = {
+          onEvent: (id, type, data) => actualEvents.push({ id, type, data }),
+          onComment: (comment) => actualComments.push(comment),
+          onRetry: () => {},
+          onIdUpdate: () => {},
+          onParseError: (err) => {
+            throw err;
+          },
+          onLinesParsed: () => {},
+        };
+        const testParser = new SseEventParser(testDelegate);
+
+        const chunk1 = payload.slice(0, split);
+        const chunk2 = payload.slice(split);
+        testParser.feed(chunk1);
+        testParser.feed(chunk2);
+        testParser.endOfStream();
+
+        expect(actualEvents).toEqual(expectedEvents);
+        expect(actualComments).toEqual(expectedComments);
+      }
+    }
+  });
 });
