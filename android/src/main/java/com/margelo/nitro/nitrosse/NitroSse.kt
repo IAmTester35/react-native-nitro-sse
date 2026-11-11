@@ -889,10 +889,19 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         val version = connectionAttemptVersion.incrementAndGet()
         // Detach the current socket immediately so its late callbacks are rejected as stale (requestId cleared).
         clearActiveRequestAndReportEnd()
+        // Deliver events buffered from the retired connection before announcing RECONNECTING so JS observes
+        // them in chronological order (not batched together with / after the new state transition).
+        if (::eventBuffer.isInitialized) eventBuffer.flush()
         updateState(SseState.RECONNECTING)
         val task = {
+            // An explicit restart supersedes any pending hibernation resume intent (mirrors stop()).
+            wasRunningBeforeNetworkLoss = false
+            wasRunningBeforePaused = false
+            // Cleanup is unconditional: a start()/restart() issued before this task drained bumps the version,
+            // but the timers and buffers of the retired cycle must still be released. FIFO ordering on
+            // [sseDispatcher] guarantees it runs before that newer cycle's queued connect task.
+            performInternalCleanup()
             if (isRunning.get() && version == connectionAttemptVersion.get()) {
-                performInternalCleanup()
                 connectWithFreshBackoff(version)
             }
         }
@@ -1008,6 +1017,11 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         
         isRunning.set(false)
         connectionAttemptVersion.incrementAndGet()
+        // The dispatcher queue is discarded below, so no queued stop() task can publish the terminal state.
+        // Keep getState() accurate (silently: the JS event callback is already unusable) while preserving FAILED.
+        if (isDispatcherDestroyed) {
+            currentState.updateAndGet { if (it == SseState.FAILED) it else SseState.CLOSED }
+        }
         
         synchronized(this) {
             requestInterceptor = null
