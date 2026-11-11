@@ -68,7 +68,9 @@ export class SseEventParser {
   private _dataBuffer: string = '';
   private _hasData: boolean = false;
   private _eventType?: string;
+  private _lastEventIdBuffer?: string;
   private _lastEventId?: string;
+  private _idUpdatedInCurrentEvent: boolean = false;
   private _isAtStreamStart: boolean = true;
   private _skipLeadingLf: boolean = false;
   private _aborted: boolean = false;
@@ -76,6 +78,7 @@ export class SseEventParser {
   constructor(delegate: SseEventParserDelegate, initialLastEventId?: string) {
     this._delegate = delegate;
     this._lastEventId = initialLastEventId;
+    this._lastEventIdBuffer = initialLastEventId;
   }
 
   get lastEventId(): string | undefined {
@@ -92,6 +95,8 @@ export class SseEventParser {
     this._hasData = false;
     this._eventType = undefined;
     this._lastEventId = initialLastEventId;
+    this._lastEventIdBuffer = initialLastEventId;
+    this._idUpdatedInCurrentEvent = false;
     this._isAtStreamStart = true;
     this._skipLeadingLf = false;
     this._aborted = false;
@@ -111,6 +116,24 @@ export class SseEventParser {
     this._dataBuffer = '';
     this._hasData = false;
     this._eventType = undefined;
+    this._idUpdatedInCurrentEvent = false;
+    this._lastEventIdBuffer = this._lastEventId;
+  }
+
+  /**
+   * Aborts parsing immediately and discards pending fragments.
+   */
+  abort(): void {
+    this._aborted = true;
+    this._pendingFragments.length = 0;
+    this._pendingLength = 0;
+  }
+
+  private _fail(message: string): void {
+    this._aborted = true;
+    this._pendingFragments.length = 0;
+    this._pendingLength = 0;
+    this._delegate.onParseError(new Error(message));
   }
 
   /**
@@ -145,14 +168,9 @@ export class SseEventParser {
     // without concatenating strings on every feed. This eliminates O(N^2) memory reallocation.
     if (!hasLf && !hasCr) {
       if (this._pendingLength + text.length > MAX_SSE_LINE_LENGTH) {
-        this._aborted = true;
-        this._delegate.onParseError(
-          new Error(
-            `SSE line exceeded maximum limit of ${MAX_SSE_LINE_LENGTH} characters`
-          )
+        this._fail(
+          `SSE line exceeded maximum limit of ${MAX_SSE_LINE_LENGTH} characters`
         );
-        this._pendingFragments.length = 0;
-        this._pendingLength = 0;
         return;
       }
       this._pendingFragments.push(text);
@@ -175,20 +193,17 @@ export class SseEventParser {
 
     const len = fullText.length;
     let parsedLinesInChunk = 0;
+    let start = 0;
 
     // Fast-path: When there are no carriage returns in fullText (the vast majority of SSE streams),
     // scan using native SIMD-accelerated indexOf('\n') starting at `carried` instead of 0.
     if (!hasCr) {
-      let start = 0;
       let nextLf = fullText.indexOf('\n', carried);
 
       while (nextLf !== -1 && !this._aborted) {
         if (nextLf - start > MAX_SSE_LINE_LENGTH) {
-          this._aborted = true;
-          this._delegate.onParseError(
-            new Error(
-              `SSE line exceeded maximum limit of ${MAX_SSE_LINE_LENGTH} characters`
-            )
+          this._fail(
+            `SSE line exceeded maximum limit of ${MAX_SSE_LINE_LENGTH} characters`
           );
           return;
         }
@@ -199,102 +214,54 @@ export class SseEventParser {
         parsedLinesInChunk++;
         nextLf = fullText.indexOf('\n', start);
       }
+    } else {
+      // Slow-path: Handles streams with CR, CRLF, and bare CR line endings
+      let i = carried;
 
-      if (start < len) {
-        const remaining = fullText.slice(start);
-        if (remaining.length > MAX_SSE_LINE_LENGTH) {
-          this._aborted = true;
-          this._pendingFragments.length = 0;
-          this._pendingLength = 0;
-          this._delegate.onParseError(
-            new Error(
-              `SSE line exceeded maximum limit of ${MAX_SSE_LINE_LENGTH} characters`
-            )
+      while (i < len && !this._aborted) {
+        if (i - start > MAX_SSE_LINE_LENGTH) {
+          this._fail(
+            `SSE line exceeded maximum limit of ${MAX_SSE_LINE_LENGTH} characters`
           );
           return;
-        } else {
-          this._pendingFragments.push(remaining);
-          this._pendingLength = remaining.length;
         }
-      }
 
-      if (parsedLinesInChunk > 0) {
-        this._delegate.onLinesParsed(parsedLinesInChunk);
-      }
-      return;
-    }
-
-    // Slow-path: Handles streams with CR, CRLF, and bare CR line endings
-    let start = 0;
-    let i = carried;
-
-    while (i < len && !this._aborted) {
-      if (i - start > MAX_SSE_LINE_LENGTH) {
-        this._aborted = true;
-        this._delegate.onParseError(
-          new Error(
-            `SSE line exceeded maximum limit of ${MAX_SSE_LINE_LENGTH} characters`
-          )
-        );
-        this._pendingFragments.length = 0;
-        this._pendingLength = 0;
-        return;
-      }
-
-      const code = fullText.charCodeAt(i);
-      if (code === LF) {
-        const line = fullText.slice(start, i);
-        start = i + 1;
-        i++;
-        this._processLine(line);
-        parsedLinesInChunk++;
-      } else if (code === CR) {
-        if (i + 1 < len) {
-          if (fullText.charCodeAt(i + 1) === LF) {
-            // CRLF in current buffer
-            const line = fullText.slice(start, i);
-            start = i + 2;
-            i += 2;
-            this._processLine(line);
-            parsedLinesInChunk++;
-          } else {
-            // Bare CR in current buffer
-            const line = fullText.slice(start, i);
-            start = i + 1;
-            i++;
-            this._processLine(line);
-            parsedLinesInChunk++;
-          }
-        } else {
-          // \r at the very end of current buffer
+        const code = fullText.charCodeAt(i);
+        if (code === LF) {
           const line = fullText.slice(start, i);
           start = i + 1;
           i++;
-          this._skipLeadingLf = true;
           this._processLine(line);
           parsedLinesInChunk++;
+        } else if (code === CR) {
+          const isCrlf = i + 1 < len && fullText.charCodeAt(i + 1) === LF;
+          const step = isCrlf ? 2 : 1;
+          if (i + 1 === len) {
+            this._skipLeadingLf = true;
+          }
+          const line = fullText.slice(start, i);
+          start = i + step;
+          i += step;
+          this._processLine(line);
+          parsedLinesInChunk++;
+        } else {
+          i++;
         }
-      } else {
-        i++;
       }
     }
+
+    if (this._aborted) return;
 
     if (start < len) {
       const remaining = fullText.slice(start);
       if (remaining.length > MAX_SSE_LINE_LENGTH) {
-        this._aborted = true;
-        this._pendingFragments.length = 0;
-        this._pendingLength = 0;
-        this._delegate.onParseError(
-          new Error(
-            `SSE line exceeded maximum limit of ${MAX_SSE_LINE_LENGTH} characters`
-          )
+        this._fail(
+          `SSE line exceeded maximum limit of ${MAX_SSE_LINE_LENGTH} characters`
         );
         return;
-      } else {
-        this._pendingFragments.push(remaining);
-        this._pendingLength = remaining.length;
       }
+      this._pendingFragments.push(remaining);
+      this._pendingLength = remaining.length;
     }
 
     if (parsedLinesInChunk > 0) {
@@ -304,18 +271,30 @@ export class SseEventParser {
 
   private _processLine(line: string): void {
     if (line === '') {
-      // Empty line dispatches the current event
-      if (this._hasData) {
-        const data = this._dataBuffer;
-        const id = this._lastEventId;
-        const type = this._eventType;
-
-        this._dataBuffer = '';
-        this._hasData = false;
-        this._eventType = undefined;
-
-        this._delegate.onEvent(id, type, data);
+      // Empty line dispatches the current event per WHATWG specification
+      // Step 1: Set last event ID string of event source to value of last event ID buffer
+      if (this._idUpdatedInCurrentEvent) {
+        this._idUpdatedInCurrentEvent = false;
+        this._lastEventId = this._lastEventIdBuffer;
+        this._delegate.onIdUpdate(this._lastEventId);
       }
+
+      // Step 2: If data buffer is empty, reset data buffer and event type buffer to empty string and return
+      if (!this._hasData) {
+        this._eventType = undefined;
+        return;
+      }
+
+      // Steps 3-6: Dispatch event
+      const data = this._dataBuffer;
+      const id = this._lastEventId;
+      const type = this._eventType;
+
+      this._dataBuffer = '';
+      this._hasData = false;
+      this._eventType = undefined;
+
+      this._delegate.onEvent(id, type, data);
       return;
     }
 
@@ -403,8 +382,8 @@ export class SseEventParser {
 
   private _handleId(value: string): void {
     if (!value.includes('\0')) {
-      this._lastEventId = value === '' ? undefined : value;
-      this._delegate.onIdUpdate(this._lastEventId);
+      this._lastEventIdBuffer = value === '' ? undefined : value;
+      this._idUpdatedInCurrentEvent = true;
     }
   }
 
@@ -414,14 +393,11 @@ export class SseEventParser {
       this._dataBuffer.length + separatorSize + value.length >
       MAX_SSE_EVENT_DATA_SIZE
     ) {
-      this._aborted = true;
-      this._delegate.onParseError(
-        new Error(
-          `SSE event data exceeded maximum limit of ${MAX_SSE_EVENT_DATA_SIZE} characters`
-        )
-      );
       this._dataBuffer = '';
       this._hasData = false;
+      this._fail(
+        `SSE event data exceeded maximum limit of ${MAX_SSE_EVENT_DATA_SIZE} characters`
+      );
       return;
     }
 
