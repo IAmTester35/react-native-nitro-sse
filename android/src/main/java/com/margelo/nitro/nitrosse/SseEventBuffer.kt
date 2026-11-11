@@ -20,6 +20,8 @@ class SseEventBuffer(
 
     private val eventBuffer = java.util.ArrayDeque<SseEvent>()
     private val isFlushPending = AtomicBoolean(false)
+    /** Guarded by [eventBuffer]; true while an overflow-triggered flush has been requested but not yet executed. */
+    private var isOverflowFlushPending = false
     
     private var batchingIntervalMs: Double = 0.0
     private var maxBufferSize: Int = 1000
@@ -82,13 +84,21 @@ class SseEventBuffer(
         }
 
         var shouldFlush = false
+        var overflowFlushQueued = false
         synchronized(eventBuffer) {
             val evicted = appendEventLocked(event)
             if (eventBuffer.size >= maxBufferSize) {
-                if (!evicted) {
-                    bufferOverflowCount++
+                if (isOverflowFlushPending) {
+                    // A flush for this overflowing batch is already requested (posted to a non-dispatcher caller's
+                    // dispatcher but not yet run): don't count the same batch twice nor post redundant flushes.
+                    overflowFlushQueued = true
+                } else {
+                    isOverflowFlushPending = true
+                    if (!evicted) {
+                        bufferOverflowCount++
+                    }
+                    shouldFlush = true
                 }
-                shouldFlush = true
             }
         }
 
@@ -98,7 +108,7 @@ class SseEventBuffer(
             } else {
                 dispatcher.post { flush() }
             }
-        } else if (!isFlushPending.getAndSet(true)) {
+        } else if (!overflowFlushQueued && !isFlushPending.getAndSet(true)) {
             dispatcher?.postDelayed(flushRunnable, batchingIntervalMs.toLong())
         }
     }
@@ -107,6 +117,7 @@ class SseEventBuffer(
         dispatcher?.removeCallbacks(flushRunnable)
         val eventsToEmit: Array<SseEvent>
         synchronized(eventBuffer) {
+            isOverflowFlushPending = false
             if (eventBuffer.isEmpty()) {
                 isFlushPending.set(false)
                 return
@@ -130,6 +141,7 @@ class SseEventBuffer(
         synchronized(eventBuffer) {
             eventBuffer.clear()
             isFlushPending.set(false)
+            isOverflowFlushPending = false
         }
     }
 }
