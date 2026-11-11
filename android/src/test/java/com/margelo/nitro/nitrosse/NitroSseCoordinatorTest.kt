@@ -1602,6 +1602,110 @@ class NitroSseCoordinatorTest {
         sse.stop()
         drainLoopers()
     }
+
+    /**
+     * Swaps the OkHttp client for one whose dispatcher never runs real socket calls, so tests deterministically
+     * drive connection callbacks without racing a real connection attempt to localhost.
+     */
+    private fun detachRealNetwork(sse: NitroSse) {
+        val noOpExecutor = object : java.util.concurrent.AbstractExecutorService() {
+            override fun shutdown() {}
+            override fun shutdownNow(): MutableList<Runnable> = mutableListOf()
+            override fun isShutdown(): Boolean = false
+            override fun isTerminated(): Boolean = false
+            override fun awaitTermination(timeout: Long, unit: java.util.concurrent.TimeUnit): Boolean = true
+            override fun execute(command: Runnable) {}
+        }
+        val clientField = NitroSse::class.java.getDeclaredField("client").apply { isAccessible = true }
+        clientField.set(sse, okhttp3.OkHttpClient.Builder().dispatcher(okhttp3.Dispatcher(noOpExecutor)).build())
+    }
+
+    @Test
+    fun testStartAfterQueuedRestartStillCleansUpRetiredCycle() {
+        val sse = NitroSse(dispatcher)
+        sse.setup(createMockConfig()) { _ -> }
+        detachRealNetwork(sse)
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        val caps = org.mockito.Mockito.mock(android.net.NetworkCapabilities::class.java)
+        sse.handleNetworkChange(true, true, caps)
+        val debounceField = NitroSse::class.java.getDeclaredField("networkRestartRunnable").apply { isAccessible = true }
+        assertNotNull("Debounced network restart must be scheduled", debounceField.get(sse))
+
+        // Both issued from the JS thread before the dispatcher drains: start() supersedes restart()'s version.
+        sse.restart()
+        sse.start()
+        drainLoopers()
+
+        assertNull("restart() task must still release the retired cycle's timers", debounceField.get(sse))
+        sse.dispose()
+        drainLoopers()
+    }
+
+    @Test
+    fun testRestartClearsHibernationResumeFlags() {
+        val sse = NitroSse(dispatcher)
+        sse.setup(createMockConfig()) { _ -> }
+        detachRealNetwork(sse)
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        val background = NitroSse::class.java.getDeclaredMethod("handleAppBackground").apply { isAccessible = true }
+        background.invoke(sse)
+        assertEquals(SseState.PAUSED, sse.getState())
+        val pausedField = NitroSse::class.java.getDeclaredField("wasRunningBeforePaused").apply { isAccessible = true }
+        assertTrue(pausedField.getBoolean(sse))
+
+        sse.restart()
+        drainLoopers()
+        assertFalse("restart() must supersede the pending background-resume intent", pausedField.getBoolean(sse))
+
+        // Fatal failure of the restarted stream must not be resurrected by a later foreground event.
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId").apply { isAccessible = true }
+        sse.connectionDidFail(null, createResponse(204, "No Content"), null, reqIdField.get(sse) as String)
+        drainLoopers()
+        assertEquals(SseState.FAILED, sse.getState())
+
+        val foreground = NitroSse::class.java.getDeclaredMethod("handleAppForeground").apply { isAccessible = true }
+        foreground.invoke(sse)
+        drainLoopers()
+        assertEquals("FAILED is terminal and must not be revived by foreground", SseState.FAILED, sse.getState())
+        sse.dispose()
+        drainLoopers()
+    }
+
+    @Test
+    fun testRestartDeliversPriorBufferedEventsBeforeReconnectingState() {
+        val batches = mutableListOf<List<SseEvent>>()
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig().copy(batchingIntervalMs = 500.0)
+        sse.setup(config) { events -> batches.add(events.toList()) }
+        detachRealNetwork(sse)
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId").apply { isAccessible = true }
+        val reqId = reqIdField.get(sse) as String
+        sse.connectionDidOpen(createResponse(200, "OK"), reqId)
+        drainLoopers()
+        sse.flush()
+        batches.clear()
+
+        sse.connectionDidReceiveMessage("1", "message", "from_old_connection", reqId)
+        drainLoopers()
+        assertTrue("Message must still be batched", batches.isEmpty())
+
+        sse.restart()
+
+        val flattened = batches.flatten()
+        assertEquals(listOf(SseEventType.MESSAGE, SseEventType.STATE), flattened.map { it.type })
+        assertEquals("Old message must be delivered in its own batch before the state change", 2, batches.size)
+        assertEquals(SseState.RECONNECTING, flattened[1].state)
+        sse.dispose()
+        drainLoopers()
+    }
 }
-
-
