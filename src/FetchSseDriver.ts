@@ -55,7 +55,7 @@ function resolveMaxBufferSize(val: unknown): number {
 /**
  * Calculates exponential backoff with full symmetric jitter matching iOS/Android.
  */
-export class SseReconnectStrategy {
+class SseReconnectStrategy {
   private _backoffCounter = 0;
   private _currentReconnectAttempts = 0;
   private _retryInterval = 1.0; // in seconds
