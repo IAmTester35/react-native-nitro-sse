@@ -244,28 +244,21 @@ class NitroSseLogicTest {
     }
 
     @Test
-    fun testEventBufferCountsOneOverflowPerBatchWhenPushedFromNonDispatcherThread() {
+    fun testEventBufferCapsMaxBufferSizeAtHardLimit() {
         val flushedBatches = mutableListOf<Array<SseEvent>>()
         val dispatcher = TestSseDispatcher()
         val buffer = SseEventBuffer(onFlush = { events -> flushedBatches.add(events) }, dispatcher = dispatcher)
-        buffer.configure(batchingIntervalMs = 100.0, maxBufferSize = 2)
+        buffer.configure(batchingIntervalMs = 1000.0, maxBufferSize = 15000)
 
         val mockEvent = SseEvent(SseEventType.MESSAGE, "test", null, "1", "message", null, 200.0, null, null)
 
-        // Not on the dispatcher thread: the overflow flush is posted and runs asynchronously, so further pushes
-        // land in the same (already overflowing) batch before it drains.
-        repeat(4) { buffer.push(mockEvent) }
+        repeat(10_000) { buffer.push(mockEvent) }
         dispatcher.executePending()
 
         assertEquals(1, flushedBatches.size)
-        assertEquals(4, flushedBatches.first().size)
-        assertEquals(1L, buffer.getBufferFlushCount())
-        assertEquals("One overflowing batch must be counted once", 1L, buffer.getBufferOverflowCount())
-
-        // A subsequent overflow after the flush drained is a new batch and is counted again.
-        repeat(2) { buffer.push(mockEvent) }
-        dispatcher.executePending()
-        assertEquals(2L, buffer.getBufferOverflowCount())
+        assertEquals(10_000, flushedBatches.first().size)
+        assertEquals(1L, buffer.getBufferOverflowCount())
+        assertEquals(0, buffer.getEventsBuffered())
     }
 
     @Test
