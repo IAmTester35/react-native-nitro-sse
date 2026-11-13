@@ -970,4 +970,46 @@ final class SseConnectionHandlerTests: XCTestCase {
         parser.feed(data: "data: ok\n\n".data(using: .utf8)!)
         XCTAssertEqual(delegate.receivedEvents, ["ok"])
     }
+
+    func testStalledErrorBodyPreservesHttpStatusAndPartialBodyOnConnectionTimeout() {
+        let delegate = TestDelegate()
+        let dispatcher = MockSseDispatcher()
+        let url = URL(string: TEST_URL)!
+        let source = RealSseEventSource(
+            delegate: delegate,
+            attemptVersion: 1,
+            dispatcher: dispatcher
+        )
+        let sessionConfig = URLSessionConfiguration.ephemeral
+        let dummySession = URLSession(configuration: sessionConfig)
+        let dummyTask = dummySession.dataTask(with: url)
+        defer {
+            source.stop()
+            dummySession.invalidateAndCancel()
+        }
+
+        source.start(request: URLRequest(url: url), sessionConfig: sessionConfig, connectionTimeout: 15.0)
+
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 500,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/plain"]
+        )!
+        var disposition: URLSession.ResponseDisposition?
+        source.urlSession(dummySession, dataTask: dummyTask, didReceive: response) { disposition = $0 }
+        XCTAssertEqual(disposition, .allow)
+
+        source.urlSession(dummySession, dataTask: dummyTask, didReceive: "partial error".data(using: .utf8)!)
+
+        // Fire the existing connectionTimeout timer while error body collection is still active
+        dispatcher.executeDelayedBlocks()
+
+        XCTAssertTrue(delegate.didFailCalled)
+        XCTAssertEqual(delegate.failedResponse?.statusCode, 500)
+        XCTAssertEqual(delegate.failedErrorBody, "partial error")
+        let nsError = delegate.failedError as NSError?
+        XCTAssertEqual(nsError?.domain, "NitroSse")
+        XCTAssertEqual(nsError?.code, 500)
+    }
 }
