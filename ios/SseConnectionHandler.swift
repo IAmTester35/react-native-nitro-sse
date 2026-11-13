@@ -422,6 +422,13 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
         dispatcher.asyncAfter(delay: timeout) { [weak self] in
             guard let self = self, !self.didReceiveValidResponse, !self.isFinished, !self.isCancelled else { return }
             self.isFinished = true
+            if self.isCollectingErrorBody, let resp = self.pendingErrorResponse {
+                self.isCollectingErrorBody = false
+                let error = NSError(domain: "NitroSse", code: resp.statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP \(resp.statusCode)"])
+                let bodyString = self.errorBodyData.isEmpty ? nil : String(decoding: self.errorBodyData, as: UTF8.self)
+                self.dispatchTerminalFailure(error: error, response: resp, errorBody: bodyString)
+                return
+            }
             let error = NSError(
                 domain: NSURLErrorDomain,
                 code: NSURLErrorTimedOut,

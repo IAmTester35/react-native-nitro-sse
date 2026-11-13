@@ -45,7 +45,8 @@ class NitroSseWireProtocolTest {
         url: String,
         method: HttpMethod = HttpMethod.GET,
         headers: Map<String, String> = emptyMap(),
-        body: String? = null
+        body: String? = null,
+        connectionTimeoutMs: Double = 15000.0
     ): SseConfig {
         return SseConfig(
             url,
@@ -55,7 +56,7 @@ class NitroSseWireProtocolTest {
             false,
             0.0,
             1000.0,
-            15000.0,
+            connectionTimeoutMs,
             300000.0,
             100.0,
             30000.0,
@@ -499,6 +500,60 @@ class NitroSseWireProtocolTest {
         assertEquals("/events", req1?.path)
         assertEquals("/temp-redirected", req2?.path)
         assertEquals("Subsequent reconnect must still target original /events per WHATWG SSE spec", "/events", req3?.path)
+    }
+
+    /**
+     * Verifies that a trickling/stalled HTTP 500 error body is bounded by connectionTimeoutMs
+     * instead of blocking OkHttp for the full 5-minute SSE readTimeoutMs, and preserves partial body.
+     */
+    @Test
+    fun testTricklingHttpErrorBodyTimesOutAtConnectionTimeoutWithoutBlockingReadTimeout() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(500)
+                .setHeader("Content-Type", "text/plain")
+                .setBody("partial error " + "x".repeat(200))
+                .throttleBody(14, 1, TimeUnit.SECONDS)
+        )
+
+        val sse = NitroSse()
+        val config = createConfig(
+            url = server.url("/events").toString(),
+            connectionTimeoutMs = 1000.0
+        ) // readTimeoutMs = 300_000.0 (5 min)
+        val receivedEvents = mutableListOf<SseEvent>()
+        val latch = CountDownLatch(1)
+
+        sse.setup(config) { events ->
+            synchronized(receivedEvents) {
+                for (e in events) {
+                    if (e.type == SseEventType.ERROR) {
+                        receivedEvents.add(e)
+                        latch.countDown()
+                    }
+                }
+            }
+        }
+
+        val startTime = System.currentTimeMillis()
+        sse.start()
+        while (System.currentTimeMillis() - startTime < 5000 && latch.count > 0) {
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(20)
+        }
+        val elapsedMs = System.currentTimeMillis() - startTime
+        sse.stop()
+
+        assertTrue("ERROR event must arrive quickly without waiting 300s readTimeout", latch.count == 0L)
+        assertTrue("Should complete within 5000ms (actual=${elapsedMs}ms)", elapsedMs < 5000)
+        synchronized(receivedEvents) {
+            val errorEvent = receivedEvents.first()
+            assertEquals(500.0, errorEvent.statusCode)
+            assertTrue(
+                "Partial error body should be preserved before deadline: ${errorEvent.message}",
+                errorEvent.message?.contains("partial error") == true
+            )
+        }
     }
 }
 

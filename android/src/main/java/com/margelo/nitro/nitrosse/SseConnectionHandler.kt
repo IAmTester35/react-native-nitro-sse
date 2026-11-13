@@ -13,6 +13,7 @@ import okio.ByteString
 import okio.ForwardingSource
 import okio.buffer
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 /**
  * Maximum bytes to read from HTTP error responses to prevent Out-Of-Memory errors.
@@ -312,11 +313,24 @@ internal class RealSseEventSource(
         // Any other HTTP response code (including 201, 204, 206, 4xx, 5xx) must fail the connection.
         if (response.code != 200) {
             val errorBody = if (response.code != 204) {
-                try {
-                    response.peekBody(MAX_ERROR_BODY_BYTES).string()
-                } catch (e: Exception) {
-                    null
-                }
+                val source = response.body?.source()
+                if (source != null) {
+                    val timeoutMs = client.connectTimeoutMillis.toLong()
+                    if (timeoutMs > 0L) {
+                        source.timeout().deadline(timeoutMs, TimeUnit.MILLISECONDS)
+                    }
+                    try {
+                        runCatching { source.request(MAX_ERROR_BODY_BYTES) }
+                        val size = minOf(source.buffer.size, MAX_ERROR_BODY_BYTES)
+                        if (size > 0L) source.buffer.readUtf8(size) else null
+                    } catch (_: Exception) {
+                        null
+                    } finally {
+                        if (timeoutMs > 0L) {
+                            source.timeout().clearDeadline()
+                        }
+                    }
+                } else null
             } else null
             delegate.connectionDidFail(null, response, errorBody, requestId)
             response.close()
