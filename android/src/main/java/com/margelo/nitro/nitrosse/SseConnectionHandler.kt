@@ -437,27 +437,25 @@ class SseConnectionHandler(private val delegate: SseConnectionDelegate) {
  * Implements bounded caching and cleared-request guards to eliminate memory leaks from trailing socket reads.
  */
 object SseNetworkMetricsTracker {
-    private const val MAX_ENTRIES = 100
-    private const val MAX_CLEARED_ENTRIES = 200
+    private const val MAX_ENTRIES = 200
 
-    private class MetricsEntry(var bytes: Long = 0L, var isGzip: Boolean = false)
+    private class MetricsEntry(
+        var bytes: Long = 0L,
+        var isGzip: Boolean = false,
+        var cleared: Boolean = false
+    )
 
-    private val entries = object : LinkedHashMap<String, MetricsEntry>(32, 0.75f, false) {
+    private val entries = object : LinkedHashMap<String, MetricsEntry>(64, 0.75f, false) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MetricsEntry>?): Boolean =
             size > MAX_ENTRIES
     }
 
-    private val clearedRequests = object : LinkedHashMap<String, Boolean>(64, 0.75f, false) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean =
-            size > MAX_CLEARED_ENTRIES
-    }
-
     @Synchronized
     fun recordRawBytes(requestId: String, bytes: Long, isGzip: Boolean) {
-        // Drop trailing socket reads after request has been cleared/cancelled to prevent resurrected memory leaks
-        if (clearedRequests.containsKey(requestId)) return
-
         val entry = entries.getOrPut(requestId) { MetricsEntry() }
+        // Drop trailing socket reads after request has been cleared/cancelled to prevent resurrected memory leaks
+        if (entry.cleared) return
+
         entry.bytes += bytes
         if (isGzip) {
             entry.isGzip = true
@@ -465,22 +463,24 @@ object SseNetworkMetricsTracker {
     }
 
     @Synchronized
-    fun getRawBytes(requestId: String): Long? = entries[requestId]?.bytes
+    fun getRawBytes(requestId: String): Long? =
+        entries[requestId]?.takeUnless { it.cleared }?.bytes
 
     @Synchronized
-    fun isGzip(requestId: String): Boolean = entries[requestId]?.isGzip == true
+    fun isGzip(requestId: String): Boolean =
+        entries[requestId]?.let { !it.cleared && it.isGzip } == true
 
     @Synchronized
     fun clear(requestId: String) {
-        entries.remove(requestId)
-        // Remember that this request is cleared (with true FIFO eviction) so subsequent trailing socket reads are discarded
-        clearedRequests[requestId] = true
+        val entry = entries.getOrPut(requestId) { MetricsEntry() }
+        entry.bytes = 0L
+        entry.isGzip = false
+        entry.cleared = true
     }
 
     @Synchronized
-    fun reset() {
+    internal fun reset() {
         entries.clear()
-        clearedRequests.clear()
     }
 }
 
