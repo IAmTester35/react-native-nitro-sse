@@ -1,4 +1,4 @@
-import { FetchSseDriver, SseReconnectStrategy } from '../FetchSseDriver';
+import { FetchSseDriver } from '../FetchSseDriver';
 import type { SseConfig, SseEvent } from '../SseInterface';
 
 describe('FetchSseDriver', () => {
@@ -1073,9 +1073,16 @@ describe('FetchSseDriver', () => {
   });
 
   test('Issue 2.2 repro: SseReconnectStrategy rejects non-finite Infinity and falls back to default', () => {
-    const strategy = new SseReconnectStrategy();
-    strategy.configure(Infinity, Infinity, 0.5, Infinity);
-    expect(strategy.nextDelayMs(false)).toBeLessThan(5000);
+    driver.setup({
+      url: TEST_URL,
+      retryIntervalMs: Infinity,
+      maxRetryIntervalMs: Infinity,
+      jitterFactor: 0.5,
+      maxReconnectAttempts: Infinity,
+    });
+    expect((driver as any)._reconnectStrategy.nextDelayMs(false)).toBeLessThan(
+      5000
+    );
   });
 
   test('Issue 2.1 repro: HTTP 204 does not call response.text()', async () => {
