@@ -18,10 +18,8 @@ class SseEventBuffer(
 
     var onFlushError: ((Exception) -> Unit)? = null
 
-    private val eventBuffer = java.util.ArrayDeque<SseEvent>()
+    private val eventBuffer = mutableListOf<SseEvent>()
     private val isFlushPending = AtomicBoolean(false)
-    /** Guarded by [eventBuffer]; true while an overflow-triggered flush has been requested but not yet executed. */
-    private var isOverflowFlushPending = false
     
     private var batchingIntervalMs: Double = 0.0
     private var maxBufferSize: Int = 1000
@@ -55,28 +53,24 @@ class SseEventBuffer(
     fun getBufferFlushCount(): Long = synchronized(eventBuffer) { bufferFlushCount }
     fun getBufferOverflowCount(): Long = synchronized(eventBuffer) { bufferOverflowCount }
 
-    private fun appendEventLocked(event: SseEvent): Boolean {
-        var evicted = false
-        if (eventBuffer.size >= HARD_MAX_BUFFER_SIZE) {
-            eventBuffer.removeFirst()
-            bufferOverflowCount++
-            evicted = true
-        }
-        eventBuffer.addLast(event)
-        if (eventBuffer.size > peakBufferedEvents) {
-            peakBufferedEvents = eventBuffer.size
-        }
-        return evicted
-    }
-
     fun push(event: SseEvent) {
         if (batchingIntervalMs <= 0.0) {
             if (dispatcher == null || dispatcher.isCurrentDispatcher()) {
-                synchronized(eventBuffer) { appendEventLocked(event) }
+                synchronized(eventBuffer) {
+                    eventBuffer.add(event)
+                    if (eventBuffer.size > peakBufferedEvents) {
+                        peakBufferedEvents = eventBuffer.size
+                    }
+                }
                 flush()
             } else {
                 dispatcher.post {
-                    synchronized(eventBuffer) { appendEventLocked(event) }
+                    synchronized(eventBuffer) {
+                        eventBuffer.add(event)
+                        if (eventBuffer.size > peakBufferedEvents) {
+                            peakBufferedEvents = eventBuffer.size
+                        }
+                    }
                     flush()
                 }
             }
@@ -84,21 +78,14 @@ class SseEventBuffer(
         }
 
         var shouldFlush = false
-        var overflowFlushQueued = false
         synchronized(eventBuffer) {
-            val evicted = appendEventLocked(event)
+            eventBuffer.add(event)
+            if (eventBuffer.size > peakBufferedEvents) {
+                peakBufferedEvents = eventBuffer.size
+            }
             if (eventBuffer.size >= maxBufferSize) {
-                if (isOverflowFlushPending) {
-                    // A flush for this overflowing batch is already requested (posted to a non-dispatcher caller's
-                    // dispatcher but not yet run): don't count the same batch twice nor post redundant flushes.
-                    overflowFlushQueued = true
-                } else {
-                    isOverflowFlushPending = true
-                    if (!evicted) {
-                        bufferOverflowCount++
-                    }
-                    shouldFlush = true
-                }
+                bufferOverflowCount++
+                shouldFlush = true
             }
         }
 
@@ -108,7 +95,7 @@ class SseEventBuffer(
             } else {
                 dispatcher.post { flush() }
             }
-        } else if (!overflowFlushQueued && !isFlushPending.getAndSet(true)) {
+        } else if (!isFlushPending.getAndSet(true)) {
             dispatcher?.postDelayed(flushRunnable, batchingIntervalMs.toLong())
         }
     }
@@ -117,7 +104,6 @@ class SseEventBuffer(
         dispatcher?.removeCallbacks(flushRunnable)
         val eventsToEmit: Array<SseEvent>
         synchronized(eventBuffer) {
-            isOverflowFlushPending = false
             if (eventBuffer.isEmpty()) {
                 isFlushPending.set(false)
                 return
@@ -141,7 +127,6 @@ class SseEventBuffer(
         synchronized(eventBuffer) {
             eventBuffer.clear()
             isFlushPending.set(false)
-            isOverflowFlushPending = false
         }
     }
 }
