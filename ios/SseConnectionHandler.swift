@@ -709,10 +709,10 @@ enum SseConnectionHandler {
         let rawConnectionTimeout = (config.connectionTimeoutMs ?? 15000.0) / 1000.0
         let connectionTimeout = rawConnectionTimeout > 0 ? rawConnectionTimeout : 0.0
         
-        let actualRequest = request ?? createRequest(url: url, config: config, lastProcessedId: lastProcessedId)
+        let request = createRequest(url: url, config: config, lastProcessedId: lastProcessedId)
         
         let source = RealSseEventSource(delegate: delegate, attemptVersion: attemptVersion, dispatcher: dispatcher, initialLastEventId: lastProcessedId)
-        source.start(request: actualRequest, sessionConfig: sessionConfig, connectionTimeout: connectionTimeout)
+        source.start(request: request, sessionConfig: sessionConfig, connectionTimeout: connectionTimeout)
         return source
     }
 }
