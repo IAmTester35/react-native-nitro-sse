@@ -90,6 +90,8 @@ internal class SseEventReader(private val source: BufferedSource) {
     private var hasData = false
     private var eventType: String? = null
     private var lastEventId: String? = null
+    private var lastEventIdBuffer: String? = null
+    private var idUpdatedInCurrentEvent = false
     private var isAtStreamStart = true
     private var skipLeadingLf = false
 
@@ -176,10 +178,17 @@ internal class SseEventReader(private val source: BufferedSource) {
                 dataBuffer.setLength(0)
                 hasData = false
                 eventType = null
+                lastEventIdBuffer = lastEventId
+                idUpdatedInCurrentEvent = false
                 return false
             }
             linesParsedInEvent++
             if (line.isEmpty()) {
+                if (idUpdatedInCurrentEvent) {
+                    lastEventId = lastEventIdBuffer
+                    idUpdatedInCurrentEvent = false
+                    callback.onIdUpdate(lastEventId)
+                }
                 if (hasData) {
                     callback.onLinesParsed(linesParsedInEvent)
                     val data = dataBuffer.toString()
@@ -191,6 +200,8 @@ internal class SseEventReader(private val source: BufferedSource) {
                     callback.onEvent(id, type, data)
                     return true
                 }
+                // WHATWG SSE: Dispatching an empty event still resets the event type buffer
+                eventType = null
                 // Delimiter / keepalive empty line without data
             } else if (line.startsWith(":")) {
                 callback.onLinesParsed(linesParsedInEvent)
@@ -224,8 +235,8 @@ internal class SseEventReader(private val source: BufferedSource) {
                     }
                     "id" -> {
                         if (!value.contains('\u0000')) {
-                            lastEventId = if (value.isEmpty()) null else value
-                            callback.onIdUpdate(lastEventId)
+                            lastEventIdBuffer = if (value.isEmpty()) null else value
+                            idUpdatedInCurrentEvent = true
                         }
                     }
                     "event" -> {
