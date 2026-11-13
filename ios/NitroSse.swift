@@ -576,8 +576,7 @@ class NitroSse: HybridNitroSseSpec {
             lastProcessedId: lastProcessedId,
             delegate: self,
             attemptVersion: attemptVersion,
-            dispatcher: dispatcher,
-            request: request
+            dispatcher: dispatcher
         )
         self.eventSource = es
     }
