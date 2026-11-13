@@ -164,8 +164,9 @@ internal class SseEventParser {
             // Handle CR/CRLF split across chunk boundary
             if buffer.last == 0x0D {
                 buffer.removeLast()
-                processLineBytes(buffer)
+                let line = String(decoding: buffer, as: UTF8.self)
                 buffer.removeAll()
+                processLine(line)
                 parsedLinesInChunk += 1
                 if currentData.first == 0x0A {
                     readIndex = currentData.startIndex + 1
@@ -176,8 +177,9 @@ internal class SseEventParser {
                     return
                 }
                 buffer.append(currentData[firstLine.content])
-                processLineBytes(buffer)
+                let line = String(decoding: buffer, as: UTF8.self)
                 buffer.removeAll()
+                processLine(line)
                 parsedLinesInChunk += 1
                 readIndex = firstLine.nextIndex
             } else {
@@ -205,7 +207,8 @@ internal class SseEventParser {
             let lineSlice = currentData[lineRange.content]
             readIndex = lineRange.nextIndex
             
-            processLineBytes(lineSlice)
+            let line = String(decoding: lineSlice, as: UTF8.self)
+            processLine(line)
             parsedLinesInChunk += 1
         }
         
@@ -261,9 +264,8 @@ internal class SseEventParser {
         }
     }
     
-    /// Parses a single SSE line directly from raw UTF-8 bytes without allocating intermediate line or field Strings.
-    private func processLineBytes(_ lineData: Data) {
-        if lineData.isEmpty {
+    private func processLine(_ line: String) {
+        if line.isEmpty {
             // Empty line dispatches the current event per WHATWG specification
             if hasData {
                 let eventData = dataBuffer
@@ -279,70 +281,57 @@ internal class SseEventParser {
             return
         }
         
-        lineData.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            let count = raw.count
-            guard count > 0 else { return }
-            
-            if raw[0] == 0x3A { // ':'
-                // WHATWG SSE: Lines starting with ':' are comments (often used for keepalive/heartbeat).
-                // Normalizes comment by removing only a single leading space (0x20) per WHATWG SSE specification.
-                let commentStart = (count > 1 && raw[1] == 0x20) ? 2 : 1
-                let commentSlice = UnsafeRawBufferPointer(rebasing: raw[commentStart..<count])
-                let comment = String(decoding: commentSlice, as: UTF8.self)
-                delegate?.parserDidReceiveComment(comment)
+        if line.hasPrefix(":") {
+            // WHATWG SSE: Lines starting with ':' are comments (often used for keepalive/heartbeat).
+            // Normalizes comment by removing only a single leading space per WHATWG SSE specification.
+            let rawComment = String(line.dropFirst())
+            let comment = rawComment.hasPrefix(" ") ? String(rawComment.dropFirst()) : rawComment
+            delegate?.parserDidReceiveComment(comment)
+            return
+        }
+        
+        let colonIndex = line.firstIndex(of: ":")
+        let field: String
+        let value: String
+        
+        if let colon = colonIndex {
+            field = String(line[..<colon])
+            let rawValue = String(line[line.index(after: colon)...])
+            value = rawValue.hasPrefix(" ") ? String(rawValue.dropFirst()) : rawValue
+        } else {
+            field = line
+            value = ""
+        }
+        
+        switch field {
+        case "data":
+            let separatorSize = hasData ? 1 : 0
+            if dataBuffer.utf8.count + separatorSize + value.utf8.count > MAX_SSE_EVENT_DATA_SIZE {
+                abort(code: -2003, message: "SSE event data exceeded maximum limit of \(MAX_SSE_EVENT_DATA_SIZE) bytes")
                 return
             }
-            
-            var colonOffset: Int? = nil
-            for i in 0..<count {
-                if raw[i] == 0x3A { // ':'
-                    colonOffset = i
-                    break
-                }
-            }
-            
-            let fieldLen = colonOffset ?? count
-            let valStart: Int
-            if let colon = colonOffset {
-                valStart = (colon + 1 < count && raw[colon + 1] == 0x20) ? (colon + 2) : (colon + 1)
+            if hasData {
+                dataBuffer.append("\n")
+                dataBuffer.append(value)
             } else {
-                valStart = count
+                dataBuffer = value
+                hasData = true
             }
-            let valueSlice = UnsafeRawBufferPointer(rebasing: raw[valStart..<count])
-            
-            // Match field names directly on ASCII bytes: "data", "id", "event", "retry"
-            if fieldLen == 4 && raw[0] == 0x64 && raw[1] == 0x61 && raw[2] == 0x74 && raw[3] == 0x61 { // "data"
-                let value = String(decoding: valueSlice, as: UTF8.self)
-                let separatorSize = hasData ? 1 : 0
-                if dataBuffer.utf8.count + separatorSize + value.utf8.count > MAX_SSE_EVENT_DATA_SIZE {
-                    abort(code: -2003, message: "SSE event data exceeded maximum limit of \(MAX_SSE_EVENT_DATA_SIZE) bytes")
-                    return
-                }
-                if hasData {
-                    dataBuffer.append("\n")
-                    dataBuffer.append(value)
-                } else {
-                    dataBuffer = value
-                    hasData = true
-                }
-            } else if fieldLen == 2 && raw[0] == 0x69 && raw[1] == 0x64 { // "id"
-                // WHATWG: If field value contains a U+0000 NULL character, the field must be ignored.
-                let value = String(decoding: valueSlice, as: UTF8.self)
-                if !value.contains("\0") {
-                    lastEventId = value.isEmpty ? nil : value
-                    delegate?.parserDidUpdateLastEventId(lastEventId)
-                }
-            } else if fieldLen == 5 && raw[0] == 0x65 && raw[1] == 0x76 && raw[2] == 0x65 && raw[3] == 0x6E && raw[4] == 0x74 { // "event"
-                eventType = valueSlice.isEmpty ? nil : String(decoding: valueSlice, as: UTF8.self)
-            } else if fieldLen == 5 && raw[0] == 0x72 && raw[1] == 0x65 && raw[2] == 0x74 && raw[3] == 0x72 && raw[4] == 0x79 { // "retry"
-                if !valueSlice.isEmpty && valueSlice.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) {
-                    let value = String(decoding: valueSlice, as: UTF8.self)
-                    if let retryVal = Int64(value) {
-                        delegate?.parserDidReceiveRetry(retryMs: retryVal)
-                    }
-                }
+        case "id":
+            // WHATWG: If field value contains a U+0000 NULL character, the field must be ignored.
+            if !value.contains("\0") {
+                lastEventId = value.isEmpty ? nil : value
+                delegate?.parserDidUpdateLastEventId(lastEventId)
             }
-            // Unrecognized fields are ignored per WHATWG specification without allocating Strings
+        case "event":
+            eventType = value.isEmpty ? nil : value
+        case "retry":
+            if !value.isEmpty && value.allSatisfy({ $0.isASCII && $0.isNumber }), let retryVal = Int64(value), retryVal >= 0 {
+                delegate?.parserDidReceiveRetry(retryMs: retryVal)
+            }
+        default:
+            // Unrecognized fields are ignored per WHATWG specification
+            break
         }
     }
 }
@@ -691,8 +680,7 @@ enum SseConnectionHandler {
         delegate: SseConnectionDelegate,
         attemptVersion: Int,
         dispatcher: SseDispatcher,
-        protocolClasses: [AnyClass]? = nil,
-        request: URLRequest? = nil
+        protocolClasses: [AnyClass]? = nil
     ) -> SseEventSource {
         let sessionConfig = URLSessionConfiguration.default
         let rawReadTimeout = (config.readTimeoutMs ?? 300000.0) / 1000.0
