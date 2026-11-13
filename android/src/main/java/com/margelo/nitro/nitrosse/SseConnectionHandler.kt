@@ -44,7 +44,7 @@ class InvalidContentTypeException(message: String) : IOException(message)
  * Exception indicating an SSE parser resource limit violation (line length or accumulated event data size).
  * Typed counterpart of iOS NitroSse error codes -2002 / -2003; treated as fatal (no reconnect).
  */
-class SseParserLimitException(message: String) : IOException(message)
+internal class SseParserLimitException(message: String) : IOException(message)
 
 /**
  * Interface representing an active SSE stream connection that can be cancelled.
@@ -86,7 +86,6 @@ internal class SseEventReader(private val source: BufferedSource) {
         fun onLinesParsed(count: Int) {}
     }
 
-    private var firstDataLine: String? = null
     private val dataBuffer = StringBuilder()
     private var hasData = false
     private var eventType: String? = null
@@ -155,9 +154,6 @@ internal class SseEventReader(private val source: BufferedSource) {
 
             scanned = buffer.size
             if (!source.request(buffer.size + 1)) {
-                if (buffer.size > MAX_SSE_LINE_LENGTH) {
-                    throw SseParserLimitException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
-                }
                 return if (buffer.size > 0) buffer.readUtf8() else null
             }
         }
@@ -177,7 +173,6 @@ internal class SseEventReader(private val source: BufferedSource) {
                 if (linesParsedInEvent > 0) {
                     callback.onLinesParsed(linesParsedInEvent)
                 }
-                firstDataLine = null
                 dataBuffer.setLength(0)
                 hasData = false
                 eventType = null
@@ -187,13 +182,10 @@ internal class SseEventReader(private val source: BufferedSource) {
             if (line.isEmpty()) {
                 if (hasData) {
                     callback.onLinesParsed(linesParsedInEvent)
-                    val data = firstDataLine ?: dataBuffer.toString()
+                    val data = dataBuffer.toString()
                     val id = lastEventId
                     val type = eventType
-                    firstDataLine = null
-                    if (dataBuffer.isNotEmpty()) {
-                        dataBuffer.setLength(0)
-                    }
+                    dataBuffer.setLength(0)
                     hasData = false
                     eventType = null
                     callback.onEvent(id, type, data)
@@ -207,47 +199,39 @@ internal class SseEventReader(private val source: BufferedSource) {
                 return true
             } else {
                 val colonIndex = line.indexOf(':')
-                val fieldLen = if (colonIndex != -1) colonIndex else line.length
-                val valueStart = if (colonIndex != -1) {
-                    if (colonIndex + 1 < line.length && line[colonIndex + 1] == ' ') colonIndex + 2 else colonIndex + 1
+                val field: String
+                val value: String
+                if (colonIndex != -1) {
+                    field = line.substring(0, colonIndex)
+                    val valueStart = if (colonIndex + 1 < line.length && line[colonIndex + 1] == ' ') colonIndex + 2 else colonIndex + 1
+                    value = if (valueStart < line.length) line.substring(valueStart) else ""
                 } else {
-                    line.length
+                    field = line
+                    value = ""
                 }
-
-                when {
-                    fieldLen == 4 && line.startsWith("data") -> {
-                        val value = if (valueStart < line.length) line.substring(valueStart) else ""
-                        val currentLength = if (!hasData) 0 else firstDataLine?.length ?: dataBuffer.length
+                when (field) {
+                    "data" -> {
                         // Account for the '\n' joining this line to the previous ones (parity with iOS / TypeScript).
                         val separatorSize = if (hasData) 1 else 0
-                        if (currentLength + separatorSize + value.length > MAX_SSE_EVENT_DATA_SIZE) {
+                        if (dataBuffer.length + separatorSize + value.length > MAX_SSE_EVENT_DATA_SIZE) {
                             throw SseParserLimitException("SSE event data exceeded maximum limit of $MAX_SSE_EVENT_DATA_SIZE characters")
                         }
-                        if (!hasData) {
-                            firstDataLine = value
-                            hasData = true
-                        } else {
-                            if (firstDataLine != null) {
-                                dataBuffer.setLength(0)
-                                dataBuffer.append(firstDataLine)
-                                firstDataLine = null
-                            }
-                            dataBuffer.append('\n').append(value)
+                        if (hasData) {
+                            dataBuffer.append('\n')
                         }
+                        dataBuffer.append(value)
+                        hasData = true
                     }
-                    fieldLen == 2 && line.startsWith("id") -> {
-                        val value = if (valueStart < line.length) line.substring(valueStart) else ""
+                    "id" -> {
                         if (!value.contains('\u0000')) {
                             lastEventId = if (value.isEmpty()) null else value
                             callback.onIdUpdate(lastEventId)
                         }
                     }
-                    fieldLen == 5 && line.startsWith("event") -> {
-                        val value = if (valueStart < line.length) line.substring(valueStart) else ""
+                    "event" -> {
                         eventType = if (value.isEmpty()) null else value
                     }
-                    fieldLen == 5 && line.startsWith("retry") -> {
-                        val value = if (valueStart < line.length) line.substring(valueStart) else ""
+                    "retry" -> {
                         // WHATWG SSE: If field value consists solely of ASCII digits 0-9, set reconnection time. Otherwise ignore.
                         if (value.isNotEmpty() && value.all { it in '0'..'9' }) {
                             val retryMs = value.toLongOrNull()
@@ -256,7 +240,6 @@ internal class SseEventReader(private val source: BufferedSource) {
                             }
                         }
                     }
-                    // Unrecognized fields are ignored without allocating field/value substrings
                 }
             }
         }
