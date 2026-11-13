@@ -75,6 +75,8 @@ internal class SseEventParser {
     private var hasData: Bool = false
     private var eventType: String? = nil
     private var lastEventId: String? = nil
+    private var lastEventIdBuffer: String? = nil
+    private var idUpdatedInCurrentEvent: Bool = false
     private var isAtStreamStart: Bool = true
     /// Set once a resource limit violation (-2002 / -2003) is reported; all further input is ignored
     /// until `reset()`, mirroring `_aborted` in the TypeScript parser and `SseParserLimitException` on Android.
@@ -82,6 +84,7 @@ internal class SseEventParser {
     
     init(initialLastEventId: String? = nil) {
         self.lastEventId = initialLastEventId
+        self.lastEventIdBuffer = initialLastEventId
     }
     
     func reset(initialLastEventId: String? = nil) {
@@ -90,6 +93,8 @@ internal class SseEventParser {
         hasData = false
         eventType = nil
         lastEventId = initialLastEventId
+        lastEventIdBuffer = initialLastEventId
+        idUpdatedInCurrentEvent = false
         isAtStreamStart = true
         isAborted = false
     }
@@ -101,6 +106,9 @@ internal class SseEventParser {
         buffer.removeAll()
         dataBuffer = ""
         hasData = false
+        eventType = nil
+        lastEventIdBuffer = lastEventId
+        idUpdatedInCurrentEvent = false
         delegate?.parserDidFail(error: NSError(domain: "NitroSse", code: code, userInfo: [NSLocalizedDescriptionKey: message]))
     }
     
@@ -111,6 +119,8 @@ internal class SseEventParser {
         dataBuffer = ""
         hasData = false
         eventType = nil
+        lastEventIdBuffer = lastEventId
+        idUpdatedInCurrentEvent = false
     }
     
     func feed(data: Data) {
@@ -266,6 +276,11 @@ internal class SseEventParser {
     
     private func processLine(_ line: String) {
         if line.isEmpty {
+            if idUpdatedInCurrentEvent {
+                lastEventId = lastEventIdBuffer
+                idUpdatedInCurrentEvent = false
+                delegate?.parserDidUpdateLastEventId(lastEventId)
+            }
             // Empty line dispatches the current event per WHATWG specification
             if hasData {
                 let eventData = dataBuffer
@@ -277,6 +292,9 @@ internal class SseEventParser {
                 eventType = nil
                 
                 delegate?.parserDidReceiveEvent(id: id, type: type, data: eventData)
+            } else {
+                // WHATWG SSE: Dispatching an empty event still resets the event type buffer
+                eventType = nil
             }
             return
         }
@@ -320,8 +338,8 @@ internal class SseEventParser {
         case "id":
             // WHATWG: If field value contains a U+0000 NULL character, the field must be ignored.
             if !value.contains("\0") {
-                lastEventId = value.isEmpty ? nil : value
-                delegate?.parserDidUpdateLastEventId(lastEventId)
+                lastEventIdBuffer = value.isEmpty ? nil : value
+                idUpdatedInCurrentEvent = true
             }
         case "event":
             eventType = value.isEmpty ? nil : value

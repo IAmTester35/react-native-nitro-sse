@@ -9,6 +9,7 @@ final class NitroSseWireProtocolTests: XCTestCase {
         var events: [(id: String?, type: String?, data: String)] = []
         var comments: [String] = []
         var retries: [Int64] = []
+        var idUpdates: [String?] = []
         var chronologicalItems: [String] = []
         var failedError: Error?
         
@@ -25,6 +26,10 @@ final class NitroSseWireProtocolTests: XCTestCase {
         func parserDidReceiveRetry(retryMs: Int64) {
             retries.append(retryMs)
             chronologicalItems.append("retry:\(retryMs)")
+        }
+        
+        func parserDidUpdateLastEventId(_ id: String?) {
+            idUpdates.append(id)
         }
         
         func parserDidFail(error: Error) {
@@ -434,10 +439,41 @@ final class NitroSseWireProtocolTests: XCTestCase {
         // Before EOF, no event dispatched yet because of missing blank line
         XCTAssertEqual(delegate.events.count, 0)
 
-        // WHATWG SSE: EOF discards pending incomplete data event
+        // WHATWG SSE: EOF discards pending incomplete data event and uncommitted id
         parser.endOfStream()
 
         XCTAssertEqual(delegate.events.count, 0)
+        XCTAssertTrue(delegate.idUpdates.isEmpty)
+    }
+
+    func testBlankLineWithoutDataResetsEventTypeAndCommitsId() {
+        let parser = SseEventParser()
+        let delegate = MockParserDelegate()
+        parser.delegate = delegate
+
+        let raw = "event: ping\nid: 42\n\ndata: hello\n\n"
+        parser.feed(data: raw.data(using: .utf8)!)
+
+        XCTAssertEqual(delegate.idUpdates, ["42"])
+        XCTAssertEqual(delegate.events.count, 1)
+        XCTAssertEqual(delegate.events[0].id, "42")
+        XCTAssertNil(delegate.events[0].type)
+        XCTAssertEqual(delegate.events[0].data, "hello")
+    }
+
+    func testUncommittedIdDoesNotPersistAcrossEndOfStream() {
+        let parser = SseEventParser()
+        let delegate = MockParserDelegate()
+        parser.delegate = delegate
+
+        parser.feed(data: "id: 99\ndata: partial\n".data(using: .utf8)!)
+        parser.endOfStream()
+        parser.feed(data: "data: next\n\n".data(using: .utf8)!)
+
+        XCTAssertTrue(delegate.idUpdates.isEmpty)
+        XCTAssertEqual(delegate.events.count, 1)
+        XCTAssertNil(delegate.events[0].id)
+        XCTAssertEqual(delegate.events[0].data, "next")
     }
 
     func testBareCarriageReturnAcrossChunkBoundaryWhenNextChunkDoesNotStartWithLf() {

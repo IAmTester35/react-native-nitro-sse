@@ -254,6 +254,25 @@ class SseEventReaderTest {
         // WHATWG SSE: EOF must discard incomplete event without trailing empty line
         assertFalse(reader.processNextEvent(callback))
         assertEquals(0, callback.events.size)
+        assertTrue(callback.idUpdates.isEmpty())
+    }
+
+    @Test
+    fun testBlankLineWithoutDataResetsEventTypeAndCommitsId() {
+        val buffer = Buffer()
+        buffer.writeUtf8("event: ping\nid: 42\n\ndata: hello\n\n")
+
+        val reader = SseEventReader(buffer)
+        val callback = RecordingCallback()
+
+        assertTrue(reader.processNextEvent(callback))
+        assertFalse(reader.processNextEvent(callback))
+
+        assertEquals(listOf("42"), callback.idUpdates)
+        assertEquals(1, callback.events.size)
+        assertEquals("42", callback.events[0].id)
+        assertNull(callback.events[0].type)
+        assertEquals("hello", callback.events[0].data)
     }
 
     @Test
