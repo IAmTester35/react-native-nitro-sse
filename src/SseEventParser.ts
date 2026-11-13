@@ -23,44 +23,6 @@ const CR = 0x0d; // 13
 const SPACE = 0x20; // 32
 const COLON = 0x3a; // 58
 
-/**
- * Checks if line starts with literal 'data:' ('d'=100, 'a'=97, 't'=116, 'a'=97, ':'=58)
- */
-function isDataPrefix(line: string): boolean {
-  return (
-    line.charCodeAt(0) === 100 &&
-    line.charCodeAt(1) === 97 &&
-    line.charCodeAt(2) === 116 &&
-    line.charCodeAt(3) === 97 &&
-    line.charCodeAt(4) === COLON
-  );
-}
-
-/**
- * Checks if line starts with literal 'event:' ('e'=101, 'v'=118, 'e'=101, 'n'=110, 't'=116, ':'=58)
- */
-function isEventPrefix(line: string): boolean {
-  return (
-    line.charCodeAt(0) === 101 &&
-    line.charCodeAt(1) === 118 &&
-    line.charCodeAt(2) === 101 &&
-    line.charCodeAt(3) === 110 &&
-    line.charCodeAt(4) === 116 &&
-    line.charCodeAt(5) === COLON
-  );
-}
-
-/**
- * Checks if line starts with literal 'id:' ('i'=105, 'd'=100, ':'=58)
- */
-function isIdPrefix(line: string): boolean {
-  return (
-    line.charCodeAt(0) === 105 &&
-    line.charCodeAt(1) === 100 &&
-    line.charCodeAt(2) === COLON
-  );
-}
-
 export class SseEventParser {
   private _delegate: SseEventParserDelegate;
   private _pendingFragments: string[] = [];
@@ -308,31 +270,6 @@ export class SseEventParser {
       return;
     }
 
-    // Fast-path: 'data:' prefix
-    if (isDataPrefix(line)) {
-      const value =
-        line.charCodeAt(5) === SPACE ? line.slice(6) : line.slice(5);
-      this._appendData(value);
-      return;
-    }
-
-    // Fast-path: 'event:' prefix
-    if (isEventPrefix(line)) {
-      const value =
-        line.charCodeAt(6) === SPACE ? line.slice(7) : line.slice(6);
-      this._handleEvent(value);
-      return;
-    }
-
-    // Fast-path: 'id:' prefix
-    if (isIdPrefix(line)) {
-      const value =
-        line.charCodeAt(3) === SPACE ? line.slice(4) : line.slice(3);
-      this._handleId(value);
-      return;
-    }
-
-    // Fallback parser for 'retry:', colonless fields, or custom fields
     const colonIndex = line.indexOf(':');
     let field: string;
     let value: string;
