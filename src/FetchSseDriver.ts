@@ -137,7 +137,7 @@ class SseReconnectStrategy {
 /**
  * Web SSE Driver executing server-sent events using WHATWG fetch(), ReadableStream, and TextDecoder.
  */
-export class FetchSseDriver implements SseDriver {
+export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
   private _config?: SseConfig;
   private _onBeforeRequest?: () => Promise<Record<string, string>>;
   private _dispatchEvents: (events: SseEvent[]) => void;
@@ -706,13 +706,8 @@ export class FetchSseDriver implements SseDriver {
     this._updateState('open');
     this._pushEvent({ type: 'open', statusCode });
 
-    // 5. Initialize streaming reader and parser.
-    // The parser gets a delegate bound to this attempt, so late callbacks from
-    // an old connection are dropped instead of leaking into a newer one.
-    const parser = new SseEventParser(
-      this._createParserDelegate(attemptVersion),
-      this._lastProcessedId
-    );
+    // 5. Initialize streaming reader and parser
+    const parser = new SseEventParser(this, this._lastProcessedId);
     this._activeParser = parser;
     const reader = response.body.getReader();
     this._activeReader = reader;
@@ -997,42 +992,15 @@ export class FetchSseDriver implements SseDriver {
   }
 
   // =========================================================================
-  // Parser Delegate
+  // SseEventParserDelegate Implementation
   // =========================================================================
 
-  /**
-   * Builds the delegate handed to a SseEventParser. Every callback is wrapped
-   * by a single staleness check tied to `attemptVersion`, so:
-   *  - nothing is dispatched after stop() / failAndStop();
-   *  - late callbacks from a previous connection (after reconnect/restart)
-   *    can never touch the current connection's state.
-   */
-  private _createParserDelegate(
-    attemptVersion: number
-  ): SseEventParserDelegate {
-    const guard =
-      <A extends unknown[]>(handler: (...args: A) => void) =>
-      (...args: A): void => {
-        if (!this._isStale(attemptVersion)) {
-          handler(...args);
-        }
-      };
-
-    return {
-      onEvent: guard(this._handleEvent.bind(this)),
-      onComment: guard(this._handleComment.bind(this)),
-      onRetry: guard(this._handleRetry.bind(this)),
-      onIdUpdate: guard(this._handleIdUpdate.bind(this)),
-      onParseError: guard(this._handleParseError.bind(this)),
-      onLinesParsed: guard(this._handleLinesParsed.bind(this)),
-    };
-  }
-
-  private _handleEvent(
+  onEvent(
     id: string | undefined,
     type: string | undefined,
     data: string
   ): void {
+    if (!this._isRunning) return;
     const now = Date.now();
     this._lastEventTime = now;
     this._recordActivity(now);
@@ -1067,7 +1035,8 @@ export class FetchSseDriver implements SseDriver {
     });
   }
 
-  private _handleComment(comment: string): void {
+  onComment(comment: string): void {
+    if (!this._isRunning) return;
     const now = Date.now();
     this._lastHeartbeatTime = now;
     this._recordActivity(now);
@@ -1080,25 +1049,29 @@ export class FetchSseDriver implements SseDriver {
     });
   }
 
-  private _handleRetry(retryMs: number): void {
+  onRetry(retryMs: number): void {
+    if (!this._isRunning) return;
     this._serverRetryDelayMs = retryMs;
     this._reconnectStrategy.updateRetryInterval(retryMs);
   }
 
-  private _handleIdUpdate(id: string | undefined): void {
+  onIdUpdate(id: string | undefined): void {
+    if (!this._isRunning) return;
     if (id !== undefined && id !== this._lastProcessedId) {
       this._totalBytesReceived += getUtf8ByteCount(id);
     }
     this._lastProcessedId = id;
   }
 
-  private _handleParseError(error: Error): void {
+  onParseError(error: Error): void {
+    if (!this._isRunning) return;
     this._parseErrors++;
     this._disconnectReason = 'parser_error';
     this._failAndStop(`SSE parser error: ${error.message}`);
   }
 
-  private _handleLinesParsed(count: number): void {
+  onLinesParsed(count: number): void {
+    if (!this._isRunning) return;
     this._linesParsed += count;
   }
 
