@@ -1538,6 +1538,98 @@ class NitroSseCoordinatorTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer token123")
         XCTAssertNil(request.value(forHTTPHeaderField: "Accept-Encoding"), "Accept-Encoding must be stripped to prevent raw compression leaks")
     }
+
+    func testInterceptorResolveAfterTimeoutFiredIsBlockedByTimeoutCancellableGuard() {
+        let dispatcher = MockSseDispatcher()
+        dispatcher.executeImmediately = false
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig().copyWith(
+            batchingIntervalMs: 0.0,
+            connectionTimeoutMs: 5000,
+            retryIntervalMs: 10000,
+            jitterFactor: 0.0
+        )
+
+        let outerPromise = Promise<Promise<Dictionary<String, String>>>()
+        let innerPromise = Promise<Dictionary<String, String>>()
+        let interceptor = { () -> Promise<Promise<Dictionary<String, String>>> in
+            return outerPromise
+        }
+
+        var emittedEvents: [SseEvent] = []
+        try! sse.setup(config: config, onEvent: { events in
+            emittedEvents.append(contentsOf: events)
+        }, onBeforeRequest: interceptor)
+        dispatcher.executeAllPendingBlocks()
+
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+
+        let initialVersion = sse.connectionAttemptVersion
+        XCTAssertEqual(initialVersion, 1)
+        XCTAssertEqual(try! sse.getStats().connectionAttempts, 0)
+
+        // Fire the 5.0s interceptor timeout block; scheduleAutomaticReconnect schedules a 10.0s reconnect block without running it.
+        dispatcher.executeDelayedBlocks()
+        dispatcher.executeAllPendingBlocks()
+
+        XCTAssertEqual(try! sse.getState(), .reconnecting)
+        XCTAssertEqual(sse.connectionAttemptVersion, initialVersion + 1)
+        XCTAssertTrue(
+            emittedEvents.contains { $0.type == .error && $0.message?.contains("onBeforeRequest interceptor timed out") == true },
+            "Timeout error event should be emitted"
+        )
+
+        // Resolve the pending interceptor promise after timeout has already fired.
+        outerPromise.resolve(withResult: innerPromise)
+        innerPromise.resolve(withResult: ["Authorization": "Bearer late-token"])
+        dispatcher.executeAllPendingBlocks()
+
+        XCTAssertEqual(try! sse.getStats().connectionAttempts, 0, "Late interceptor resolution after timeout must not establish a connection")
+        XCTAssertEqual(try! sse.getState(), .reconnecting)
+
+        sse.stop()
+        dispatcher.executeAllPendingBlocks()
+    }
+
+    func testInterceptorStopMidwayBlocksLateResolution() {
+        let dispatcher = MockSseDispatcher()
+        dispatcher.executeImmediately = false
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig().copyWith(batchingIntervalMs: 0.0)
+
+        let outerPromise = Promise<Promise<Dictionary<String, String>>>()
+        let innerPromise = Promise<Dictionary<String, String>>()
+        let interceptor = { () -> Promise<Promise<Dictionary<String, String>>> in
+            return outerPromise
+        }
+
+        try! sse.setup(config: config, onEvent: { _ in }, onBeforeRequest: interceptor)
+        dispatcher.executeAllPendingBlocks()
+
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+
+        XCTAssertTrue(sse.isConnected())
+        XCTAssertEqual(try! sse.getStats().connectionAttempts, 0)
+
+        // Stop midway before interceptor settles.
+        sse.stop()
+        dispatcher.executeAllPendingBlocks()
+
+        XCTAssertFalse(sse.isConnected())
+        XCTAssertEqual(try! sse.getState(), .closed)
+
+        // Resolve the pending interceptor promise after stop().
+        outerPromise.resolve(withResult: innerPromise)
+        innerPromise.resolve(withResult: ["Authorization": "Bearer after-stop"])
+        dispatcher.executeAllPendingBlocks()
+        dispatcher.executeDelayedBlocks()
+
+        XCTAssertEqual(try! sse.getStats().connectionAttempts, 0, "Interceptor resolution after stop() must not establish a connection")
+        XCTAssertFalse(sse.isConnected())
+        XCTAssertEqual(try! sse.getState(), .closed)
+    }
 }
 
 

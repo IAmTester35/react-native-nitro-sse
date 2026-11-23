@@ -170,16 +170,19 @@ export function useNitroSse<
   const hasValidUrlRef = useRef(hasValidUrl);
 
   // Callback ref holding the latest handler references across renders
-  const callbacksRef = useRef<{
-    onMessage?: (event: SseEvent<TMessage>) => void;
-    onError?: (event: SseEvent) => void;
-    onOpen?: (event: SseEvent) => void;
-    onClose?: (event: SseEvent) => void;
-    onHeartbeat?: (event: SseEvent) => void;
-    onStateChange?: (state: SseState) => void;
-    events?: { [K in keyof TEvents]?: (event: SseEvent<TEvents[K]>) => void };
-    onBeforeRequest?: () => Promise<Record<string, string>>;
-  }>({
+  const callbacksRef = useRef<
+    Pick<
+      UseNitroSseOptions<TEvents, TMessage>,
+      | 'onMessage'
+      | 'onError'
+      | 'onOpen'
+      | 'onClose'
+      | 'onHeartbeat'
+      | 'onStateChange'
+      | 'events'
+      | 'onBeforeRequest'
+    >
+  >({
     onMessage,
     onError,
     onOpen,

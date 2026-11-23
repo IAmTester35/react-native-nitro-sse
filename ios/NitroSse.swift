@@ -494,28 +494,31 @@ class NitroSse: HybridNitroSseSpec {
                 self.handleInterceptorError(error, attemptVersion: attemptVersion)
             }
 
-            let safeHandleError: (Error) -> Void = { [weak self] error in
+            let settleInterceptor: (@escaping (NitroSse) -> Void) -> Void = { [weak self] action in
                 self?.dispatcher.async { [weak self] in
                     guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion, self.interceptorTimeoutCancellable != nil else { return }
                     self.interceptorTimeoutCancellable?.cancel()
                     self.interceptorTimeoutCancellable = nil
-                    self.handleInterceptorError(error, attemptVersion: attemptVersion)
+                    action(self)
                 }
             }
 
-            interceptor().then { [weak self] promise2 in
-                promise2.then { [weak self] newHeaders in
-                    self?.dispatcher.async { [weak self] in
-                        guard let self = self, self.isRunning, attemptVersion == self.connectionAttemptVersion, self.interceptorTimeoutCancellable != nil else { return }
-                        self.interceptorTimeoutCancellable?.cancel()
-                        self.interceptorTimeoutCancellable = nil
-                        let baseConfig = self.config ?? capturedConfig
+            let safeHandleError: (Error) -> Void = { error in
+                settleInterceptor { strongSelf in
+                    strongSelf.handleInterceptorError(error, attemptVersion: attemptVersion)
+                }
+            }
+
+            interceptor().then { promise2 in
+                promise2.then { newHeaders in
+                    settleInterceptor { strongSelf in
+                        let baseConfig = strongSelf.config ?? capturedConfig
                         var mergedHeaders = baseConfig.headers ?? [:]
                         for (k, v) in newHeaders {
                             mergedHeaders[k] = v
                         }
                         let connectionConfig = baseConfig.copyWith(headers: mergedHeaders)
-                        self.performEstablishConnection(attemptVersion: attemptVersion, connectionConfig: connectionConfig)
+                        strongSelf.performEstablishConnection(attemptVersion: attemptVersion, connectionConfig: connectionConfig)
                     }
                 }.catch(safeHandleError)
             }.catch(safeHandleError)
