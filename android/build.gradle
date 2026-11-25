@@ -111,7 +111,7 @@ android {
   }
 
   lint {
-    disable "GradleCompatible"
+    disable "GradleCompatible", "GradleDependency", "NewerVersionAvailable", "AndroidGradlePluginVersion"
   }
 
   compileOptions {
