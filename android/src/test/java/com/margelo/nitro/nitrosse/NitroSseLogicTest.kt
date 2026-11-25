@@ -1,19 +1,28 @@
 package com.margelo.nitro.nitrosse
 
+import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
+import okio.Buffer
+import okio.BufferedSource
+import okio.Source
+import okio.Timeout
+import okio.buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -399,7 +408,7 @@ class NitroSseLogicTest {
                 receivedData = data
                 latch.countDown()
             }
-            override fun connectionDidFail(t: Throwable?, response: Response?, requestId: String) {}
+            override fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {}
             override fun connectionDidClose(requestId: String) {}
         }
 
@@ -513,6 +522,123 @@ class NitroSseLogicTest {
         // Invoking 3-param must route cleanly to 4-param
         delegate.connectionDidFail(Exception("test"), null, "req-1")
         assertTrue("3-parameter connectionDidFail must delegate to 4-parameter implementation", called4Param)
+    }
+
+    @Test
+    fun testReconnectStrategyOverflowWithZeroAndNonZeroRetryIntervalNeverReturnsInvalidDelay() {
+        val strategy = SseReconnectStrategy()
+
+        strategy.configure(0.0, 30000.0, 0.5, -1)
+        for (i in 0 until 1030) {
+            assertEquals("Attempt $i with retryIntervalMs=0 must clamp to 1000ms", 1000L, strategy.nextDelay(true))
+        }
+
+        strategy.configure(1000.0, 30000.0, 0.0, -1)
+        for (i in 0 until 1030) {
+            val delay = strategy.nextDelay(true)
+            assertTrue("Attempt $i delay ($delay) must stay within [1000, 30000]", delay in 1000L..30000L)
+        }
+    }
+
+    @Test
+    fun testErrorBodySkippedForUnusedStatusesAndPreservesPartialBodyOnIOException() {
+        val skippedCases = listOf(401 to null, 403 to null, 408 to null, 429 to null, 503 to "5")
+        for ((code, retryAfter) in skippedCases) {
+            var bodyReadAttempted = false
+            val trackingBody = object : ResponseBody() {
+                override fun contentType() = "text/plain".toMediaType()
+                override fun contentLength() = 11L
+                override fun source(): BufferedSource {
+                    val src = object : Source {
+                        override fun read(sink: Buffer, byteCount: Long): Long {
+                            bodyReadAttempted = true
+                            return -1L
+                        }
+                        override fun timeout() = Timeout.NONE
+                        override fun close() {}
+                    }
+                    return src.buffer()
+                }
+            }
+            val client = OkHttpClient.Builder()
+                .addInterceptor(Interceptor { chain ->
+                    val builder = Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(code)
+                        .message("Err")
+                        .body(trackingBody)
+                    if (retryAfter != null) {
+                        builder.header("Retry-After", retryAfter)
+                    }
+                    builder.build()
+                })
+                .build()
+
+            val latch = CountDownLatch(1)
+            var capturedBody: String? = "sentinel"
+            val handler = SseConnectionHandler(object : SseConnectionDelegate {
+                override fun connectionDidOpen(response: Response, requestId: String) {}
+                override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, requestId: String) {}
+                override fun connectionDidClose(requestId: String) {}
+                override fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {
+                    capturedBody = errorBody
+                    latch.countDown()
+                }
+            })
+            handler.createEventSource(client, Request.Builder().url(TEST_URL).build(), "req-skip-$code")
+            assertTrue(latch.await(5, TimeUnit.SECONDS))
+            assertFalse("Status $code should not read error body", bodyReadAttempted)
+            assertNull("Status $code should pass null errorBody", capturedBody)
+        }
+
+        // HTTP 500 with mid-stream IOException should preserve already-buffered partial error body
+        val partialErrorBody = object : ResponseBody() {
+            override fun contentType() = "text/plain".toMediaType()
+            override fun contentLength() = 64L
+            override fun source(): BufferedSource {
+                var emitted = false
+                val src = object : Source {
+                    override fun read(sink: Buffer, byteCount: Long): Long {
+                        if (!emitted) {
+                            emitted = true
+                            sink.writeUtf8("partial-500-err")
+                            return 15L
+                        }
+                        throw IOException("stream interrupted")
+                    }
+                    override fun timeout() = Timeout.NONE
+                    override fun close() {}
+                }
+                return src.buffer()
+            }
+        }
+        val client500 = OkHttpClient.Builder()
+            .addInterceptor(Interceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(500)
+                    .message("Internal Server Error")
+                    .body(partialErrorBody)
+                    .build()
+            })
+            .build()
+
+        val latch500 = CountDownLatch(1)
+        var captured500Body: String? = null
+        val handler500 = SseConnectionHandler(object : SseConnectionDelegate {
+            override fun connectionDidOpen(response: Response, requestId: String) {}
+            override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, requestId: String) {}
+            override fun connectionDidClose(requestId: String) {}
+            override fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {
+                captured500Body = errorBody
+                latch500.countDown()
+            }
+        })
+        handler500.createEventSource(client500, Request.Builder().url(TEST_URL).build(), "req-500")
+        assertTrue(latch500.await(5, TimeUnit.SECONDS))
+        assertEquals("partial-500-err", captured500Body)
     }
 }
 

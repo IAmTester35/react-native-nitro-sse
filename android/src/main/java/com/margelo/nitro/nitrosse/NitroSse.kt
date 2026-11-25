@@ -4,7 +4,6 @@ import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
-import android.util.Log
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.facebook.proguard.annotations.DoNotStrip
 import com.margelo.nitro.NitroModules
@@ -43,6 +42,7 @@ import okio.utf8Size
  *   cross-thread visibility and atomic state transitions for lifecycle flags ([isRunning], [requestId]).
  */
 @DoNotStrip
+@Suppress("TooManyFunctions", "LargeClass")
 class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDelegate {
 
     // Secondary constructor for unit testing to inject virtual-time dispatchers without spawning HandlerThreads
@@ -123,9 +123,33 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     private val mainDispatcher = AndroidSseDispatcher(Handler(Looper.getMainLooper()))
 
     companion object {
-        private const val TAG = "NitroSse"
         private const val NETWORK_CHANGE_DEBOUNCE_MS = 1000L
         private const val DEFAULT_MAX_AUTH_RETRIES = 3
+        private const val DEFAULT_MAX_BUFFER_SIZE = 1000
+        private const val DEFAULT_RETRY_INTERVAL_MS = 1000.0
+        private const val DEFAULT_MAX_RETRY_INTERVAL_MS = 30000.0
+        private const val DEFAULT_JITTER_FACTOR = 0.5
+        private const val DEFAULT_CONNECT_TIMEOUT_MS = 15000.0
+        private const val DEFAULT_READ_TIMEOUT_MS = 300000.0
+        private const val RETRY_AFTER_JITTER_BASE_MS = 500
+        private const val RETRY_AFTER_JITTER_BOUND_MS = 1001
+        private const val MILLIS_PER_SECOND = 1000L
+        private const val HTTP_OK = 200
+        private const val HTTP_OK_DOUBLE = 200.0
+        private const val HTTP_NO_CONTENT = 204
+        private const val HTTP_NO_CONTENT_DOUBLE = 204.0
+        private const val HTTP_SUCCESS_MAX = 299
+        private const val HTTP_BAD_REQUEST = 400
+        private const val HTTP_UNAUTHORIZED = 401
+        private const val HTTP_FORBIDDEN = 403
+        private const val HTTP_REQUEST_TIMEOUT = 408
+        private const val HTTP_TOO_MANY_REQUESTS = 429
+        private const val HTTP_TOO_MANY_REQUESTS_DOUBLE = 429.0
+        private const val HTTP_CLIENT_ERROR_MAX = 499
+        private const val HTTP_INTERNAL_ERROR = 500
+        private const val HTTP_SERVICE_UNAVAILABLE = 503
+        private const val STATUS_UNKNOWN = -1
+        private const val STATUS_UNKNOWN_DOUBLE = -1.0
     }
 
     override fun setup(
@@ -140,60 +164,82 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             this.decompressedBytesReceived = null
             this.sessionRawBytesOffset = 0.0
             if (this.lastProcessedId == null) {
-                this.lastProcessedId = config.headers?.entries?.firstOrNull { 
-                    it.key.equals("Last-Event-ID", ignoreCase = true) 
+                this.lastProcessedId = config.headers?.entries?.firstOrNull {
+                    it.key.equals("Last-Event-ID", ignoreCase = true)
                 }?.value
             }
-            
-            if (sseDispatcher == null) {
-                sseDispatcherThread = HandlerThread("NitroSseThread").apply { start() }
-                sseDispatcher = AndroidSseDispatcher(Handler(sseDispatcherThread!!.looper))
-            }
 
-            if (!::eventBuffer.isInitialized) {
-                eventBuffer = SseEventBuffer(onEvent, sseDispatcher)
-                eventBuffer.onFlushError = { e -> handleRuntimeOrFlushError(e) }
-            } else {
-                eventBuffer.setCallback(onEvent)
-            }
-            eventBuffer.configure(config.batchingIntervalMs ?: 0.0, config.maxBufferSize?.toInt() ?: 1000)
+            ensureDispatcherAndEventBuffer(config, onEvent)
 
             // Custom backoff guarantees cross-platform parity and lifecycle coordination.
             reconnectStrategy.configure(
-                config.retryIntervalMs ?: 1000.0,
-                config.maxRetryIntervalMs ?: 30000.0,
-                config.jitterFactor ?: 0.5,
-                (config.maxReconnectAttempts ?: -1.0).toInt()
+                config.retryIntervalMs ?: DEFAULT_RETRY_INTERVAL_MS,
+                config.maxRetryIntervalMs ?: DEFAULT_MAX_RETRY_INTERVAL_MS,
+                config.jitterFactor ?: DEFAULT_JITTER_FACTOR,
+                (config.maxReconnectAttempts ?: STATUS_UNKNOWN_DOUBLE).toInt()
             )
 
-            val baseBuilder = this.client?.newBuilder()
-                ?: OkHttpClient.Builder().addNetworkInterceptor(InspectorNetworkInterceptor())
-            this.client = baseBuilder
-                .connectTimeout((config.connectionTimeoutMs ?: 15000.0).toLong(), TimeUnit.MILLISECONDS)
-                .readTimeout((config.readTimeoutMs ?: 300000.0).toLong(), TimeUnit.MILLISECONDS)
-                .retryOnConnectionFailure(true)
-                .build()
-            
-            if (lifecycleManager == null) {
-                val weakThis = WeakReference(this)
-                lifecycleManager = SseLifecycleManager(
-                    lifecycleProvider = { ProcessLifecycleOwner.get().lifecycle },
-                    mainDispatcher = mainDispatcher,
-                    sseDispatcher = sseDispatcher!!,
-                    onBackground = { weakThis.get()?.handleAppBackground() },
-                    onForeground = { weakThis.get()?.handleAppForeground() }
-                )
-                lifecycleManager?.startObserving()
-            }
-            if (config.monitorNetwork != false) {
-                sseDispatcher?.post {
-                    startNetworkMonitoring()
-                }
-            } else {
-                sseDispatcher?.post {
-                    networkMonitor?.stop()
-                    networkMonitor = null
-                }
+            configureHttpClient(config)
+            configureLifecycleAndNetwork(config)
+        }
+    }
+
+    private fun ensureDispatcherAndEventBuffer(
+        config: SseConfig,
+        onEvent: (events: Array<SseEvent>) -> Unit
+    ) {
+        if (sseDispatcher == null) {
+            sseDispatcherThread = HandlerThread("NitroSseThread").apply { start() }
+            sseDispatcher = AndroidSseDispatcher(Handler(sseDispatcherThread!!.looper))
+        }
+
+        if (!::eventBuffer.isInitialized) {
+            eventBuffer = SseEventBuffer(onEvent, sseDispatcher)
+            eventBuffer.onFlushError = { e -> handleRuntimeOrFlushError(e) }
+        } else {
+            eventBuffer.setCallback(onEvent)
+        }
+        eventBuffer.configure(
+            config.batchingIntervalMs ?: 0.0,
+            config.maxBufferSize?.toInt() ?: DEFAULT_MAX_BUFFER_SIZE
+        )
+    }
+
+    private fun configureHttpClient(config: SseConfig) {
+        val baseBuilder = this.client?.newBuilder()
+            ?: OkHttpClient.Builder().addNetworkInterceptor(InspectorNetworkInterceptor())
+        this.client = baseBuilder
+            .connectTimeout(
+                (config.connectionTimeoutMs ?: DEFAULT_CONNECT_TIMEOUT_MS).toLong(),
+                TimeUnit.MILLISECONDS
+            )
+            .readTimeout(
+                (config.readTimeoutMs ?: DEFAULT_READ_TIMEOUT_MS).toLong(),
+                TimeUnit.MILLISECONDS
+            )
+            .retryOnConnectionFailure(true)
+            .build()
+    }
+
+    private fun configureLifecycleAndNetwork(config: SseConfig) {
+        if (lifecycleManager == null) {
+            val weakThis = WeakReference(this)
+            val manager = SseLifecycleManager(
+                lifecycleProvider = { ProcessLifecycleOwner.get().lifecycle },
+                mainDispatcher = mainDispatcher,
+                sseDispatcher = sseDispatcher!!,
+                onBackground = { weakThis.get()?.handleAppBackground() },
+                onForeground = { weakThis.get()?.handleAppForeground() }
+            )
+            lifecycleManager = manager
+            manager.startObserving()
+        }
+        if (config.monitorNetwork != false) {
+            sseDispatcher?.post { startNetworkMonitoring() }
+        } else {
+            sseDispatcher?.post {
+                networkMonitor?.stop()
+                networkMonitor = null
             }
         }
     }
@@ -207,20 +253,22 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
 
     private fun startNetworkMonitoring() {
         val context = NitroModules.applicationContext ?: return
-        if (networkMonitor == null) {
+        val monitor = networkMonitor ?: run {
             val weakThis = WeakReference(this)
-            networkMonitor = SseNetworkMonitor(context, sseDispatcher) { isAvailable, interfaceChanged, capabilities ->
+            SseNetworkMonitor(context, sseDispatcher) { isAvailable, interfaceChanged, capabilities ->
                 weakThis.get()?.handleNetworkChange(isAvailable, interfaceChanged, capabilities)
-            }
+            }.also { networkMonitor = it }
         }
-        networkMonitor?.start()
+        monitor.start()
     }
 
-    internal fun handleNetworkChange(isAvailable: Boolean, interfaceChanged: Boolean, capabilities: NetworkCapabilities? = null) {
-        Log.d(TAG, "Network change: available=$isAvailable, interfaceChanged=$interfaceChanged")
+    internal fun handleNetworkChange(
+        isAvailable: Boolean,
+        interfaceChanged: Boolean,
+        capabilities: NetworkCapabilities? = null
+    ) {
         if (isAvailable && capabilities != null) {
             if (wasRunningBeforeNetworkLoss) {
-                Log.d(TAG, "Network restored. Resuming stream.")
                 cancelNetworkRestartDebounce()
                 wasRunningBeforeNetworkLoss = false
                 if (lifecycleManager?.isAppInBackground == true && !isBackgroundExecutionEnabled()) {
@@ -229,12 +277,10 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                     start()
                 }
             } else if (isRunning.get() && interfaceChanged) {
-                Log.d(TAG, "Network interface changed. Debouncing restart.")
                 cancelNetworkRestartDebounce()
                 val runnable = Runnable {
                     networkRestartRunnable = null
                     if (isRunning.get()) {
-                        Log.d(TAG, "Debounced network restart executing.")
                         restart()
                     }
                 }
@@ -244,7 +290,6 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         } else if (!isAvailable) {
             cancelNetworkRestartDebounce()
             if (isRunning.get()) {
-                Log.d(TAG, "Network lost. Hibernating.")
                 wasRunningBeforeNetworkLoss = true
                 hibernate()
             }
@@ -253,7 +298,6 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
 
     private fun handleAppForeground() {
         if (wasRunningBeforePaused) {
-            Log.d(TAG, "App foregrounded. Resuming NitroSse stream.")
             wasRunningBeforePaused = false
             start()
         }
@@ -262,10 +306,8 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     private fun handleAppBackground() {
         if (isRunning.get()) {
             if (isBackgroundExecutionEnabled()) {
-                Log.d(TAG, "App backgrounded. keeping connection alive.")
                 return
             }
-            Log.d(TAG, "App backgrounded. Hibernating.")
             wasRunningBeforePaused = true
             hibernate()
         }
@@ -357,14 +399,14 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     }
 
     override fun start() {
-        synchronized(this) { config }
-            ?: throw IllegalStateException("NitroSse not configured. Call setup() first.")
+        checkNotNull(synchronized(this) { config }) {
+            "NitroSse not configured. Call setup() first."
+        }
 
         if (!isRunning.compareAndSet(false, true)) {
             // If client is waiting in backoff reconnect loop, start() acts as an immediate "Retry Now",
             // cancelling pending backoff delay, resetting backoff counter, and attempting connection immediately.
             if (currentState.get() == SseState.RECONNECTING) {
-                Log.d(TAG, "start() invoked while reconnecting. Resetting backoff and retrying immediately.")
                 beginConnectionCycle()
             }
             return
@@ -404,48 +446,57 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         }
         
         if (interceptor != null) {
-            val interceptorCompleted = AtomicBoolean(false)
-            val timeoutMs = (currentConfig.connectionTimeoutMs ?: 15000.0).toLong()
-
-            val safeHandleError: (Throwable) -> Unit = { error ->
-                if (interceptorCompleted.compareAndSet(false, true)) {
-                    handleInterceptorError(error, version)
-                }
-            }
-
-            // Proactively cancel any previous in-flight interceptor timeout runnable
-            interceptorTimeoutRunnable?.let { sseDispatcher?.removeCallbacks(it) }
-            val timeoutRunnable = Runnable {
-                safeHandleError(Exception("onBeforeRequest timed out"))
-            }
-            interceptorTimeoutRunnable = timeoutRunnable
-
-            // Enforce timeout guard on JS onBeforeRequest promise to prevent connection hangs
-            sseDispatcher?.postDelayed(timeoutRunnable, timeoutMs)
-
-            try {
-                // Safe-calls (?.) protect against null/unmocked Promise chains in unit tests and JS bridging.
-                interceptor.invoke()?.then { promise2 ->
-                    promise2?.then { newHeaders ->
-                        sseDispatcher?.post {
-                            if (!isRunning.get() || version != connectionAttemptVersion.get()) return@post
-                            if (interceptorCompleted.compareAndSet(false, true)) {
-                                interceptorTimeoutRunnable?.let { sseDispatcher?.removeCallbacks(it) }
-                                interceptorTimeoutRunnable = null
-                                val connectionConfig = synchronized(this) {
-                                    val base = config ?: return@post
-                                    base.copy(headers = (base.headers ?: emptyMap()) + newHeaders)
-                                }
-                                executeConnection(version, connectionConfig)
-                            }
-                        }
-                    }?.catch(safeHandleError)
-                }?.catch(safeHandleError)
-            } catch (e: Throwable) {
-                safeHandleError(e)
-            }
+            executeWithInterceptor(interceptor, currentConfig, version)
         } else {
             executeConnection(version, null)
+        }
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun executeWithInterceptor(
+        interceptor: () -> Promise<Promise<Map<String, String>>>,
+        currentConfig: SseConfig,
+        version: Int
+    ) {
+        val interceptorCompleted = AtomicBoolean(false)
+        val timeoutMs = (currentConfig.connectionTimeoutMs ?: DEFAULT_CONNECT_TIMEOUT_MS).toLong()
+
+        val safeHandleError: (Throwable) -> Unit = { error ->
+            if (interceptorCompleted.compareAndSet(false, true)) {
+                handleInterceptorError(error, version)
+            }
+        }
+
+        // Proactively cancel any previous in-flight interceptor timeout runnable
+        interceptorTimeoutRunnable?.let { sseDispatcher?.removeCallbacks(it) }
+        val timeoutRunnable = Runnable {
+            safeHandleError(Exception("onBeforeRequest timed out"))
+        }
+        interceptorTimeoutRunnable = timeoutRunnable
+
+        // Enforce timeout guard on JS onBeforeRequest promise to prevent connection hangs
+        sseDispatcher?.postDelayed(timeoutRunnable, timeoutMs)
+
+        try {
+            // Safe-calls (?.) protect against null/unmocked Promise chains in unit tests and JS bridging.
+            interceptor.invoke()?.then { promise2 ->
+                promise2?.then { newHeaders ->
+                    sseDispatcher?.post {
+                        if (!isRunning.get() || version != connectionAttemptVersion.get()) return@post
+                        if (interceptorCompleted.compareAndSet(false, true)) {
+                            interceptorTimeoutRunnable?.let { sseDispatcher?.removeCallbacks(it) }
+                            interceptorTimeoutRunnable = null
+                            val connectionConfig = synchronized(this) {
+                                val base = config ?: return@post
+                                base.copy(headers = (base.headers ?: emptyMap()) + newHeaders)
+                            }
+                            executeConnection(version, connectionConfig)
+                        }
+                    }
+                }?.catch(safeHandleError)
+            }?.catch(safeHandleError)
+        } catch (e: Throwable) {
+            safeHandleError(e)
         }
     }
 
@@ -459,7 +510,6 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
 
     private fun handleRuntimeOrFlushError(t: Throwable?) {
         if (isJsDispatcherDestroyedError(t)) {
-            Log.w(TAG, "JS Dispatcher destroyed during event flush. Disposing NitroSse instance.")
             this.isDispatcherDestroyed = true
             dispose()
         }
@@ -475,24 +525,75 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             interceptorTimeoutRunnable = null
             
             if (isJsDispatcherDestroyedError(t)) {
-                Log.w(TAG, "JS Dispatcher destroyed during interceptor error. Disposing NitroSse instance.")
                 this.isDispatcherDestroyed = true
                 dispose()
                 return@post
             }
             
-            val maxRetries = synchronized(this@NitroSse) { config?.maxAuthRetries?.toInt() ?: DEFAULT_MAX_AUTH_RETRIES }
+            val maxRetries = synchronized(this@NitroSse) {
+                config?.maxAuthRetries?.toInt() ?: DEFAULT_MAX_AUTH_RETRIES
+            }
             val retries = consecutiveAuthErrors.incrementAndGet()
             if (retries > maxRetries) {
-                failAndStop("Auth retry limit reached ($maxRetries). Stopping.", -1.0)
+                failAndStop("Auth retry limit reached ($maxRetries). Stopping.", STATUS_UNKNOWN_DOUBLE)
                 return@post
             }
 
-            eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Interceptor Error: ${t?.message}", -1.0, null, null))
+            eventBuffer.push(
+                SseEvent(
+                    SseEventType.ERROR,
+                    null,
+                    null,
+                    null,
+                    null,
+                    "Interceptor Error: ${t?.message}",
+                    STATUS_UNKNOWN_DOUBLE,
+                    null,
+                    null
+                )
+            )
             scheduleReconnect(true, version)
         }
     }
 
+    private fun buildSseHttpRequest(
+        currentConfig: SseConfig,
+        currentLastId: String?,
+        newRequestId: String
+    ): Request {
+        // Set SSE headers explicitly for Network Inspector visibility and encoding control.
+        val requestBuilder = Request.Builder()
+            .url(currentConfig.url)
+            .header("Accept", "text/event-stream")
+            .header("Cache-Control", "no-cache")
+
+        // Populate config headers first, filtering out Last-Event-ID and Accept-Encoding
+        currentConfig.headers?.forEach { (k, v) ->
+            if (!k.equals("Last-Event-ID", ignoreCase = true) &&
+                !k.equals("Accept-Encoding", ignoreCase = true)
+            ) {
+                requestBuilder.header(k, v)
+            }
+        }
+
+        currentLastId?.let {
+            if (it.isNotEmpty()) requestBuilder.header("Last-Event-ID", it)
+        }
+
+        if (currentConfig.method == HttpMethod.POST) {
+            val customContentType = currentConfig.headers?.entries?.firstOrNull {
+                it.key.equals("Content-Type", ignoreCase = true)
+            }?.value
+            val mediaType = (customContentType ?: "application/json").toMediaType()
+            val body = (currentConfig.body ?: "").toRequestBody(mediaType)
+            requestBuilder.post(body)
+        }
+
+        requestBuilder.tag(String::class.java, newRequestId)
+        return requestBuilder.build()
+    }
+
+    @Suppress("TooGenericExceptionCaught")
     private fun executeConnection(version: Int, connectionConfig: SseConfig? = null) {
         val currentConfig: SseConfig
         val currentLastId: String?
@@ -524,34 +625,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         }
         
         try {
-            // Set SSE headers explicitly for Network Inspector visibility and encoding control.
-            val requestBuilder = Request.Builder()
-                .url(currentConfig.url)
-                .header("Accept", "text/event-stream")
-                .header("Cache-Control", "no-cache")
-            
-            // Populate config headers first, filtering out Last-Event-ID and Accept-Encoding
-            currentConfig.headers?.forEach { (k, v) -> 
-                if (!k.equals("Last-Event-ID", ignoreCase = true) && !k.equals("Accept-Encoding", ignoreCase = true)) {
-                    requestBuilder.header(k, v)
-                }
-            }
-
-            currentLastId?.let { 
-                if (it.isNotEmpty()) requestBuilder.header("Last-Event-ID", it) 
-            }
-
-            if (currentConfig.method == HttpMethod.POST) {
-                val customContentType = currentConfig.headers?.entries?.firstOrNull { 
-                    it.key.equals("Content-Type", ignoreCase = true) 
-                }?.value
-                val mediaType = (customContentType ?: "application/json").toMediaType()
-                val body = (currentConfig.body ?: "").toRequestBody(mediaType)
-                requestBuilder.post(body)
-            }
-
-            requestBuilder.tag(String::class.java, newRequestId)
-            val request = requestBuilder.build()
+            val request = buildSseHttpRequest(currentConfig, currentLastId, newRequestId)
             NetworkInspector.reportRequestStart(newRequestId, request)
             
             val newEventSource = connectionHandler.createEventSource(safeClient, request, newRequestId)
@@ -564,10 +638,9 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 }
             }
         } catch (e: Exception) {
-            // Standard Java Exception catch: handles IllegalArgumentException (URL/headers), NullPointerException,
-            // and IllegalStateException without catching/suppressing fatal JVM errors (e.g. OutOfMemoryError, VirtualMachineError).
-            Log.e(TAG, "Failed to create SSE connection request: ${e.message}", e)
-            failAndStop("Invalid connection request: ${e.message}", -1.0)
+            // Handles IllegalArgumentException (URL/headers), NullPointerException, and IllegalStateException
+            // without catching/suppressing fatal JVM errors (e.g. OutOfMemoryError, VirtualMachineError).
+            failAndStop("Invalid connection request: ${e.message}", STATUS_UNKNOWN_DOUBLE)
         }
     }
 
@@ -584,7 +657,19 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 connectedAt = System.currentTimeMillis().toDouble()
             }
             updateState(SseState.OPEN)
-            eventBuffer.push(SseEvent(SseEventType.OPEN, null, null, null, null, null, response.code.toDouble(), null, null))
+            eventBuffer.push(
+                SseEvent(
+                    SseEventType.OPEN,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    response.code.toDouble(),
+                    null,
+                    null
+                )
+            )
         }
     }
 
@@ -642,7 +727,9 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         val parsedData = if (currentConfig?.autoParseJSON == true) JsonUtils.parseJsonToAnyMap(data) else null
         sseDispatcher?.post {
             if (requestId != this@NitroSse.requestId) return@post
-            eventBuffer.push(SseEvent(SseEventType.MESSAGE, data, parsedData, id, type, null, 200.0, null, null))
+            eventBuffer.push(
+                SseEvent(SseEventType.MESSAGE, data, parsedData, id, type, null, HTTP_OK_DOUBLE, null, null)
+            )
         }
     }
 
@@ -657,7 +744,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             lastHeartbeatTime = now
             recordActivity(now)
         }
-        // TODO(breaking-change): In next major version, avoid pushing HEARTBEAT event across JSI; use internal watchdog or dedicated onHeartbeat callback to eliminate bridge overhead.
+        // Note (v4.0 roadmap): Avoid pushing HEARTBEAT event across JSI; use internal watchdog or onHeartbeat.
         sseDispatcher?.post {
             if (requestId != this@NitroSse.requestId) return@post
             eventBuffer.push(SseEvent(SseEventType.HEARTBEAT, null, null, null, null, comment, null, null, null))
@@ -688,88 +775,79 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         }
     }
 
-    override fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {
-        sseDispatcher?.post {
-            // Note on Stale Callback Protection:
-            // Android uses a unique UUID `requestId` per connection attempt alongside `connectionAttemptVersion`.
-            // When a connection fails, stops, or restarts, `this@NitroSse.requestId` is immediately cleared (set to null)
-            // or replaced with a new UUID. Any delayed or asynchronous error/close callbacks from a canceled/previous
-            // OkHttp socket are safely and strictly rejected by `if (requestId != this@NitroSse.requestId) return@post`.
-            if (requestId != this@NitroSse.requestId || !isRunning.get()) return@post
-            val statusCode = response?.code ?: -1
-            val isTimeout = t is SocketTimeoutException || t is InterruptedIOException || t?.message?.contains("timeout", ignoreCase = true) == true
-            val isParserLimit = t is SseParserLimitException
-            // Strict WHATWG SSE: permanently close without reconnecting on non-event-stream Content-Type (e.g. captive portal 200 HTML).
-            val isInvalidContentType = t is InvalidContentTypeException ||
-                (response != null && response.code in 200..299 && !(response.header("Content-Type")?.contains("text/event-stream", ignoreCase = true) ?: false))
+    private fun isTimeoutException(t: Throwable?): Boolean =
+        t is SocketTimeoutException ||
+            t is InterruptedIOException ||
+            t?.message?.contains("timeout", ignoreCase = true) == true
 
-            synchronized(this@NitroSse) {
-                connectedAt = null
-                if (statusCode != -1) {
-                    lastStatusCode = statusCode.toDouble()
-                }
-                lastErrorTime = System.currentTimeMillis().toDouble()
-                lastErrorCode = t?.javaClass?.simpleName ?: statusCode.toString()
-                
-                // Classification mirrors iOS (NitroSse.swift): invalid Content-Type is a server/protocol error.
-                if (statusCode >= 400 || statusCode == 204 || isInvalidContentType) {
-                    disconnectReason = SseDisconnectReason.SERVER_ERROR
-                } else if (isParserLimit) {
-                    disconnectReason = SseDisconnectReason.PARSER_ERROR
-                } else if (isTimeout) {
-                    disconnectReason = SseDisconnectReason.TIMEOUT
-                } else {
-                    disconnectReason = SseDisconnectReason.NETWORK_ERROR
-                }
-            }
-            
-            val currentRequestId = synchronized(this@NitroSse) {
-                val id = this@NitroSse.requestId
-                accumulateGzipRawBytesOffset(id)
-                this@NitroSse.requestId = null
-                id
-            }
-            currentRequestId?.let {
-                NetworkInspector.reportRequestFailed(it, false)
-                SseNetworkMetricsTracker.clear(it)
-            }
+    private fun isInvalidEventStreamResponse(t: Throwable?, response: Response?): Boolean {
+        val hasInvalidBodyType = response != null &&
+            response.code in HTTP_OK..HTTP_SUCCESS_MAX &&
+            response.header("Content-Type")?.contains("text/event-stream", ignoreCase = true) != true
+        return t is InvalidContentTypeException || hasInvalidBodyType
+    }
 
-            if (statusCode == 204) {
-                failAndStop("No Content (204). Stopping.", 204.0)
-                return@post
+    private fun recordFailureMetrics(
+        t: Throwable?,
+        statusCode: Int,
+        isInvalidContentType: Boolean,
+        isParserLimit: Boolean,
+        isTimeout: Boolean
+    ) {
+        synchronized(this) {
+            connectedAt = null
+            if (statusCode != STATUS_UNKNOWN) {
+                lastStatusCode = statusCode.toDouble()
             }
+            lastErrorTime = System.currentTimeMillis().toDouble()
+            lastErrorCode = t?.javaClass?.simpleName ?: statusCode.toString()
 
-            if (isInvalidContentType) {
-                failAndStop("Invalid Content-Type: expected text/event-stream. Stopping.", if (statusCode != -1) statusCode.toDouble() else null)
-                return@post
+            // Classification mirrors iOS (NitroSse.swift): invalid Content-Type is a server/protocol error.
+            disconnectReason = when {
+                statusCode >= HTTP_BAD_REQUEST || statusCode == HTTP_NO_CONTENT || isInvalidContentType ->
+                    SseDisconnectReason.SERVER_ERROR
+                isParserLimit -> SseDisconnectReason.PARSER_ERROR
+                isTimeout -> SseDisconnectReason.TIMEOUT
+                else -> SseDisconnectReason.NETWORK_ERROR
             }
+        }
+    }
 
-            // Parser resource violations (line length, event data size) are fatal and must not reconnect
-            if (isParserLimit) {
-                failAndStop(t?.message ?: "Resource limit exceeded. Stopping.", if (statusCode != -1) statusCode.toDouble() else null)
-                return@post
-            }
+    private fun clearFailedRequestAndReportInspector() {
+        val currentRequestId = synchronized(this) {
+            val id = this.requestId
+            accumulateGzipRawBytesOffset(id)
+            this.requestId = null
+            id
+        }
+        currentRequestId?.let {
+            NetworkInspector.reportRequestFailed(it, false)
+            SseNetworkMetricsTracker.clear(it)
+        }
+    }
 
-            val maxRetries = synchronized(this@NitroSse) { config?.maxAuthRetries?.toInt() ?: DEFAULT_MAX_AUTH_RETRIES }
-            // Handle 401/403 with async token refresh up to maxAuthRetries.
-            if (statusCode == 401 || statusCode == 403) {
-                val hasInterceptor = synchronized(this@NitroSse) { requestInterceptor != null }
-                if (!hasInterceptor) {
-                    failAndStop("Auth Error ($statusCode) - No interceptor provided. Stopping.", statusCode.toDouble())
-                    return@post
-                }
-                val retries = consecutiveAuthErrors.incrementAndGet()
-                if (retries > maxRetries) {
-                    failAndStop("Auth Error ($statusCode) - Retry limit reached ($maxRetries). Stopping.", statusCode.toDouble())
-                    return@post
-                }
-                eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Auth Error ($statusCode) - Retry $retries/$maxRetries. Refreshing token...", statusCode.toDouble(), null, null))
-                scheduleReconnect(true, connectionAttemptVersion.get())
-                return@post
-            }
-            
-            val isFatal = (statusCode in 400..499 && statusCode != 401 && statusCode != 403 && statusCode != 408 && statusCode != 429)
-            if (isFatal) {
+    private fun handleTerminalFailure(
+        t: Throwable?,
+        statusCode: Int,
+        errorBody: String?,
+        isInvalidContentType: Boolean
+    ): Boolean {
+        val statusDouble = if (statusCode != STATUS_UNKNOWN) statusCode.toDouble() else null
+        val isFatalClientError = statusCode in HTTP_BAD_REQUEST..HTTP_CLIENT_ERROR_MAX &&
+            statusCode != HTTP_UNAUTHORIZED &&
+            statusCode != HTTP_FORBIDDEN &&
+            statusCode != HTTP_REQUEST_TIMEOUT &&
+            statusCode != HTTP_TOO_MANY_REQUESTS
+        var handled = true
+        when {
+            statusCode == HTTP_NO_CONTENT ->
+                failAndStop("No Content (204). Stopping.", HTTP_NO_CONTENT_DOUBLE)
+            isInvalidContentType ->
+                failAndStop("Invalid Content-Type: expected text/event-stream. Stopping.", statusDouble)
+            t is SseParserLimitException ->
+                // Parser resource violations (line length, event data size) are fatal and must not reconnect
+                failAndStop(t.message, statusDouble)
+            isFatalClientError -> {
                 val sanitizedBody = errorBody?.trim()?.ifEmpty { null }
                 val finalMessage = if (sanitizedBody != null) {
                     "Fatal Error ($statusCode): $sanitizedBody"
@@ -777,42 +855,145 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                     "Fatal Error ($statusCode). Stopping."
                 }
                 failAndStop(finalMessage, statusCode.toDouble())
-                return@post
             }
+            else -> handled = false
+        }
+        return handled
+    }
 
-            // Schedule non-blocking Retry-After delay on dispatcher.
-            val retryAfterMillis = SseReconnectStrategy.extractRetryAfterMillis(response)
-            if ((statusCode == 429 || statusCode == 503) && retryAfterMillis != null) {
-                val maxInterval = synchronized(this@NitroSse) { (config?.maxRetryIntervalMs ?: 30000.0).toLong() }
-                val boundedRetryAfter = retryAfterMillis.coerceIn(0L, maxInterval)
-                val jitter = (500 + Random.nextInt(1001)).toLong()
-                val totalDelay = (boundedRetryAfter + jitter).coerceAtLeast(1000L)
-                eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Retry-After received: ${totalDelay / 1000}s", statusCode.toDouble(), totalDelay.toDouble(), null))
-                scheduleReconnect(true, connectionAttemptVersion.get(), totalDelay)
-                return@post
-            }
-
-            if (statusCode == 429) {
-                eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Rate Limited (429). Retrying with backoff...", 429.0, null, null))
+    private fun handleAuthFailure(statusCode: Int): Boolean {
+        if (statusCode != HTTP_UNAUTHORIZED && statusCode != HTTP_FORBIDDEN) return false
+        val hasInterceptor = synchronized(this) { requestInterceptor != null }
+        if (!hasInterceptor) {
+            failAndStop(
+                "Auth Error ($statusCode) - No interceptor provided. Stopping.",
+                statusCode.toDouble()
+            )
+        } else {
+            val maxRetries = synchronized(this) { config?.maxAuthRetries?.toInt() ?: DEFAULT_MAX_AUTH_RETRIES }
+            val retries = consecutiveAuthErrors.incrementAndGet()
+            if (retries > maxRetries) {
+                failAndStop(
+                    "Auth Error ($statusCode) - Retry limit reached ($maxRetries). Stopping.",
+                    statusCode.toDouble()
+                )
+            } else {
+                val message = "Auth Error ($statusCode) - Retry $retries/$maxRetries. Refreshing token..."
+                eventBuffer.push(
+                    SseEvent(SseEventType.ERROR, null, null, null, null, message, statusCode.toDouble(), null, null)
+                )
                 scheduleReconnect(true, connectionAttemptVersion.get())
-                return@post
             }
+        }
+        return true
+    }
+
+    private fun handleRetryAfterOrRateLimit(statusCode: Int, response: Response?): Boolean {
+        // Schedule non-blocking Retry-After delay on dispatcher.
+        val retryAfterMillis = SseReconnectStrategy.extractRetryAfterMillis(response)
+        val isRetryAfterStatus = statusCode == HTTP_TOO_MANY_REQUESTS || statusCode == HTTP_SERVICE_UNAVAILABLE
+        var handled = true
+        if (isRetryAfterStatus && retryAfterMillis != null) {
+            val maxInterval = synchronized(this) {
+                (config?.maxRetryIntervalMs ?: DEFAULT_MAX_RETRY_INTERVAL_MS).toLong()
+            }
+            val boundedRetryAfter = retryAfterMillis.coerceIn(0L, maxInterval)
+            val jitter = (RETRY_AFTER_JITTER_BASE_MS + Random.nextInt(RETRY_AFTER_JITTER_BOUND_MS)).toLong()
+            val totalDelay = (boundedRetryAfter + jitter).coerceAtLeast(MILLIS_PER_SECOND)
+            val message = "Retry-After received: ${totalDelay / MILLIS_PER_SECOND}s"
+            eventBuffer.push(
+                SseEvent(
+                    SseEventType.ERROR,
+                    null,
+                    null,
+                    null,
+                    null,
+                    message,
+                    statusCode.toDouble(),
+                    totalDelay.toDouble(),
+                    null
+                )
+            )
+            scheduleReconnect(true, connectionAttemptVersion.get(), totalDelay)
+        } else if (statusCode == HTTP_TOO_MANY_REQUESTS) {
+            eventBuffer.push(
+                SseEvent(
+                    SseEventType.ERROR,
+                    null,
+                    null,
+                    null,
+                    null,
+                    "Rate Limited (429). Retrying with backoff...",
+                    HTTP_TOO_MANY_REQUESTS_DOUBLE,
+                    null,
+                    null
+                )
+            )
+            scheduleReconnect(true, connectionAttemptVersion.get())
+        } else {
+            handled = false
+        }
+        return handled
+    }
+
+    private fun formatTransientFailureMessage(
+        t: Throwable?,
+        statusCode: Int,
+        reportedStatusCode: Double?,
+        errorBody: String?
+    ): String = when {
+        statusCode >= HTTP_INTERNAL_ERROR && !errorBody.isNullOrBlank() ->
+            "Server Error ($statusCode): ${errorBody.trim()}"
+        else ->
+            t?.message ?: if (reportedStatusCode != null) {
+                "Link lost (${reportedStatusCode.toInt()})"
+            } else {
+                "Link lost"
+            }
+    }
+
+    override fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {
+        sseDispatcher?.post {
+            // Android uses a unique UUID `requestId` per attempt alongside `connectionAttemptVersion`.
+            // Delayed callbacks from a previous socket are rejected by `requestId != this@NitroSse.requestId`.
+            if (requestId != this@NitroSse.requestId || !isRunning.get()) return@post
+
+            val statusCode = response?.code ?: STATUS_UNKNOWN
+            val isTimeout = isTimeoutException(t)
+            val isParserLimit = t is SseParserLimitException
+            val isInvalidContentType = isInvalidEventStreamResponse(t, response)
+
+            recordFailureMetrics(t, statusCode, isInvalidContentType, isParserLimit, isTimeout)
+            clearFailedRequestAndReportInspector()
+
+            val handled = handleTerminalFailure(t, statusCode, errorBody, isInvalidContentType) ||
+                handleAuthFailure(statusCode) ||
+                handleRetryAfterOrRateLimit(statusCode, response)
+            if (handled) return@post
 
             // Map request timeout to STALE state before scheduling reconnection.
-            // Intentionally mirrors iOS (NitroSse.swift). OkHttp readTimeout acts as watchdog;
-            // emitting STALE notifies JS listeners of timeout-induced degradation before RECONNECTING.
+            // OkHttp readTimeout acts as watchdog; emitting STALE notifies JS listeners before RECONNECTING.
             if (isTimeout) {
                 updateState(SseState.STALE)
             }
 
-            val reportedStatusCode = if (statusCode >= 400 || statusCode == 204) statusCode.toDouble() else null
-            val defaultErrorMsg = when {
-                statusCode >= 500 && !errorBody.isNullOrBlank() -> "Server Error ($statusCode): ${errorBody.trim()}"
-                else -> t?.message ?: if (reportedStatusCode != null) "Link lost (${reportedStatusCode.toInt()})" else "Link lost"
-            }
+            val isReportedCode = statusCode >= HTTP_BAD_REQUEST
+            val reportedStatusCode = if (isReportedCode) statusCode.toDouble() else null
+            val defaultErrorMsg = formatTransientFailureMessage(t, statusCode, reportedStatusCode, errorBody)
 
-            // Teardown and reconnect on stream or socket failure.
-            eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, defaultErrorMsg, reportedStatusCode, null, null))
+            eventBuffer.push(
+                SseEvent(
+                    SseEventType.ERROR,
+                    null,
+                    null,
+                    null,
+                    null,
+                    defaultErrorMsg,
+                    reportedStatusCode,
+                    null,
+                    null
+                )
+            )
             scheduleReconnect(true, connectionAttemptVersion.get())
         }
     }
@@ -838,7 +1019,6 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         if (!isRunning.get() || attemptVersion != connectionAttemptVersion.get()) return
         if (reconnectStrategy.hasReachedMaxAttempts()) {
             val maxAttempts = reconnectStrategy.currentReconnectAttempts
-            Log.d(TAG, "Max reconnection attempts reached ($maxAttempts). Stopping.")
             failAndStop("Max reconnection attempts reached ($maxAttempts).")
             return
         }
@@ -891,7 +1071,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         clearActiveRequestAndReportEnd()
         // Deliver events buffered from the retired connection before announcing RECONNECTING so JS observes
         // them in chronological order (not batched together with / after the new state transition).
-        if (::eventBuffer.isInitialized) eventBuffer.flush()
+        eventBuffer.flush()
         updateState(SseState.RECONNECTING)
         val task = {
             // An explicit restart supersedes any pending hibernation resume intent (mirrors stop()).
@@ -1013,8 +1193,6 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         if (!isDisposed.compareAndSet(false, true)) {
             return
         }
-        Log.d(TAG, "Disposing NitroSse instance and cleaning up resources...")
-        
         isRunning.set(false)
         connectionAttemptVersion.incrementAndGet()
         // The dispatcher queue is discarded below, so no queued stop() task can publish the terminal state.

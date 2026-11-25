@@ -44,7 +44,7 @@ class InvalidContentTypeException(message: String) : IOException(message)
  * Exception indicating an SSE parser resource limit violation (line length or accumulated event data size).
  * Typed counterpart of iOS NitroSse error codes -2002 / -2003; treated as fatal (no reconnect).
  */
-internal class SseParserLimitException(message: String) : IOException(message)
+internal class SseParserLimitException(override val message: String) : IOException(message)
 
 /**
  * Interface representing an active SSE stream connection that can be cancelled.
@@ -53,6 +53,20 @@ interface SseEventSource {
     fun cancel()
     fun request(): Request
 }
+
+private const val UTF8_BOM_LENGTH = 3L
+private const val BOM_BYTE_0: Byte = 0xEF.toByte()
+private const val BOM_BYTE_1: Byte = 0xBB.toByte()
+private const val BOM_BYTE_2: Byte = 0xBF.toByte()
+private const val HTTP_OK = 200
+private const val HTTP_BAD_REQUEST = 400
+private const val HTTP_UNAUTHORIZED = 401
+private const val HTTP_FORBIDDEN = 403
+private const val HTTP_REQUEST_TIMEOUT = 408
+private const val HTTP_TOO_MANY_REQUESTS = 429
+private const val HTTP_SERVICE_UNAVAILABLE = 503
+private const val INITIAL_CACHE_CAPACITY = 64
+private const val CACHE_LOAD_FACTOR = 0.75f
 
 /**
  * Interface for delegating OkHttp SSE event callbacks to the connection manager.
@@ -67,10 +81,21 @@ interface SseConnectionDelegate {
     fun connectionDidParseLines(count: Int, requestId: String) {}
     fun connectionDidEncounterParseError(requestId: String) {}
     fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {}
-    fun connectionDidFail(t: Throwable?, response: Response?, requestId: String) {
-        connectionDidFail(t, response, null, requestId)
-    }
     fun connectionDidClose(requestId: String)
+}
+
+fun SseConnectionDelegate.connectionDidFail(t: Throwable?, response: Response?, requestId: String) {
+    connectionDidFail(t, response, null, requestId)
+}
+
+private fun parseFieldPair(line: String): Pair<String, String> {
+    val colonIndex = line.indexOf(':')
+    if (colonIndex == -1) return line to ""
+    val field = line.substring(0, colonIndex)
+    val hasLeadingSpace = colonIndex + 1 < line.length && line[colonIndex + 1] == ' '
+    val valueStart = if (hasLeadingSpace) colonIndex + 2 else colonIndex + 1
+    val value = line.substring(valueStart)
+    return field to value
 }
 
 /**
@@ -95,6 +120,61 @@ internal class SseEventReader(private val source: BufferedSource) {
     private var isAtStreamStart = true
     private var skipLeadingLf = false
 
+    private fun prepareBufferForRead(buffer: okio.Buffer) {
+        if (isAtStreamStart) {
+            val hasBom = source.request(UTF8_BOM_LENGTH) &&
+                buffer[0] == BOM_BYTE_0 &&
+                buffer[1] == BOM_BYTE_1 &&
+                buffer[2] == BOM_BYTE_2
+            if (hasBom) {
+                buffer.skip(UTF8_BOM_LENGTH)
+            }
+            isAtStreamStart = false
+        } else if (skipLeadingLf) {
+            skipLeadingLf = false
+            if (buffer[0] == '\n'.code.toByte()) {
+                buffer.skip(1)
+            }
+        }
+    }
+
+    private fun consumeLineAtIndex(buffer: okio.Buffer, newlineIndex: Long): String {
+        if (newlineIndex > MAX_SSE_LINE_LENGTH) {
+            throw SseParserLimitException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
+        }
+        val delimiterByte = buffer[newlineIndex]
+        val line = buffer.readUtf8(newlineIndex)
+        buffer.skip(1)
+        if (delimiterByte == '\r'.code.toByte()) {
+            // If followed immediately by \n in current buffer, consume \n as CRLF.
+            // If buffer is exhausted, defer check via skipLeadingLf to avoid blocking on bare CR.
+            if (buffer.size > 0) {
+                if (buffer[0] == '\n'.code.toByte()) {
+                    buffer.skip(1)
+                }
+            } else {
+                skipLeadingLf = true
+            }
+        }
+        return line
+    }
+
+    private fun findOrReadLine(buffer: okio.Buffer): String? {
+        var scanned = 0L
+        var newlineIndex = buffer.indexOfElement(CRLF_DELIMITERS, scanned)
+        while (newlineIndex == -1L) {
+            if (buffer.size > MAX_SSE_LINE_LENGTH) {
+                throw SseParserLimitException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
+            }
+            scanned = buffer.size
+            if (!source.request(buffer.size + 1)) {
+                return if (buffer.size > 0) buffer.readUtf8() else null
+            }
+            newlineIndex = buffer.indexOfElement(CRLF_DELIMITERS, scanned)
+        }
+        return consumeLineAtIndex(buffer, newlineIndex)
+    }
+
     /**
      * Reads a line from [source] handling CRLF (\r\n), bare CR (\r), and LF (\n).
      * Strips leading UTF-8 BOM (0xEF, 0xBB, 0xBF) if present at stream start per WHATWG SSE spec.
@@ -102,62 +182,87 @@ internal class SseEventReader(private val source: BufferedSource) {
      * line endings without byte-by-byte Kotlin loop overhead while properly supporting bare carriage returns.
      */
     private fun readSseLine(): String? {
-        val buffer = source.buffer
         if (source.exhausted()) return null
+        val buffer = source.buffer
+        prepareBufferForRead(buffer)
+        return findOrReadLine(buffer)
+    }
 
-        if (isAtStreamStart) {
-            if (source.request(3)) {
-                if (buffer.size >= 3 &&
-                    buffer[0] == 0xEF.toByte() &&
-                    buffer[1] == 0xBB.toByte() &&
-                    buffer[2] == 0xBF.toByte()
-                ) {
-                    buffer.skip(3)
-                }
-            }
-            isAtStreamStart = false
+    private fun handleEof(linesParsedInEvent: Int, callback: Callback) {
+        if (linesParsedInEvent > 0) {
+            callback.onLinesParsed(linesParsedInEvent)
         }
+        dataBuffer.setLength(0)
+        hasData = false
+        eventType = null
+        lastEventIdBuffer = lastEventId
+        idUpdatedInCurrentEvent = false
+    }
 
-        if (skipLeadingLf) {
-            skipLeadingLf = false
-            if (buffer.size > 0 && buffer[0] == '\n'.code.toByte()) {
-                buffer.skip(1)
+    private fun handleEmptyLine(linesParsedInEvent: Int, callback: Callback): Boolean {
+        if (idUpdatedInCurrentEvent) {
+            lastEventId = lastEventIdBuffer
+            idUpdatedInCurrentEvent = false
+            callback.onIdUpdate(lastEventId)
+        }
+        if (hasData) {
+            callback.onLinesParsed(linesParsedInEvent)
+            val data = dataBuffer.toString()
+            val id = lastEventId
+            val type = eventType
+            dataBuffer.setLength(0)
+            hasData = false
+            eventType = null
+            callback.onEvent(id, type, data)
+            return true
+        }
+        // WHATWG SSE: Dispatching an empty event still resets the event type buffer
+        eventType = null
+        return false
+    }
+
+    private fun appendDataField(value: String) {
+        // Account for the '\n' joining this line to the previous ones (parity with iOS / TypeScript).
+        val separatorSize = if (hasData) 1 else 0
+        if (dataBuffer.length + separatorSize + value.length > MAX_SSE_EVENT_DATA_SIZE) {
+            throw SseParserLimitException(
+                "SSE event data exceeded maximum limit of $MAX_SSE_EVENT_DATA_SIZE characters"
+            )
+        }
+        if (hasData) {
+            dataBuffer.append('\n')
+        }
+        dataBuffer.append(value)
+        hasData = true
+    }
+
+    private fun handleFieldLine(line: String, callback: Callback) {
+        val (field, value) = parseFieldPair(line)
+        when (field) {
+            "data" -> appendDataField(value)
+            "id" -> if (!value.contains('\u0000')) {
+                lastEventIdBuffer = if (value.isEmpty()) null else value
+                idUpdatedInCurrentEvent = true
+            }
+            "event" -> eventType = if (value.isEmpty()) null else value
+            "retry" -> if (value.isNotEmpty() && value.all { it in '0'..'9' }) {
+                // WHATWG SSE: If field value consists solely of ASCII digits 0-9, set reconnection time.
+                value.toLongOrNull()?.let { callback.onRetryChange(it) }
             }
         }
+    }
 
-        var scanned = 0L
-        while (true) {
-            val newlineIndex = buffer.indexOfElement(CRLF_DELIMITERS, scanned)
-            if (newlineIndex != -1L) {
-                if (newlineIndex > MAX_SSE_LINE_LENGTH) {
-                    throw SseParserLimitException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
-                }
-                val b = buffer[newlineIndex]
-                val line = buffer.readUtf8(newlineIndex)
-                buffer.skip(1)
-                if (b == '\r'.code.toByte()) {
-                    // If followed immediately by \n in current buffer, consume \n as CRLF.
-                    // If buffer is exhausted at this exact boundary, defer check via skipLeadingLf
-                    // to avoid blocking on source.request(1) when server sent bare CR.
-                    if (buffer.size > 0) {
-                        if (buffer[0] == '\n'.code.toByte()) {
-                            buffer.skip(1)
-                        }
-                    } else {
-                        skipLeadingLf = true
-                    }
-                }
-                return line
-            }
-
-            if (buffer.size > MAX_SSE_LINE_LENGTH) {
-                throw SseParserLimitException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
-            }
-
-            scanned = buffer.size
-            if (!source.request(buffer.size + 1)) {
-                return if (buffer.size > 0) buffer.readUtf8() else null
-            }
+    private fun processLine(line: String, linesParsedInEvent: Int, callback: Callback): Boolean = when {
+        line.isEmpty() -> handleEmptyLine(linesParsedInEvent, callback)
+        line.startsWith(":") -> {
+            callback.onLinesParsed(linesParsedInEvent)
+            val commentStart = if (line.length > 1 && line[1] == ' ') 2 else 1
+            callback.onComment(line.substring(commentStart))
+            true
+        }
+        else -> {
+            handleFieldLine(line, callback)
+            false
         }
     }
 
@@ -165,95 +270,21 @@ internal class SseEventReader(private val source: BufferedSource) {
      * Reads lines from source until one event (message or comment) is completed and dispatched.
      * Returns true if an event was dispatched, or false on EOF.
      * Per WHATWG SSE spec: "Once the end of the file is reached, any pending data must be discarded.
-     * (If the file ends in the middle of an event, before the final empty line, the incomplete event is not dispatched.)"
+     * (If the file ends in the middle of an event, before the final empty line,
+     * the incomplete event is not dispatched.)"
      */
     fun processNextEvent(callback: Callback): Boolean {
         var linesParsedInEvent = 0
-        while (true) {
-            val line = readSseLine()
-            if (line == null) {
-                if (linesParsedInEvent > 0) {
-                    callback.onLinesParsed(linesParsedInEvent)
-                }
-                dataBuffer.setLength(0)
-                hasData = false
-                eventType = null
-                lastEventIdBuffer = lastEventId
-                idUpdatedInCurrentEvent = false
-                return false
-            }
+        var line = readSseLine()
+        while (line != null) {
             linesParsedInEvent++
-            if (line.isEmpty()) {
-                if (idUpdatedInCurrentEvent) {
-                    lastEventId = lastEventIdBuffer
-                    idUpdatedInCurrentEvent = false
-                    callback.onIdUpdate(lastEventId)
-                }
-                if (hasData) {
-                    callback.onLinesParsed(linesParsedInEvent)
-                    val data = dataBuffer.toString()
-                    val id = lastEventId
-                    val type = eventType
-                    dataBuffer.setLength(0)
-                    hasData = false
-                    eventType = null
-                    callback.onEvent(id, type, data)
-                    return true
-                }
-                // WHATWG SSE: Dispatching an empty event still resets the event type buffer
-                eventType = null
-                // Delimiter / keepalive empty line without data
-            } else if (line.startsWith(":")) {
-                callback.onLinesParsed(linesParsedInEvent)
-                val commentStart = if (line.length > 1 && line[1] == ' ') 2 else 1
-                callback.onComment(line.substring(commentStart))
+            if (processLine(line, linesParsedInEvent, callback)) {
                 return true
-            } else {
-                val colonIndex = line.indexOf(':')
-                val field: String
-                val value: String
-                if (colonIndex != -1) {
-                    field = line.substring(0, colonIndex)
-                    val valueStart = if (colonIndex + 1 < line.length && line[colonIndex + 1] == ' ') colonIndex + 2 else colonIndex + 1
-                    value = if (valueStart < line.length) line.substring(valueStart) else ""
-                } else {
-                    field = line
-                    value = ""
-                }
-                when (field) {
-                    "data" -> {
-                        // Account for the '\n' joining this line to the previous ones (parity with iOS / TypeScript).
-                        val separatorSize = if (hasData) 1 else 0
-                        if (dataBuffer.length + separatorSize + value.length > MAX_SSE_EVENT_DATA_SIZE) {
-                            throw SseParserLimitException("SSE event data exceeded maximum limit of $MAX_SSE_EVENT_DATA_SIZE characters")
-                        }
-                        if (hasData) {
-                            dataBuffer.append('\n')
-                        }
-                        dataBuffer.append(value)
-                        hasData = true
-                    }
-                    "id" -> {
-                        if (!value.contains('\u0000')) {
-                            lastEventIdBuffer = if (value.isEmpty()) null else value
-                            idUpdatedInCurrentEvent = true
-                        }
-                    }
-                    "event" -> {
-                        eventType = if (value.isEmpty()) null else value
-                    }
-                    "retry" -> {
-                        // WHATWG SSE: If field value consists solely of ASCII digits 0-9, set reconnection time. Otherwise ignore.
-                        if (value.isNotEmpty() && value.all { it in '0'..'9' }) {
-                            val retryMs = value.toLongOrNull()
-                            if (retryMs != null && retryMs >= 0) {
-                                callback.onRetryChange(retryMs)
-                            }
-                        }
-                    }
-                }
             }
+            line = readSseLine()
         }
+        handleEof(linesParsedInEvent, callback)
+        return false
     }
 }
 
@@ -297,51 +328,69 @@ internal class RealSseEventSource(
         }
     }
 
-    override fun onResponse(call: Call, response: Response) {
-        if (isCancelled) {
-            response.close()
-            return
+    private fun shouldReadErrorBody(response: Response): Boolean {
+        val code = response.code
+        val isUnusedAuthOrRateLimit = code == HTTP_UNAUTHORIZED ||
+            code == HTTP_FORBIDDEN ||
+            code == HTTP_REQUEST_TIMEOUT ||
+            code == HTTP_TOO_MANY_REQUESTS
+        val isRetryAfterUnavailable = code == HTTP_SERVICE_UNAVAILABLE &&
+            response.header("Retry-After") != null
+        return code >= HTTP_BAD_REQUEST && !isUnusedAuthOrRateLimit && !isRetryAfterUnavailable
+    }
+
+    private fun readBoundedErrorBody(response: Response): String? {
+        val source = if (shouldReadErrorBody(response)) response.body?.source() else null
+        return source?.let {
+            val timeoutMs = client.connectTimeoutMillis.toLong().let { if (it > 0L) it else 15000L }
+            it.timeout().deadline(timeoutMs, TimeUnit.MILLISECONDS)
+            try {
+                try {
+                    it.request(MAX_ERROR_BODY_BYTES)
+                } catch (_: IOException) {
+                    // Preserve any partial error body bytes already buffered before disconnect/timeout
+                }
+                val size = minOf(it.buffer.size, MAX_ERROR_BODY_BYTES)
+                if (size > 0L) it.buffer.readUtf8(size) else null
+            } finally {
+                it.timeout().clearDeadline()
+            }
+        }
+    }
+
+    private fun createReaderCallback(): SseEventReader.Callback = object : SseEventReader.Callback {
+        override fun onEvent(id: String?, type: String?, data: String) {
+            if (!isCancelled) {
+                delegate.connectionDidReceiveMessage(id, type, data, requestId)
+            }
         }
 
-        // WHATWG SSE Section 9.1: Only HTTP 200 OK responses with text/event-stream establish an SSE stream.
-        // Any other HTTP response code (including 201, 204, 206, 4xx, 5xx) must fail the connection.
-        if (response.code != 200) {
-            val errorBody = if (response.code != 204) {
-                val source = response.body?.source()
-                if (source != null) {
-                    val timeoutMs = client.connectTimeoutMillis.toLong().let { if (it > 0L) it else 15000L }
-                    source.timeout().deadline(timeoutMs, TimeUnit.MILLISECONDS)
-                    try {
-                        runCatching { source.request(MAX_ERROR_BODY_BYTES) }
-                        val size = minOf(source.buffer.size, MAX_ERROR_BODY_BYTES)
-                        if (size > 0L) source.buffer.readUtf8(size) else null
-                    } catch (_: Exception) {
-                        null
-                    } finally {
-                        source.timeout().clearDeadline()
-                    }
-                } else null
-            } else null
-            delegate.connectionDidFail(null, response, errorBody, requestId)
-            response.close()
-            return
+        override fun onComment(comment: String) {
+            if (!isCancelled) {
+                delegate.connectionDidReceiveComment(comment, requestId)
+            }
         }
 
-
-
-        // WHATWG SSE: permanently fail and stop without reconnecting on non-event-stream Content-Type.
-        val body = response.body
-        if (body == null || !isEventStream(body)) {
-            val receivedType = body?.contentType()?.toString() ?: "none"
-            val error = InvalidContentTypeException("Invalid Content-Type: expected text/event-stream but received '$receivedType'")
-            delegate.connectionDidFail(error, response, null, requestId)
-            response.close()
-            return
+        override fun onRetryChange(retryMs: Long) {
+            if (!isCancelled) {
+                delegate.connectionDidReceiveRetry(retryMs, requestId)
+            }
         }
 
-        val emptyResponse = response.newBuilder().body("".toResponseBody(null)).build()
-        delegate.connectionDidOpen(emptyResponse, requestId)
+        override fun onIdUpdate(id: String?) {
+            if (!isCancelled) {
+                delegate.connectionDidUpdateLastEventId(id, requestId)
+            }
+        }
 
+        override fun onLinesParsed(count: Int) {
+            if (!isCancelled) {
+                delegate.connectionDidParseLines(count, requestId)
+            }
+        }
+    }
+
+    private fun streamResponseEvents(response: Response, body: ResponseBody) {
         try {
             val decompressedSource = object : ForwardingSource(body.source()) {
                 override fun read(sink: okio.Buffer, byteCount: Long): Long {
@@ -353,37 +402,7 @@ internal class RealSseEventSource(
                 }
             }
             val reader = SseEventReader(decompressedSource.buffer())
-            val callback = object : SseEventReader.Callback {
-                override fun onEvent(id: String?, type: String?, data: String) {
-                    if (!isCancelled) {
-                        delegate.connectionDidReceiveMessage(id, type, data, requestId)
-                    }
-                }
-
-                override fun onComment(comment: String) {
-                    if (!isCancelled) {
-                        delegate.connectionDidReceiveComment(comment, requestId)
-                    }
-                }
-
-                override fun onRetryChange(retryMs: Long) {
-                    if (!isCancelled) {
-                        delegate.connectionDidReceiveRetry(retryMs, requestId)
-                    }
-                }
-
-                override fun onIdUpdate(id: String?) {
-                    if (!isCancelled) {
-                        delegate.connectionDidUpdateLastEventId(id, requestId)
-                    }
-                }
-
-                override fun onLinesParsed(count: Int) {
-                    if (!isCancelled) {
-                        delegate.connectionDidParseLines(count, requestId)
-                    }
-                }
-            }
+            val callback = createReaderCallback()
 
             while (!isCancelled && reader.processNextEvent(callback)) {
                 // Read and dispatch events sequentially
@@ -392,15 +411,43 @@ internal class RealSseEventSource(
             if (!isCancelled) {
                 delegate.connectionDidClose(requestId)
             }
-        } catch (e: Exception) {
+        } catch (e: SseParserLimitException) {
             if (!isCancelled) {
-                if (e is SseParserLimitException) {
-                    delegate.connectionDidEncounterParseError(requestId)
-                }
+                delegate.connectionDidEncounterParseError(requestId)
+                delegate.connectionDidFail(e, null, null, requestId)
+            }
+        } catch (e: IOException) {
+            if (!isCancelled) {
                 delegate.connectionDidFail(e, null, null, requestId)
             }
         } finally {
             response.close()
+        }
+    }
+
+    override fun onResponse(call: Call, response: Response) {
+        if (isCancelled) {
+            response.close()
+        } else if (response.code != HTTP_OK) {
+            // WHATWG SSE Section 9.1: Only HTTP 200 OK responses with text/event-stream establish an SSE stream.
+            val errorBody = readBoundedErrorBody(response)
+            delegate.connectionDidFail(null, response, errorBody, requestId)
+            response.close()
+        } else {
+            val body = response.body
+            if (body == null || !isEventStream(body)) {
+                // WHATWG SSE: permanently fail and stop without reconnecting on non-event-stream Content-Type.
+                val receivedType = body?.contentType()?.toString() ?: "none"
+                val error = InvalidContentTypeException(
+                    "Invalid Content-Type: expected text/event-stream but received '$receivedType'"
+                )
+                delegate.connectionDidFail(error, response, null, requestId)
+                response.close()
+            } else {
+                val emptyResponse = response.newBuilder().body("".toResponseBody(null)).build()
+                delegate.connectionDidOpen(emptyResponse, requestId)
+                streamResponseEvents(response, body)
+            }
         }
     }
 
@@ -435,7 +482,11 @@ object SseNetworkMetricsTracker {
         var cleared: Boolean = false
     )
 
-    private val entries = object : LinkedHashMap<String, MetricsEntry>(64, 0.75f, false) {
+    private val entries = object : LinkedHashMap<String, MetricsEntry>(
+        INITIAL_CACHE_CAPACITY,
+        CACHE_LOAD_FACTOR,
+        false
+    ) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MetricsEntry>?): Boolean =
             size > MAX_ENTRIES
     }

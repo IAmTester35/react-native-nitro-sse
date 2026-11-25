@@ -13,6 +13,7 @@ import java.lang.reflect.Method
  * This prevents compilation failure or runtime link errors when running in production builds
  * or environments where network inspection modules are stripped.
  */
+@Suppress("TooGenericExceptionCaught")
 object NetworkInspector {
     private const val TAG = "NitroSseNetworkInspector"
     private const val MAX_INSPECTOR_BODY_BYTES = 64 * 1024L
@@ -60,9 +61,8 @@ object NetworkInspector {
                 String::class.java,
                 Boolean::class.javaPrimitiveType
             )
-            Log.d(TAG, "InspectorNetworkReporter found. Network tracing is available.")
         } catch (_: Throwable) {
-            Log.d(TAG, "InspectorNetworkReporter not found. Network tracing is disabled.")
+            // InspectorNetworkReporter is unavailable in production or stripped builds.
         }
 
         isDebuggingEnabledMethod = isDebugging

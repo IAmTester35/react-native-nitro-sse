@@ -679,11 +679,9 @@ class NitroSseCoordinatorTest {
         assertEquals(60.0, sse.getStats().totalBytesReceived, 0.001)
     }
 
-    private fun <T> anyLambda(): T {
-        org.mockito.Mockito.any<T>()
-        @Suppress("UNCHECKED_CAST")
-        return { _: Any? -> } as T
-    }
+    @Suppress("UNCHECKED_CAST")
+    private fun <T> anyLambda(): T =
+        org.mockito.Mockito.any<T>() ?: ({ _: Any? -> } as T)
     @Test
     fun testConnectionFailureDoesNotLeakPlainHttpBytesIntoSessionRawBytesOffset() {
         val sse = NitroSse(dispatcher)
