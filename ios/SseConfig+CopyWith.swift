@@ -1,5 +1,3 @@
-import NitroModules
-
 extension SseConfig {
     /// Creates an immutable copy of `SseConfig`, allowing field-level updates while preserving unchanged properties.
     /// Used when mutating connection headers or retry parameters across async operations.

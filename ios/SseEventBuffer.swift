@@ -7,20 +7,20 @@ class SseEventBuffer {
     private var eventBuffer: [SseEvent] = []
     private var pendingTimer: SseCancellable?
     private var onFlush: ((_ events: [SseEvent]) -> Void)?
-    
+
     private var batchingIntervalMs: Double = 0
     private var maxBufferSize: Int = 1000
     private weak var dispatcher: SseDispatcher?
-    
+
     // MARK: - Buffer Metrics
     private(set) var peakBufferedEvents: Int = 0
     private(set) var bufferFlushCount: Int = 0
     private(set) var bufferOverflowCount: Int = 0
-    
+
     var eventsBuffered: Int {
         return eventBuffer.count
     }
-    
+
     /// Initializes buffer batching thresholds and dispatch target.
     func configure(
         batchingIntervalMs: Double,
@@ -37,18 +37,19 @@ class SseEventBuffer {
         self.dispatcher = dispatcher
         self.onFlush = onFlush
     }
-    
+
     private static let hardMaxBufferSize: Int = 10000
 
-    /// Appends an event to the queue. Triggers immediate flush if buffer capacity is reached or batching is disabled (interval <= 0).
+    /// Appends an event to the queue. Triggers immediate flush if buffer capacity is reached
+    /// or batching is disabled (interval <= 0).
     func push(_ event: SseEvent) {
         dispatcher?.assertOnQueue()
         eventBuffer.append(event)
-        
+
         if eventBuffer.count > peakBufferedEvents {
             peakBufferedEvents = eventBuffer.count
         }
-        
+
         if batchingIntervalMs <= 0 {
             flush()
         } else if eventBuffer.count >= maxBufferSize {
@@ -63,32 +64,32 @@ class SseEventBuffer {
             }
         }
     }
-    
+
     /// Flushes all pending buffered events to JavaScript.
     func flush() {
         dispatcher?.assertOnQueue()
         cancelPendingTimer()
         guard !eventBuffer.isEmpty else { return }
-        
+
         bufferFlushCount += 1
         let batch = eventBuffer
         eventBuffer.removeAll()
-        
+
         onFlush?(batch)
     }
-    
+
     private func cancelPendingTimer() {
         dispatcher?.assertOnQueue()
         pendingTimer?.cancel()
         pendingTimer = nil
     }
-    
+
     /// Nullifies the flush callback to prevent invoking a destroyed JS runtime during teardown.
     func clearCallback() {
         dispatcher?.assertOnQueue()
         self.onFlush = nil
     }
-    
+
     /// Clears buffered events without invoking the flush callback.
     /// Used during teardown to avoid executing JS callbacks after the bridge runtime is destroyed.
     func clear() {
@@ -96,7 +97,7 @@ class SseEventBuffer {
         cancelPendingTimer()
         eventBuffer.removeAll()
     }
-    
+
     /// Converts a raw JSON payload string into a Nitro `AnyMap`.
     /// Returns `nil` if payload is not a valid JSON dictionary required by `AnyMap`.
     static func parseJsonToAnyMap(_ data: String) -> AnyMap? {

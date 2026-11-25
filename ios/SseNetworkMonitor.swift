@@ -9,30 +9,30 @@ class SseNetworkMonitor {
         _ interfaceChanged: Bool,
         _ interfaceType: NWInterface.InterfaceType?
     ) -> Void
-    
+
     private var pathMonitor: NWPathMonitor?
     private var lastPathInterface: NWInterface.InterfaceType?
     private var monitorGeneration = 0
     private let dispatcher: SseDispatcher
     private let queue: DispatchQueue
     private let onChange: NetworkChangeHandler
-    
+
     init(dispatcher: SseDispatcher, onChange: @escaping NetworkChangeHandler) {
         self.dispatcher = dispatcher
         // NWPathMonitor strictly requires a DispatchQueue instance for path callbacks.
         self.queue = dispatcher.underlyingQueue ?? DispatchQueue(label: "com.nitrosse.networkmonitor.fallback")
         self.onChange = onChange
     }
-    
+
     /// Synchronously queries whether the active network path is currently satisfied (online).
     var isPathSatisfied: Bool {
         return pathMonitor?.currentPath.status == .satisfied
     }
-    
+
     /// Starts observing system network changes. Idempotent call.
     func start() {
         guard pathMonitor == nil else { return }
-        
+
         monitorGeneration += 1
         let generation = monitorGeneration
         let monitor = NWPathMonitor()
@@ -51,7 +51,7 @@ class SseNetworkMonitor {
         self.pathMonitor = monitor
         monitor.start(queue: queue)
     }
-    
+
     /// Cancels active path monitoring and releases resources.
     func stop() {
         monitorGeneration += 1
@@ -59,11 +59,11 @@ class SseNetworkMonitor {
         pathMonitor = nil
         lastPathInterface = nil
     }
-    
+
     private func handlePathUpdate(_ path: NWPath) {
         let isSatisfied = path.status == .satisfied
-        
-        var interfaceType: NWInterface.InterfaceType? = nil
+
+        var interfaceType: NWInterface.InterfaceType?
         if path.usesInterfaceType(.wifi) {
             interfaceType = .wifi
         } else if path.usesInterfaceType(.cellular) {
@@ -73,9 +73,7 @@ class SseNetworkMonitor {
         } else {
             interfaceType = path.availableInterfaces.first?.type
         }
-        
-        print("[NitroSse] Network path changed: status=\(path.status), interface=\(String(describing: interfaceType))")
-        
+
         // Only trigger an interface change if both the previous and current interfaces are known and differ.
         // Initial detection (lastPathInterface == nil) must NOT be flagged as an interface change to avoid
         // falsely triggering an immediate stream restart right after connection startup.
@@ -90,7 +88,7 @@ class SseNetworkMonitor {
         } else {
             interfaceChanged = false
         }
-        
+
         onChange(isSatisfied, interfaceChanged, interfaceType)
     }
 }

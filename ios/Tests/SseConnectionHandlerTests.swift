@@ -91,10 +91,6 @@ final class SseConnectionHandlerTests: XCTestCase {
             failedErrorBody = errorBody
             onFail?()
         }
-
-        func connectionDidFail(error: Error, response: HTTPURLResponse?, attemptVersion: Int) {
-            connectionDidFail(error: error, response: response, errorBody: nil, attemptVersion: attemptVersion)
-        }
     }
     
     func testConnectionDidOpenReceivesHttpResponseHeaders() {
