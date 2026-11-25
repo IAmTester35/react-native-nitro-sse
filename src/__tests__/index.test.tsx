@@ -2038,6 +2038,241 @@ describe('NitroSseModule Unit Tests', () => {
           );
         });
       });
+
+      it('should warn once per consecutive identical unhandled error in DEV and reset on open or new error', () => {
+        jest.isolateModules(() => {
+          const { createNitroSse } = require('../index');
+          const client = createNitroSse();
+          const warnSpy = jest
+            .spyOn(console, 'warn')
+            .mockImplementation(() => {});
+          const errorSpy = jest
+            .spyOn(console, 'error')
+            .mockImplementation(() => {});
+
+          client.setup({ url: TEST_URL });
+          const nativeCallback = mockNative.setup.mock.calls[0][1];
+
+          const netErr = {
+            type: 'error',
+            message: 'Connection lost',
+            statusCode: 503,
+          };
+          nativeCallback([netErr]);
+          nativeCallback([netErr]);
+          expect(warnSpy).toHaveBeenCalledTimes(1);
+          expect(warnSpy).toHaveBeenCalledWith(
+            expect.stringContaining('[NitroSse] Unhandled SSE error:'),
+            netErr
+          );
+          expect(errorSpy).not.toHaveBeenCalled();
+
+          // Distinct error signature should warn again
+          nativeCallback([
+            { type: 'error', message: 'Timeout', statusCode: 408 },
+          ]);
+          expect(warnSpy).toHaveBeenCalledTimes(2);
+
+          // Recovery via open resets deduplication
+          nativeCallback([{ type: 'open', statusCode: 200 }]);
+          nativeCallback([
+            { type: 'error', message: 'Timeout', statusCode: 408 },
+          ]);
+          expect(warnSpy).toHaveBeenCalledTimes(3);
+
+          warnSpy.mockRestore();
+          errorSpy.mockRestore();
+        });
+      });
+
+      it('should not warn on error events when error listener or legacy callback is attached, or when __DEV__ is false', () => {
+        jest.isolateModules(() => {
+          const { createNitroSse } = require('../index');
+          const warnSpy = jest
+            .spyOn(console, 'warn')
+            .mockImplementation(() => {});
+
+          const clientWithListener = createNitroSse();
+          clientWithListener.addEventListener('error', jest.fn());
+          clientWithListener.setup({ url: TEST_URL });
+          const cb1 = mockNative.setup.mock.calls[0][1];
+          cb1([{ type: 'error', message: 'Handled error', statusCode: 500 }]);
+          expect(warnSpy).not.toHaveBeenCalled();
+
+          const clientWithLegacy = createNitroSse();
+          clientWithLegacy.setup({ url: TEST_URL }, jest.fn());
+          const cb2 = mockNative.setup.mock.calls[1][1];
+          cb2([{ type: 'error', message: 'Handled legacy', statusCode: 500 }]);
+          expect(warnSpy).not.toHaveBeenCalled();
+
+          const originalDev = (global as any).__DEV__;
+          (global as any).__DEV__ = false;
+          try {
+            const prodClient = createNitroSse();
+            prodClient.setup({ url: TEST_URL });
+            const cb3 = mockNative.setup.mock.calls[2][1];
+            cb3([{ type: 'error', message: 'Prod error', statusCode: 500 }]);
+            expect(warnSpy).not.toHaveBeenCalled();
+          } finally {
+            (global as any).__DEV__ = originalDev;
+          }
+
+          warnSpy.mockRestore();
+        });
+      });
+
+      it('should suppress console.debug in createNitroSse when __DEV__ is false', () => {
+        const originalDev = (global as any).__DEV__;
+        (global as any).__DEV__ = false;
+        try {
+          jest.isolateModules(() => {
+            const debugSpy = jest
+              .spyOn(console, 'debug')
+              .mockImplementation(() => {});
+            (NitroModules.createHybridObject as jest.Mock).mockImplementation(
+              () => {
+                throw new Error('Test Error');
+              }
+            );
+            try {
+              const { createNitroSse } = require('../index');
+              createNitroSse();
+            } catch {
+              // Ignore expected module not found error
+            }
+            expect(debugSpy).not.toHaveBeenCalled();
+            debugSpy.mockRestore();
+          });
+        } finally {
+          (global as any).__DEV__ = originalDev;
+        }
+      });
+
+      it('should emit insecure credential warning from onBeforeRequest only once per setup()', async () => {
+        const { createNitroSse } = require('../index');
+        const client = createNitroSse();
+        const warnSpy = jest
+          .spyOn(console, 'warn')
+          .mockImplementation(() => {});
+
+        client.setup({
+          url: 'http://api.example.com/events',
+          onBeforeRequest: async () => ({
+            Authorization: 'Bearer dynamic-token',
+          }),
+        });
+
+        const interceptor = mockNative.setup.mock.calls.slice(-1)[0][2];
+        await interceptor();
+        await interceptor();
+
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('[NitroSse] Security Warning:')
+        );
+
+        warnSpy.mockRestore();
+      });
+
+      it('should warn in DEV when retryIntervalMs or maxRetryIntervalMs is below the 1000ms reconnect floor without mutating config', () => {
+        jest.isolateModules(() => {
+          const { createNitroSse } = require('../index');
+          const client = createNitroSse();
+          const warnSpy = jest
+            .spyOn(console, 'warn')
+            .mockImplementation(() => {});
+
+          client.setup({
+            url: TEST_URL,
+            retryIntervalMs: 200,
+          });
+          expect(warnSpy).toHaveBeenCalledWith(
+            expect.stringContaining('1000ms minimum reconnect floor')
+          );
+          expect(mockNative.setup).toHaveBeenLastCalledWith(
+            expect.objectContaining({ retryIntervalMs: 200 }),
+            expect.any(Function)
+          );
+
+          warnSpy.mockClear();
+
+          client.setup({
+            url: TEST_URL,
+            maxRetryIntervalMs: 500,
+          });
+          expect(warnSpy).toHaveBeenCalledWith(
+            expect.stringContaining('maxRetryIntervalMs (500ms)')
+          );
+
+          warnSpy.mockClear();
+
+          client.setup({
+            url: TEST_URL,
+            retryIntervalMs: 1000,
+            maxRetryIntervalMs: 5000,
+          });
+          expect(warnSpy).not.toHaveBeenCalled();
+
+          const originalDev = (global as any).__DEV__;
+          (global as any).__DEV__ = false;
+          try {
+            client.setup({
+              url: TEST_URL,
+              retryIntervalMs: 200,
+            });
+            expect(warnSpy).not.toHaveBeenCalled();
+          } finally {
+            (global as any).__DEV__ = originalDev;
+          }
+
+          warnSpy.mockRestore();
+        });
+      });
+    });
+
+    it('should not leak timers when stop() or restart() is called re-entrantly inside MockReplaceDriver listener', () => {
+      jest.useFakeTimers();
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        jest.isolateModules(() => {
+          const { createNitroSse } = require('../index');
+          const client = createNitroSse();
+          const received: string[] = [];
+          let restarted = false;
+
+          client.setup({
+            url: TEST_URL,
+            mock: {
+              mode: 'replace',
+              eventsPerSecond: 100,
+              loop: true,
+              data: [{ data: 'tick' }],
+            },
+          });
+
+          client.addEventListener('message', (ev: any) => {
+            received.push(ev.data);
+            if (!restarted) {
+              restarted = true;
+              client.restart();
+            } else {
+              client.stop();
+            }
+          });
+
+          client.start();
+          jest.advanceTimersByTime(1000);
+          expect(received).toEqual(['tick', 'tick']);
+
+          // Advancing further must not emit from any leaked timer after stop()
+          jest.advanceTimersByTime(5000);
+          expect(received).toEqual(['tick', 'tick']);
+          client.dispose();
+        });
+      } finally {
+        warnSpy.mockRestore();
+        jest.useRealTimers();
+      }
     });
   });
 });

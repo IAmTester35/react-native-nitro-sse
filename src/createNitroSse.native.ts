@@ -1,6 +1,7 @@
 import { NitroModules } from 'react-native-nitro-modules';
 import { NitroSseClient } from './NitroSseClient';
 import { NitroSseModuleNotFoundError } from './NitroSseError';
+import { devDebug } from './SseConsoleLogger';
 import type { NitroSse } from './NitroSse.nitro';
 import type { SseClient } from './SseInterface';
 
@@ -15,7 +16,7 @@ export function createNitroSse(): SseClient {
   try {
     nativeSse = NitroModules.createHybridObject<NitroSse>('NitroSse');
   } catch {
-    console.debug(
+    devDebug(
       'Native NitroSse not found. This might be a test environment or web.'
     );
   }

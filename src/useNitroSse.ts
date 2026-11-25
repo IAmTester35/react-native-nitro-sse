@@ -8,6 +8,12 @@ import type {
   SseStats,
 } from './SseInterface';
 import type { AnyMap } from 'react-native-nitro-modules';
+import {
+  devWarn,
+  isDevEnvironment,
+  logError,
+  UnhandledSseErrorReporter,
+} from './SseConsoleLogger';
 
 type SseEventMap = object;
 
@@ -100,12 +106,10 @@ export function safeSerializeConfig(obj: unknown): string {
       return value;
     });
   } catch (e) {
-    if (typeof __DEV__ !== 'undefined' && __DEV__) {
-      console.warn(
-        '[useNitroSse] Failed to serialize config object, falling back to string representation:',
-        e
-      );
-    }
+    devWarn(
+      '[useNitroSse] Failed to serialize config object, falling back to string representation:',
+      e
+    );
     return String(obj);
   }
 }
@@ -133,8 +137,8 @@ export function useNitroSse<
   const safeOptions: Partial<UseNitroSseOptions<TEvents, TMessage>> =
     isValidOptions ? options : {};
 
-  if (!isValidOptions && typeof __DEV__ !== 'undefined' && __DEV__) {
-    console.error(
+  if (!isValidOptions && isDevEnvironment()) {
+    logError(
       '[useNitroSse] Invalid options provided. Expected an options object.'
     );
   }
@@ -161,8 +165,11 @@ export function useNitroSse<
   const isConnected = isConnectedState(state);
 
   // Validate URL presence for connection guard
-  const hasValidUrl =
-    typeof restConfig.url === 'string' && restConfig.url.trim().length > 0;
+  const validUrl =
+    typeof restConfig.url === 'string' && restConfig.url.trim().length > 0
+      ? restConfig.url
+      : null;
+  const hasValidUrl = validUrl !== null;
 
   // Keep references to latest options and guard without causing teardown
   const headersRef = useRef(headers);
@@ -197,12 +204,14 @@ export function useNitroSse<
     headers && typeof headers === 'object' ? Object.keys(headers).sort() : []
   );
   const lastSyncedHeadersKeyRef = useRef<string | null>(null);
+  const validUrlRef = useRef<string | null>(validUrl);
 
   // Synchronize options, guard, and callback references after render commit without render-phase mutation
   useEffect(() => {
     headersRef.current = headers;
     restConfigRef.current = restConfig;
     hasValidUrlRef.current = hasValidUrl;
+    validUrlRef.current = validUrl;
     callbacksRef.current = {
       onMessage,
       onError,
@@ -217,6 +226,7 @@ export function useNitroSse<
     headers,
     restConfig,
     hasValidUrl,
+    validUrl,
     onMessage,
     onError,
     onOpen,
@@ -232,117 +242,127 @@ export function useNitroSse<
   const configKey = safeSerializeConfig(restConfig);
   const headersKey = safeSerializeConfig(headers);
 
-  const initializeClient = useCallback((): SseClient | null => {
-    let clientInstance: SseClient | null = null;
-    try {
-      clientInstance = createNitroSse();
-      clientRef.current = clientInstance;
-      setClient(clientInstance);
+  const initializeClient = useCallback(
+    (url: string): SseClient | null => {
+      let clientInstance: SseClient | null = null;
+      const unhandledErrorReporter = new UnhandledSseErrorReporter();
+      try {
+        clientInstance = createNitroSse();
+        clientRef.current = clientInstance;
+        setClient(clientInstance);
 
-      const config: SseClientOptions = {
-        ...restConfigRef.current,
-        url: restConfigRef.current.url ?? '',
-        ...(headersRef.current !== undefined
-          ? { headers: headersRef.current }
-          : {}),
-        onBeforeRequest: callbacksRef.current.onBeforeRequest
-          ? async () => {
-              return callbacksRef.current.onBeforeRequest!();
-            }
-          : undefined,
-      };
-
-      clientInstance.setup(config);
-
-      clientInstance.addEventListener<TMessage>('message', (e) => {
-        try {
-          callbacksRef.current.onMessage?.(e);
-        } catch (err) {
-          console.error(
-            '[useNitroSse] Unhandled error in onMessage callback:',
-            err
-          );
-        }
-        if (e.event && e.event !== e.type) {
-          try {
-            const customEvents = callbacksRef.current.events;
-            if (
-              customEvents &&
-              typeof customEvents === 'object' &&
-              Object.prototype.hasOwnProperty.call(customEvents, e.event)
-            ) {
-              const handler = customEvents[e.event as keyof TEvents];
-              if (typeof handler === 'function') {
-                (handler as (event: SseEvent<unknown>) => void)(e);
+        const config: SseClientOptions = {
+          ...restConfigRef.current,
+          url,
+          ...(headersRef.current !== undefined
+            ? { headers: headersRef.current }
+            : {}),
+          onBeforeRequest: callbacksRef.current.onBeforeRequest
+            ? async () => {
+                return callbacksRef.current.onBeforeRequest!();
               }
-            }
+            : undefined,
+        };
+
+        clientInstance.setup(config);
+
+        clientInstance.addEventListener<TMessage>('message', (e) => {
+          try {
+            callbacksRef.current.onMessage?.(e);
           } catch (err) {
-            console.error(
-              `[useNitroSse] Unhandled error in events['${e.event}'] callback:`,
+            logError(
+              '[useNitroSse] Unhandled error in onMessage callback:',
               err
             );
           }
-        }
-      });
-
-      clientInstance.addEventListener('error', (e) => {
-        callbacksRef.current.onError?.(e);
-      });
-
-      clientInstance.addEventListener('open', (e) => {
-        callbacksRef.current.onOpen?.(e);
-      });
-
-      clientInstance.addEventListener('close', (e) => {
-        callbacksRef.current.onClose?.(e);
-      });
-
-      clientInstance.addEventListener('heartbeat', (e) => {
-        callbacksRef.current.onHeartbeat?.(e);
-      });
-
-      clientInstance.addEventListener('state', (e) => {
-        const newState = e.state ?? 'idle';
-        setState(newState);
-        callbacksRef.current.onStateChange?.(newState);
-      });
-
-      if (autoStart) {
-        clientInstance.start();
-      }
-      const initialState = clientInstance.getState();
-      setState(initialState);
-      return clientInstance;
-    } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e);
-      console.error('[useNitroSse] Failed to initialize NitroSse client:', e);
-      clientInstance?.dispose();
-      clientRef.current = null;
-      setClient(null);
-      setState('failed');
-      try {
-        callbacksRef.current.onError?.({
-          type: 'error',
-          message: errorMsg,
-          statusCode: -1,
+          if (e.event && e.event !== e.type) {
+            try {
+              const customEvents = callbacksRef.current.events;
+              if (
+                customEvents &&
+                typeof customEvents === 'object' &&
+                Object.prototype.hasOwnProperty.call(customEvents, e.event)
+              ) {
+                const handler = customEvents[e.event as keyof TEvents];
+                if (typeof handler === 'function') {
+                  (handler as (event: SseEvent<unknown>) => void)(e);
+                }
+              }
+            } catch (err) {
+              logError(
+                `[useNitroSse] Unhandled error in events['${e.event}'] callback:`,
+                err
+              );
+            }
+          }
         });
-      } catch (err) {
-        console.error(
-          '[useNitroSse] Unhandled error in onError during initialization failure:',
-          err
-        );
+
+        clientInstance.addEventListener('error', (e) => {
+          if (callbacksRef.current.onError) {
+            unhandledErrorReporter.reset();
+            callbacksRef.current.onError(e);
+          } else {
+            unhandledErrorReporter.report('[useNitroSse]', e);
+          }
+        });
+
+        clientInstance.addEventListener('open', (e) => {
+          unhandledErrorReporter.reset();
+          callbacksRef.current.onOpen?.(e);
+        });
+
+        clientInstance.addEventListener('close', (e) => {
+          callbacksRef.current.onClose?.(e);
+        });
+
+        clientInstance.addEventListener('heartbeat', (e) => {
+          callbacksRef.current.onHeartbeat?.(e);
+        });
+
+        clientInstance.addEventListener('state', (e) => {
+          const newState = e.state ?? 'idle';
+          setState(newState);
+          callbacksRef.current.onStateChange?.(newState);
+        });
+
+        if (autoStart) {
+          clientInstance.start();
+        }
+        const initialState = clientInstance.getState();
+        setState(initialState);
+        return clientInstance;
+      } catch (e) {
+        const errorMsg = e instanceof Error ? e.message : String(e);
+        logError('[useNitroSse] Failed to initialize NitroSse client:', e);
+        clientInstance?.dispose();
+        clientRef.current = null;
+        setClient(null);
+        setState('failed');
+        try {
+          callbacksRef.current.onError?.({
+            type: 'error',
+            message: errorMsg,
+            statusCode: -1,
+          });
+        } catch (err) {
+          logError(
+            '[useNitroSse] Unhandled error in onError during initialization failure:',
+            err
+          );
+        }
+        try {
+          callbacksRef.current.onStateChange?.('failed');
+        } catch (err) {
+          logError(
+            '[useNitroSse] Unhandled error in onStateChange during initialization failure:',
+            err
+          );
+        }
+        return null;
       }
-      try {
-        callbacksRef.current.onStateChange?.('failed');
-      } catch (err) {
-        console.error(
-          '[useNitroSse] Unhandled error in onStateChange during initialization failure:',
-          err
-        );
-      }
-      return null;
-    }
-  }, [autoStart]);
+    },
+    [autoStart]
+  );
 
   // Instantiates the SseClient, attaches typed event listeners, applies configuration, and disposes on unmount
   // react-doctor-disable-next-line effect-needs-cleanup -- clientRef.current.dispose() completely releases all event listeners and native socket streams
@@ -353,14 +373,9 @@ export function useNitroSse<
         ? Object.keys(headersRef.current).sort()
         : [];
 
-    if (!hasValidUrl) {
-      if (
-        autoStart &&
-        typeof __DEV__ !== 'undefined' &&
-        __DEV__ &&
-        restConfigRef.current.url !== undefined
-      ) {
-        console.warn(
+    if (validUrl === null) {
+      if (autoStart && restConfigRef.current.url !== undefined) {
+        devWarn(
           '[useNitroSse] Missing or empty url in options. Connection will not start until a valid URL is provided.'
         );
       }
@@ -370,7 +385,7 @@ export function useNitroSse<
       return () => {};
     }
 
-    initializeClient();
+    initializeClient(validUrl);
 
     return () => {
       if (clientRef.current) {
@@ -408,9 +423,9 @@ export function useNitroSse<
       prevHeaderKeysRef.current.some((k) => !currentKeysSet.has(k));
     prevHeaderKeysRef.current = currentKeys;
 
-    if (isKeyRemoved && hasValidUrlRef.current) {
+    if (isKeyRemoved && validUrlRef.current !== null) {
       clientRef.current?.dispose();
-      initializeClient();
+      initializeClient(validUrlRef.current);
       return;
     }
 
@@ -418,10 +433,7 @@ export function useNitroSse<
       try {
         clientRef.current.updateHeaders(currentHeaders);
       } catch (err) {
-        console.error(
-          '[useNitroSse] Failed to dynamically update headers:',
-          err
-        );
+        logError('[useNitroSse] Failed to dynamically update headers:', err);
       }
     }
   }, [headersKey, initializeClient]);
@@ -434,18 +446,16 @@ export function useNitroSse<
         const s = clientRef.current.getState();
         setState(s);
       } catch (err) {
-        console.error('[useNitroSse] Failed to start client:', err);
+        logError('[useNitroSse] Failed to start client:', err);
       }
-    } else if (typeof __DEV__ !== 'undefined' && __DEV__) {
-      if (!hasValidUrlRef.current) {
-        console.warn(
-          '[useNitroSse] Cannot start SSE stream: url is empty or invalid.'
-        );
-      } else {
-        console.warn(
-          '[useNitroSse] start() was called before the client was initialized.'
-        );
-      }
+    } else if (validUrlRef.current === null) {
+      devWarn(
+        '[useNitroSse] Cannot start SSE stream: url is empty or invalid.'
+      );
+    } else {
+      devWarn(
+        '[useNitroSse] start() was called before the client was initialized.'
+      );
     }
   }, []);
 
@@ -456,10 +466,10 @@ export function useNitroSse<
         const s = clientRef.current.getState();
         setState(s);
       } catch (err) {
-        console.error('[useNitroSse] Failed to stop client:', err);
+        logError('[useNitroSse] Failed to stop client:', err);
       }
-    } else if (typeof __DEV__ !== 'undefined' && __DEV__) {
-      console.warn(
+    } else {
+      devWarn(
         '[useNitroSse] stop() was called before the client was initialized.'
       );
     }
@@ -472,18 +482,16 @@ export function useNitroSse<
         const s = clientRef.current.getState();
         setState(s);
       } catch (err) {
-        console.error('[useNitroSse] Failed to restart client:', err);
+        logError('[useNitroSse] Failed to restart client:', err);
       }
-    } else if (typeof __DEV__ !== 'undefined' && __DEV__) {
-      if (!hasValidUrlRef.current) {
-        console.warn(
-          '[useNitroSse] Cannot restart SSE stream: url is empty or invalid.'
-        );
-      } else {
-        console.warn(
-          '[useNitroSse] restart() was called before the client was initialized.'
-        );
-      }
+    } else if (validUrlRef.current === null) {
+      devWarn(
+        '[useNitroSse] Cannot restart SSE stream: url is empty or invalid.'
+      );
+    } else {
+      devWarn(
+        '[useNitroSse] restart() was called before the client was initialized.'
+      );
     }
   }, []);
 
@@ -492,10 +500,10 @@ export function useNitroSse<
       try {
         clientRef.current.flush();
       } catch (err) {
-        console.error('[useNitroSse] Failed to flush events:', err);
+        logError('[useNitroSse] Failed to flush events:', err);
       }
-    } else if (typeof __DEV__ !== 'undefined' && __DEV__) {
-      console.warn(
+    } else {
+      devWarn(
         '[useNitroSse] flush() was called before the client was initialized.'
       );
     }
@@ -506,10 +514,10 @@ export function useNitroSse<
       try {
         clientRef.current.updateHeaders(newHeaders);
       } catch (err) {
-        console.error('[useNitroSse] Failed to update headers:', err);
+        logError('[useNitroSse] Failed to update headers:', err);
       }
-    } else if (typeof __DEV__ !== 'undefined' && __DEV__) {
-      console.warn(
+    } else {
+      devWarn(
         '[useNitroSse] updateHeaders() was called before the client was initialized.'
       );
     }
@@ -520,10 +528,10 @@ export function useNitroSse<
       try {
         clientRef.current.setLastProcessedId(id);
       } catch (err) {
-        console.error('[useNitroSse] Failed to set last processed ID:', err);
+        logError('[useNitroSse] Failed to set last processed ID:', err);
       }
-    } else if (typeof __DEV__ !== 'undefined' && __DEV__) {
-      console.warn(
+    } else {
+      devWarn(
         '[useNitroSse] setLastProcessedId() was called before the client was initialized.'
       );
     }
@@ -532,7 +540,8 @@ export function useNitroSse<
   const getStats = useCallback((): SseStats | undefined => {
     try {
       return clientRef.current?.getStats();
-    } catch {
+    } catch (err) {
+      devWarn('[useNitroSse] Failed to get stats:', err);
       return undefined;
     }
   }, []);
@@ -542,10 +551,10 @@ export function useNitroSse<
       try {
         clientRef.current.injectMockEvent(event);
       } catch (err) {
-        console.error('[useNitroSse] Failed to inject mock event:', err);
+        logError('[useNitroSse] Failed to inject mock event:', err);
       }
-    } else if (typeof __DEV__ !== 'undefined' && __DEV__) {
-      console.warn(
+    } else {
+      devWarn(
         '[useNitroSse] injectMockEvent() was called before the client was initialized.'
       );
     }
