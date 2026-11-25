@@ -1200,7 +1200,7 @@ class NitroSseCoordinatorTests: XCTestCase {
         XCTAssertNotNil(stats.connectedAt)
 
         // 2. Data chunk received
-        sse.connectionDidReceiveDataChunk(chunkLength: 128, rawWireBytes: 128, decompressedBytes: 128, attemptVersion: currentVersion)
+        sse.connectionDidReceiveDataChunk(rawWireBytes: 128, decompressedBytes: 128, attemptVersion: currentVersion)
         dispatcher.executeAllPendingBlocks()
 
         stats = try! sse.getStats()
@@ -1420,7 +1420,7 @@ class NitroSseCoordinatorTests: XCTestCase {
         var version = sse.connectionAttemptVersion
 
         // Attempt 1 receives 150 bytes, then fails
-        sse.connectionDidReceiveDataChunk(chunkLength: 150, rawWireBytes: 150, decompressedBytes: nil, attemptVersion: version)
+        sse.connectionDidReceiveDataChunk(rawWireBytes: 150, decompressedBytes: nil, attemptVersion: version)
         sse.connectionDidFail(error: NSError(domain: "HTTP", code: 500, userInfo: nil), response: nil, errorBody: nil, attemptVersion: version)
         dispatcher.executeAllPendingBlocks()
 
@@ -1429,7 +1429,7 @@ class NitroSseCoordinatorTests: XCTestCase {
 
         // Attempt 2 reconnects, receives 200 bytes
         version = sse.connectionAttemptVersion
-        sse.connectionDidReceiveDataChunk(chunkLength: 200, rawWireBytes: 200, decompressedBytes: nil, attemptVersion: version)
+        sse.connectionDidReceiveDataChunk(rawWireBytes: 200, decompressedBytes: nil, attemptVersion: version)
         dispatcher.executeAllPendingBlocks()
 
         stats = try! sse.getStats()
