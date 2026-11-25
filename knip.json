@@ -1,0 +1,21 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "ignoreWorkspaces": ["example"],
+  "ignoreDependencies": [
+    "@commitlint/config-conventional",
+    "@react-native/babel-preset",
+    "@react-native/eslint-config"
+  ],
+  "ignoreBinaries": ["pod"],
+  "workspaces": {
+    ".": {
+      "entry": [
+        "src/index.ts",
+        "src/index.native.ts",
+        "src/index.web.ts",
+        "src/NitroSse.nitro.ts"
+      ],
+      "project": ["src/**/*.{ts,tsx}"]
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "threshold": 5,
+  "reporters": ["console"],
+  "path": ["src", "ios", "android/src/main"],
+  "format": ["typescript", "javascript", "swift", "kotlin", "cpp", "objectivec"],
+  "ignore": [
+    "**/node_modules/**",
+    "**/example/**",
+    "**/lib/**",
+    "**/build/**",
+    "**/nitrogen/**",
+    "**/__tests__/**",
+    "ios/Tests/**",
+    "android/src/test/**"
+  ]
+}
