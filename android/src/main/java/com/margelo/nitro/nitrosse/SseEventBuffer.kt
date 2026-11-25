@@ -22,7 +22,7 @@ class SseEventBuffer(
     private val isFlushPending = AtomicBoolean(false)
     
     private var batchingIntervalMs: Double = 0.0
-    private var maxBufferSize: Int = 1000
+    private var maxBufferSize: Int = DEFAULT_MAX_BUFFER_SIZE
 
     private var peakBufferedEvents: Int = 0
     private var bufferFlushCount: Long = 0
@@ -31,8 +31,15 @@ class SseEventBuffer(
     private val flushRunnable = Runnable { flush() }
 
     fun configure(batchingIntervalMs: Double, maxBufferSize: Int) {
-        this.batchingIntervalMs = if (!batchingIntervalMs.isNaN() && !batchingIntervalMs.isInfinite() && batchingIntervalMs >= 0) batchingIntervalMs else 0.0
-        this.maxBufferSize = if (maxBufferSize > 0) minOf(maxBufferSize, HARD_MAX_BUFFER_SIZE) else 1000
+        val isValidInterval = !batchingIntervalMs.isNaN() &&
+            !batchingIntervalMs.isInfinite() &&
+            batchingIntervalMs >= 0
+        this.batchingIntervalMs = if (isValidInterval) batchingIntervalMs else 0.0
+        this.maxBufferSize = if (maxBufferSize > 0) {
+            minOf(maxBufferSize, HARD_MAX_BUFFER_SIZE)
+        } else {
+            DEFAULT_MAX_BUFFER_SIZE
+        }
     }
 
     fun setCallback(newCallback: (Array<SseEvent>) -> Unit) {
@@ -40,6 +47,7 @@ class SseEventBuffer(
     }
 
     companion object {
+        private const val DEFAULT_MAX_BUFFER_SIZE = 1000
         private const val HARD_MAX_BUFFER_SIZE = 10000
     }
 
@@ -100,6 +108,7 @@ class SseEventBuffer(
         }
     }
 
+    @Suppress("TooGenericExceptionCaught")
     fun flush() {
         dispatcher?.removeCallbacks(flushRunnable)
         val eventsToEmit: Array<SseEvent>

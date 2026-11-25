@@ -1,6 +1,5 @@
 package com.margelo.nitro.nitrosse
 
-import android.util.Log
 import com.margelo.nitro.core.AnyMap
 import org.json.JSONArray
 import org.json.JSONObject
@@ -22,9 +21,7 @@ object JsonUtils {
     }
 
     fun jsonObjectToMap(jsonObject: JSONObject, depth: Int = 0): Map<String, Any?> {
-        if (depth > MAX_DEPTH) {
-            throw IllegalArgumentException("JSON nesting depth limit ($MAX_DEPTH) exceeded")
-        }
+        require(depth <= MAX_DEPTH) { "JSON nesting depth limit ($MAX_DEPTH) exceeded" }
         val map = HashMap<String, Any?>(jsonObject.length())
         val keys = jsonObject.keys()
         while (keys.hasNext()) {
@@ -35,9 +32,7 @@ object JsonUtils {
     }
 
     fun jsonArrayToList(jsonArray: JSONArray, depth: Int = 0): List<Any?> {
-        if (depth > MAX_DEPTH) {
-            throw IllegalArgumentException("JSON nesting depth limit ($MAX_DEPTH) exceeded")
-        }
+        require(depth <= MAX_DEPTH) { "JSON nesting depth limit ($MAX_DEPTH) exceeded" }
         val list = ArrayList<Any?>(jsonArray.length())
         for (i in 0 until jsonArray.length()) {
             list.add(convertJsonValue(jsonArray.get(i), depth))
@@ -62,16 +57,13 @@ object JsonUtils {
      * Parses a raw JSON string into [AnyMap]. Returns null on malformed JSON or non-object roots
      * to prevent invalid SSE payloads from interrupting stream processing.
      */
+    @Suppress("TooGenericExceptionCaught")
     fun parseJsonToAnyMap(data: String): AnyMap? {
         return try {
             val map = parseJsonToMap(data) ?: return null
             AnyMap.fromMap(map, true)
-        } catch (t: Throwable) {
-            try {
-                Log.w("JsonUtils", "Failed to parse JSON: ${t.message}")
-            } catch (_: Throwable) {
-                // Ignored in unit test environments where Log is unmocked
-            }
+        } catch (_: Throwable) {
+            // Silently return null on malformed JSON (parity with iOS SseEventBuffer.parseJsonToAnyMap)
             null
         }
     }

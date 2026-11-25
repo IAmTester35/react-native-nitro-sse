@@ -6,7 +6,11 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.util.Log
 
-typealias NetworkChangeHandler = (isAvailable: Boolean, interfaceChanged: Boolean, capabilities: NetworkCapabilities?) -> Unit
+typealias NetworkChangeHandler = (
+    isAvailable: Boolean,
+    interfaceChanged: Boolean,
+    capabilities: NetworkCapabilities?
+) -> Unit
 
 /**
  * Monitors system connectivity changes using Android's [ConnectivityManager].
@@ -28,6 +32,7 @@ class SseNetworkMonitor(
         private const val TAG = "SseNetworkMonitor"
     }
 
+    @Suppress("TooGenericExceptionCaught")
     fun start() {
         synchronized(lock) {
             if (networkCallback != null) return
@@ -93,6 +98,7 @@ class SseNetworkMonitor(
         }
     }
 
+    @Suppress("TooGenericExceptionCaught")
     fun stop() {
         synchronized(lock) {
             lastCapabilities = null
