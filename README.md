@@ -199,7 +199,7 @@ sse.start();
 | `maxBufferSize`        | `number`                                | `1000`   | Max buffer size before forcing event dispatch.                                                     |
 | `connectionTimeoutMs`  | `number`                                | `15000`  | Socket connection timeout in ms.                                                                   |
 | `readTimeoutMs`        | `number`                                | `300000` | Inactivity timeout in ms before reconnecting.                                                      |
-| `retryIntervalMs`      | `number`                                | `1000`   | Base reconnect delay in ms.                                                                        |
+| `retryIntervalMs`      | `number`                                | `1000`   | Base reconnect delay in ms. All platforms (iOS, Android, Web) enforce a `1000ms` minimum effective floor (including server `retry:` directives). |
 | `maxRetryIntervalMs`   | `number`                                | `30000`  | Maximum exponential backoff delay in ms.                                                           |
 | `jitterFactor`         | `number`                                | `0.5`    | Jitter factor applied to reconnect delay (`0.0` to `1.0`).                                         |
 | `maxReconnectAttempts` | `number`                                | `-1`     | Max reconnect retries (`-1` = infinite, `0` = disabled).                                           |
