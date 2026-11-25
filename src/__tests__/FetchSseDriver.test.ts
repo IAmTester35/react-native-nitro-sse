@@ -816,6 +816,32 @@ describe('FetchSseDriver', () => {
     expect(stats.serverRetryDelayMs).toBe(8888);
   });
 
+  test('enforces 1000ms minimum reconnect floor even with smaller retryIntervalMs and server retry directive', async () => {
+    const config: SseConfig = {
+      url: TEST_URL,
+      retryIntervalMs: 100,
+      jitterFactor: 0,
+    };
+    driver.setup(config);
+
+    const stream = createMockStream(['retry: 50\ndata: hi\n\n']);
+
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: stream,
+    });
+
+    driver.start();
+    for (let i = 0; i < 15; i++) {
+      await Promise.resolve();
+    }
+
+    const stats = driver.getStats();
+    expect(stats.serverRetryDelayMs).toBe(50);
+    expect(stats.lastReconnectDelayMs).toBeGreaterThanOrEqual(1000);
+  });
+
   test('parses RFC 1123 HTTP-Date in Retry-After header on HTTP 429', async () => {
     const config: SseConfig = {
       url: TEST_URL,
@@ -1312,4 +1338,30 @@ describe('FetchSseDriver', () => {
       expect(dispatchedEvents.length).toBe(1000);
     }
   );
+
+  test('does not read unused response.text() body on HTTP 503', async () => {
+    for (const headers of [
+      new Headers(),
+      new Headers({ 'Retry-After': '2' }),
+    ]) {
+      const textSpy = jest.fn().mockResolvedValue('Service Unavailable');
+      const d503 = new FetchSseDriver((events) =>
+        dispatchedEvents.push(...events)
+      );
+      d503.setup({ url: TEST_URL, maxReconnectAttempts: 0 });
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        status: 503,
+        headers,
+        text: textSpy,
+      });
+
+      d503.start();
+      for (let i = 0; i < 6; i++) {
+        await Promise.resolve();
+      }
+
+      expect(textSpy).not.toHaveBeenCalled();
+      d503.dispose();
+    }
+  });
 });

@@ -111,16 +111,14 @@ export class SseEventParser {
       this._skipLeadingLf = false;
       if (text.charCodeAt(0) === LF) {
         text = text.slice(1);
-        if (!text && this._pendingLength === 0) return;
+        if (!text) return;
       }
-    }
-
-    if (this._isAtStreamStart) {
+    } else if (this._isAtStreamStart) {
       if (text.charCodeAt(0) === 0xfeff) {
         text = text.slice(1);
       }
       this._isAtStreamStart = false;
-      if (!text && this._pendingLength === 0) return;
+      if (!text) return;
     }
 
     const hasLf = text.indexOf('\n') !== -1;
@@ -226,9 +224,7 @@ export class SseEventParser {
       this._pendingLength = remaining.length;
     }
 
-    if (parsedLinesInChunk > 0) {
-      this._delegate.onLinesParsed(parsedLinesInChunk);
-    }
+    this._delegate.onLinesParsed(parsedLinesInChunk);
   }
 
   private _processLine(line: string): void {

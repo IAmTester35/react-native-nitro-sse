@@ -13,7 +13,6 @@ import type { AnyMap } from 'react-native-nitro-modules';
 declare const window: any;
 
 function getUtf8ByteCount(str: string): number {
-  if (!str) return 0;
   let bytes = 0;
   for (let i = 0; i < str.length; i++) {
     const code = str.charCodeAt(i);
@@ -21,16 +20,15 @@ function getUtf8ByteCount(str: string): number {
       bytes += 1;
     } else if (code <= 0x7ff) {
       bytes += 2;
-    } else if (code >= 0xd800 && code <= 0xdbff) {
-      if (i + 1 < str.length) {
-        const next = str.charCodeAt(i + 1);
-        if (next >= 0xdc00 && next <= 0xdfff) {
-          bytes += 4;
-          i++;
-          continue;
-        }
-      }
-      bytes += 3;
+    } else if (
+      code >= 0xd800 &&
+      code <= 0xdbff &&
+      i + 1 < str.length &&
+      str.charCodeAt(i + 1) >= 0xdc00 &&
+      str.charCodeAt(i + 1) <= 0xdfff
+    ) {
+      bytes += 4;
+      i++;
     } else {
       bytes += 3;
     }
@@ -92,6 +90,10 @@ class SseReconnectStrategy {
     } else {
       this._maxReconnectAttempts = -1;
     }
+  }
+
+  get maxReconnectAttempts(): number {
+    return this._maxReconnectAttempts;
   }
 
   hasReachedMaxAttempts(): boolean {
@@ -174,7 +176,6 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
   private _serverRetryDelayMs?: number;
   private _connectedAt?: number;
   private _timeToFirstByteMs?: number;
-  private _connectionAttemptStartTime?: number;
   private _lastEventTime?: number;
   private _lastHeartbeatTime?: number;
   private _lastActivityTime = 0;
@@ -189,8 +190,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
   private _lastErrorTime?: number;
   private _lastErrorCode?: string;
 
-  private _onlineListener?: () => void;
-  private _offlineListener?: () => void;
+  private _removeNetworkListeners?: () => void;
 
   constructor(dispatchEvents: (events: SseEvent[]) => void = () => {}) {
     this._dispatchEvents = dispatchEvents;
@@ -249,7 +249,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         this._consecutiveAuthErrors = 0;
         this._connectionAttemptVersion++;
         this._updateState('connecting');
-        this._establishConnection(this._connectionAttemptVersion);
+        this._establishConnection(this._connectionAttemptVersion, this._config);
       }
       return;
     }
@@ -261,7 +261,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     this._reconnectStrategy.reset();
     this._connectionAttemptVersion++;
 
-    this._establishConnection(this._connectionAttemptVersion);
+    this._establishConnection(this._connectionAttemptVersion, this._config);
   }
 
   stop(): void {
@@ -285,7 +285,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     this._reconnectStrategy.reset();
     this._connectionAttemptVersion++;
     this._updateState('reconnecting');
-    this._establishConnection(this._connectionAttemptVersion);
+    this._establishConnection(this._connectionAttemptVersion, this._config);
   }
 
   flush(): void {
@@ -362,21 +362,24 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     );
   }
 
-  private async _establishConnection(attemptVersion: number): Promise<void> {
-    if (this._isStale(attemptVersion) || !this._config) {
+  private async _establishConnection(
+    attemptVersion: number,
+    config: SseConfig
+  ): Promise<void> {
+    if (this._isStale(attemptVersion)) {
       return;
     }
 
     this._updateState('connecting');
     this._connectionAttempts++;
-    this._connectionAttemptStartTime = Date.now();
+    const attemptStartTime = Date.now();
     this._timeToFirstByteMs = undefined;
 
     // 1. Prepare dynamic headers via interceptor if configured
     let dynamicInterceptorHeaders: Record<string, string> = {};
     if (this._onBeforeRequest) {
       try {
-        const timeoutMs = this._config.connectionTimeoutMs ?? 15000;
+        const timeoutMs = config.connectionTimeoutMs ?? 15000;
         let interceptorTimer: ReturnType<typeof setTimeout> | undefined;
         try {
           dynamicInterceptorHeaders = await Promise.race([
@@ -407,7 +410,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         });
 
         this._consecutiveAuthErrors++;
-        const maxAuthRetries = this._config.maxAuthRetries ?? 3;
+        const maxAuthRetries = config.maxAuthRetries ?? 3;
         if (this._consecutiveAuthErrors > maxAuthRetries) {
           this._disconnectReason = 'server_error';
           this._failAndStop(
@@ -417,7 +420,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
           return;
         }
 
-        this._scheduleReconnect(true, undefined, attemptVersion);
+        this._scheduleReconnect(true, undefined, attemptVersion, config);
         return;
       }
     }
@@ -427,24 +430,24 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     // URL syntax and protocol validation matching Native (http/https only)
     try {
       const parsedUrl = new URL(
-        this._config.url,
+        config.url,
         typeof window !== 'undefined' && window.location
           ? window.location.href
           : 'http://localhost'
       );
       if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-        this._failAndStop(`Invalid URL: ${this._config.url}`, -1);
+        this._failAndStop(`Invalid URL: ${config.url}`, -1);
         return;
       }
     } catch {
-      this._failAndStop(`Invalid URL: ${this._config.url}`, -1);
+      this._failAndStop(`Invalid URL: ${config.url}`, -1);
       return;
     }
 
     // 2. Build headers
     const filteredHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries({
-      ...(this._config.headers ?? {}),
+      ...(config.headers ?? {}),
       ...this._dynamicHeaders,
       ...dynamicInterceptorHeaders,
     })) {
@@ -460,14 +463,14 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       ...filteredHeaders,
     };
 
-    if (this._lastProcessedId && this._lastProcessedId.length > 0) {
+    if (this._lastProcessedId) {
       mergedHeaders['Last-Event-ID'] = this._lastProcessedId;
     }
 
     const abortController = new AbortController();
     this._abortController = abortController;
 
-    const connectionTimeoutMs = this._config.connectionTimeoutMs ?? 15000;
+    const connectionTimeoutMs = config.connectionTimeoutMs ?? 15000;
     this._connectionTimer = setTimeout(() => {
       this._connectionTimer = undefined;
       if (attemptVersion === this._connectionAttemptVersion) {
@@ -476,7 +479,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       }
     }, connectionTimeoutMs);
 
-    const method = (this._config.method ?? 'get').toUpperCase();
+    const method = (config.method ?? 'get').toUpperCase();
     const fetchOptions: RequestInit = {
       method,
       headers: mergedHeaders,
@@ -485,8 +488,8 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       credentials: 'same-origin',
     };
 
-    if (method === 'POST' && this._config.body) {
-      fetchOptions.body = this._config.body;
+    if (method === 'POST' && config.body) {
+      fetchOptions.body = config.body;
       const hasContentType = Object.keys(mergedHeaders).some(
         (k) => k.toLowerCase() === 'content-type'
       );
@@ -497,7 +500,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
 
     let response: Response;
     try {
-      response = await fetch(this._config.url, fetchOptions);
+      response = await fetch(config.url, fetchOptions);
     } catch (err) {
       clearTimeout(this._connectionTimer);
       if (this._isStale(attemptVersion)) return;
@@ -514,7 +517,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       }
       this._recordError(errorMsg, undefined);
       this._pushEvent({ type: 'error', message: errorMsg });
-      this._scheduleReconnect(true, undefined, attemptVersion);
+      this._scheduleReconnect(true, undefined, attemptVersion, config);
       return;
     }
 
@@ -530,7 +533,8 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       response.status !== 401 &&
       response.status !== 403 &&
       response.status !== 408 &&
-      response.status !== 429
+      response.status !== 429 &&
+      response.status !== 503
     ) {
       const bodyTimer = setTimeout(
         () => abortController.abort(),
@@ -551,7 +555,12 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     // 3a. HTTP 200 OK: Content-Type MIME type MUST be text/event-stream
     if (statusCode === 200) {
       const contentType = response.headers.get('Content-Type') ?? '';
-      const mimeType = contentType.split(';')[0]?.trim().toLowerCase() ?? '';
+      const semiIdx = contentType.indexOf(';');
+      const mimeType = (
+        semiIdx === -1 ? contentType : contentType.slice(0, semiIdx)
+      )
+        .trim()
+        .toLowerCase();
       if (mimeType !== 'text/event-stream') {
         this._disconnectReason = 'server_error';
         this._failAndStop(
@@ -570,7 +579,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       return;
     } else if (statusCode === 401 || statusCode === 403) {
       // 3c. HTTP 401/403 Auth errors
-      const maxAuthRetries = this._config.maxAuthRetries ?? 3;
+      const maxAuthRetries = config.maxAuthRetries ?? 3;
       if (!this._onBeforeRequest) {
         this._disconnectReason = 'server_error';
         this._failAndStop(
@@ -596,7 +605,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         statusCode,
         message: `Auth Error (${statusCode}) - Retry ${this._consecutiveAuthErrors}/${maxAuthRetries}. Refreshing token...`,
       });
-      this._scheduleReconnect(true, undefined, attemptVersion);
+      this._scheduleReconnect(true, undefined, attemptVersion, config);
       return;
     } else if (statusCode === 408) {
       // 3d. Request Timeout: Recoverable per WHATWG SSE and Native specs
@@ -608,7 +617,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         statusCode: 408,
         message: 'HTTP 408',
       });
-      this._scheduleReconnect(true, undefined, attemptVersion);
+      this._scheduleReconnect(true, undefined, attemptVersion, config);
       return;
     } else if (statusCode === 429 || statusCode === 503) {
       // 3e. Rate limit / Service unavailable: Honor Retry-After
@@ -618,7 +627,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       this._recordError(`HTTP ${statusCode}`, String(statusCode));
 
       if (rawRetryAfterMs !== undefined) {
-        const maxIntervalMs = this._config.maxRetryIntervalMs ?? 30000;
+        const maxIntervalMs = config.maxRetryIntervalMs ?? 30000;
         const boundedRetryMs = Math.max(
           0,
           Math.min(rawRetryAfterMs, maxIntervalMs)
@@ -632,7 +641,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
           retry: totalDelayMs,
           message: `Retry-After received: ${Math.round(totalDelayMs / 1000)}s`,
         });
-        this._scheduleReconnect(true, totalDelayMs, attemptVersion);
+        this._scheduleReconnect(true, totalDelayMs, attemptVersion, config);
         return;
       }
 
@@ -642,7 +651,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
           statusCode: 429,
           message: 'Rate Limited (429). Retrying with backoff...',
         });
-        this._scheduleReconnect(true, undefined, attemptVersion);
+        this._scheduleReconnect(true, undefined, attemptVersion, config);
         return;
       }
 
@@ -651,7 +660,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         statusCode,
         message: `HTTP ${statusCode}`,
       });
-      this._scheduleReconnect(true, undefined, attemptVersion);
+      this._scheduleReconnect(true, undefined, attemptVersion, config);
       return;
     } else if (statusCode >= 400 && statusCode <= 499) {
       // 3f. Fatal client error (e.g. 400 Bad Request, 404 Not Found, 405 Method Not Allowed)
@@ -675,7 +684,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         statusCode,
         message: errorMsg,
       });
-      this._scheduleReconnect(true, undefined, attemptVersion);
+      this._scheduleReconnect(true, undefined, attemptVersion, config);
       return;
     } else {
       // Any other non-200 status code (e.g. 201 Created, 202, 3xx) is fatal per WHATWG SSE Section 9.1
@@ -714,7 +723,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     const decoder = new TextDecoder('utf-8');
 
     // 6. Setup idle read timeout
-    this._resetReadTimeout(attemptVersion);
+    this._resetReadTimeout(attemptVersion, config);
 
     try {
       while (!this._isStale(attemptVersion)) {
@@ -734,16 +743,12 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         }
 
         if (value) {
-          if (
-            this._timeToFirstByteMs === undefined &&
-            this._connectionAttemptStartTime
-          ) {
-            this._timeToFirstByteMs =
-              Date.now() - this._connectionAttemptStartTime;
+          if (this._timeToFirstByteMs === undefined) {
+            this._timeToFirstByteMs = Date.now() - attemptStartTime;
           }
           this._rawBytesReceived += value.byteLength;
           this._chunksReceived++;
-          this._resetReadTimeout(attemptVersion);
+          this._resetReadTimeout(attemptVersion, config);
 
           const text = decoder.decode(value, { stream: true });
           parser.feed(text);
@@ -758,7 +763,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         this._disconnectReason = 'network_error';
         this._recordError(errorMsg, undefined);
         this._pushEvent({ type: 'error', message: errorMsg });
-        this._scheduleReconnect(true, undefined, attemptVersion);
+        this._scheduleReconnect(true, undefined, attemptVersion, config);
         return;
       }
     } finally {
@@ -768,7 +773,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     if (this._isStale(attemptVersion)) return;
 
     // Clean disconnect from server
-    this._scheduleReconnect(false, undefined, attemptVersion);
+    this._scheduleReconnect(false, undefined, attemptVersion, config);
   }
 
   // =========================================================================
@@ -778,13 +783,15 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
   private _scheduleReconnect(
     isError: boolean,
     fixedDelayMs: number | undefined,
-    attemptVersion: number
+    attemptVersion: number,
+    config: SseConfig
   ): void {
     if (this._isStale(attemptVersion)) return;
 
     if (this._reconnectStrategy.hasReachedMaxAttempts()) {
-      const maxAttempts = this._config?.maxReconnectAttempts ?? -1;
-      this._failAndStop(`Max reconnection attempts reached (${maxAttempts}).`);
+      this._failAndStop(
+        `Max reconnection attempts reached (${this._reconnectStrategy.maxReconnectAttempts}).`
+      );
       return;
     }
 
@@ -807,7 +814,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = undefined;
       if (!this._isStale(newVersion)) {
-        this._establishConnection(newVersion);
+        this._establishConnection(newVersion, config);
       }
     }, delay);
   }
@@ -879,15 +886,14 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = undefined;
     }
-    if (this._batchTimer) {
-      clearTimeout(this._batchTimer);
-      this._batchTimer = undefined;
-    }
   }
 
-  private _resetReadTimeout(attemptVersion: number): void {
+  private _resetReadTimeout(
+    attemptVersion: number,
+    config: SseConfig = this._config!
+  ): void {
     this._clearReadTimeout();
-    const readTimeoutMs = this._config?.readTimeoutMs ?? 300000;
+    const readTimeoutMs = config.readTimeoutMs ?? 300000;
     if (readTimeoutMs <= 0) return;
 
     this._readTimeoutTimer = setTimeout(() => {
@@ -898,7 +904,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         const errorMsg = 'Read timeout';
         this._recordError(errorMsg, undefined);
         this._pushEvent({ type: 'error', message: errorMsg });
-        this._scheduleReconnect(true, undefined, attemptVersion);
+        this._scheduleReconnect(true, undefined, attemptVersion, config);
       }
     }, readTimeoutMs);
   }
@@ -950,10 +956,10 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       this._peakBufferedEvents = this._batchBuffer.length;
     }
 
-    if (this._batchBuffer.length >= maxBufferSize && batchingIntervalMs > 0) {
-      this._bufferOverflowCount++;
+    if (batchingIntervalMs <= 0) {
       this._flushBatch();
-    } else if (batchingIntervalMs <= 0) {
+    } else if (this._batchBuffer.length >= maxBufferSize) {
+      this._bufferOverflowCount++;
       this._flushBatch();
     } else if (!this._batchTimer) {
       this._batchTimer = setTimeout(() => {
@@ -1016,10 +1022,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     let parsedData: AnyMap | undefined;
     if (this._config?.autoParseJSON && /^\s*\{/.test(data)) {
       try {
-        const obj = JSON.parse(data);
-        if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
-          parsedData = obj as AnyMap;
-        }
+        parsedData = JSON.parse(data) as AnyMap;
       } catch {
         // Ignore JSON parsing failures
       }
@@ -1083,11 +1086,11 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     if (
       typeof window === 'undefined' ||
       typeof window.addEventListener !== 'function' ||
-      this._offlineListener !== undefined
+      this._removeNetworkListeners !== undefined
     )
       return;
 
-    this._offlineListener = () => {
+    const offlineListener = () => {
       if (this._isRunning) {
         this._wasRunningBeforeNetworkLoss = true;
         this._disconnectReason = 'network_error';
@@ -1098,7 +1101,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       }
     };
 
-    this._onlineListener = () => {
+    const onlineListener = () => {
       if (this._wasRunningBeforeNetworkLoss) {
         this._wasRunningBeforeNetworkLoss = false;
         this.start();
@@ -1106,24 +1109,22 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     };
 
     const target: EventTarget = window;
-    target.addEventListener('offline', this._offlineListener);
-    target.addEventListener('online', this._onlineListener);
+    target.addEventListener('offline', offlineListener);
+    target.addEventListener('online', onlineListener);
+    this._removeNetworkListeners = () => {
+      target.removeEventListener('offline', offlineListener);
+      target.removeEventListener('online', onlineListener);
+    };
   }
 
   private _teardownNetworkListeners(): void {
     if (
       typeof window === 'undefined' ||
-      typeof window.removeEventListener !== 'function'
+      typeof window.removeEventListener !== 'function' ||
+      !this._removeNetworkListeners
     )
       return;
-    const target: EventTarget = window;
-    if (this._offlineListener) {
-      target.removeEventListener('offline', this._offlineListener);
-      this._offlineListener = undefined;
-    }
-    if (this._onlineListener) {
-      target.removeEventListener('online', this._onlineListener);
-      this._onlineListener = undefined;
-    }
+    this._removeNetworkListeners();
+    this._removeNetworkListeners = undefined;
   }
 }
