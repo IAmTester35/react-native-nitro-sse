@@ -110,7 +110,7 @@ internal class SseEventReader(private val source: BufferedSource) {
             }
             scanned = buffer.size
             if (!source.request(buffer.size + 1)) {
-                return if (buffer.size > 0) buffer.readUtf8() else null
+                return null
             }
             newlineIndex = buffer.indexOfElement(CRLF_DELIMITERS, scanned)
         }

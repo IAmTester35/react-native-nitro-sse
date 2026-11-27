@@ -48,6 +48,11 @@ jobs:
       - name: Run unit tests
         run: yarn test --maxWorkers=50% --coverage
 
+      - name: Check dead code and duplication
+        run: |
+          yarn check:deadcode
+          yarn check:duplication
+
       - name: Build package
         run: yarn prepare
 
@@ -88,20 +93,22 @@ jobs:
           fi
 
       - name: Install JDK
-        if: env.turbo_cache_hit != 1
         uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: 'zulu'
           java-version: '17'
 
       - name: Finalize Android SDK
-        if: env.turbo_cache_hit != 1
         run: |
           /bin/bash -c "yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null"
 
       - name: Setup Gradle
-        if: env.turbo_cache_hit != 1
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      - name: Run Android unit tests
+        env:
+          JAVA_OPTS: "-XX:MaxHeapSize=6g"
+        run: yarn test:android
 
       - name: Build example for Android
         env:
@@ -149,13 +156,11 @@ jobs:
           fi
 
       - name: Use appropriate Xcode version
-        if: env.turbo_cache_hit != 1
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: ${{ env.XCODE_VERSION }}
 
       - name: Cache cocoapods
-        if: env.turbo_cache_hit != 1
         id: cocoapods-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -163,11 +168,19 @@ jobs:
           key: ${{ runner.os }}-cocoapods-${{ hashFiles('example/ios/Podfile.lock') }}-v3
 
       - name: Install cocoapods
-        if: env.turbo_cache_hit != 1
         run: |
           cd example
           bundle install
           bundle exec pod install --project-directory=ios --no-repo-update
+
+      - name: Run iOS unit tests
+        run: |
+          SIM_ID=$(xcrun simctl list devices available -j | node -e "const d = JSON.parse(require('fs').readFileSync(0, 'utf8')); const all = Object.values(d.devices).flat(); const iphone = all.find(x => x.isAvailable && x.name.startsWith('iPhone')); if (iphone) process.stdout.write(iphone.udid);")
+          if [[ -n "$SIM_ID" ]]; then
+            (cd example/ios && xcodebuild test -workspace NitroSseExample.xcworkspace -scheme NitroSse-Unit-Tests -sdk iphonesimulator -destination "id=$SIM_ID")
+          else
+            yarn test:ios
+          fi
 
       - name: Build example for iOS
         run: |

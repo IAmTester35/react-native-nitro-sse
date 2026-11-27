@@ -174,8 +174,19 @@ object SseNetworkMetricsTracker {
             size > MAX_ENTRIES
     }
 
+    private fun pruneClearedIfNeeded(incomingRequestId: String) {
+        if (entries.containsKey(incomingRequestId) || entries.size < MAX_ENTRIES) return
+        val iterator = entries.entries.iterator()
+        while (iterator.hasNext() && entries.size >= MAX_ENTRIES) {
+            if (iterator.next().value.cleared) {
+                iterator.remove()
+            }
+        }
+    }
+
     @Synchronized
     fun recordRawBytes(requestId: String, bytes: Long, isGzip: Boolean) {
+        pruneClearedIfNeeded(requestId)
         val entry = entries.getOrPut(requestId) { MetricsEntry() }
         // Drop trailing socket reads after request has been cleared/cancelled to prevent resurrected memory leaks
         if (entry.cleared) return
@@ -196,6 +207,7 @@ object SseNetworkMetricsTracker {
 
     @Synchronized
     fun clear(requestId: String) {
+        pruneClearedIfNeeded(requestId)
         val entry = entries.getOrPut(requestId) { MetricsEntry() }
         entry.bytes = 0L
         entry.isGzip = false

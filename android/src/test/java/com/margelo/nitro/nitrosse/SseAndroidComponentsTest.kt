@@ -226,4 +226,37 @@ class SseAndroidComponentsTest {
         assertTrue(failedThrowable is IllegalStateException)
         assertFalse(closed)
     }
+
+    @Test
+    fun testSseMetricsPreservesPlainRawBytesAcrossGzipReconnect() {
+        val metrics = SseMetrics()
+        metrics.resetSessionByteCounters()
+
+        // Connection 1: plain text (100 bytes)
+        SseNetworkMetricsTracker.clear("plain-req-1")
+        metrics.recordDataChunk(100L, "plain-req-1", 1000.0)
+        assertEquals(100.0, metrics.toSseStats(0.0, 0.0, 0.0, 0.0).rawBytesReceived, 0.01)
+
+        // Retire plain connection and reconnect with gzip (50 raw wire bytes, 120 decompressed)
+        metrics.accumulateGzipRawBytesOffset("plain-req-1")
+        SseNetworkMetricsTracker.recordRawBytes("gzip-req-2", 50L, isGzip = true)
+        metrics.recordDataChunk(120L, "gzip-req-2", 2000.0)
+
+        assertEquals(150.0, metrics.toSseStats(0.0, 0.0, 0.0, 0.0).rawBytesReceived, 0.01)
+        SseNetworkMetricsTracker.clear("gzip-req-2")
+    }
+
+    @Test
+    fun testNetworkMetricsTrackerDoesNotEvictActiveRequestWhenClearedEntriesExceedLimit() {
+        val activeId = "active-gzip-stream"
+        SseNetworkMetricsTracker.recordRawBytes(activeId, 128L, isGzip = true)
+
+        for (i in 0..250) {
+            SseNetworkMetricsTracker.clear("cleared-req-$i")
+        }
+
+        assertTrue(SseNetworkMetricsTracker.isGzip(activeId))
+        assertEquals(128L, SseNetworkMetricsTracker.getRawBytes(activeId))
+        SseNetworkMetricsTracker.clear(activeId)
+    }
 }

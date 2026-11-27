@@ -485,14 +485,18 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
 
     const connectionTimeoutMs = config.connectionTimeoutMs ?? 15000;
     const requestStartTime = Date.now();
+    let connectionTimer: ReturnType<typeof setTimeout> | undefined;
     if (connectionTimeoutMs > 0) {
-      this._connectionTimer = setTimeout(() => {
-        this._connectionTimer = undefined;
+      connectionTimer = setTimeout(() => {
+        if (this._connectionTimer === connectionTimer) {
+          this._connectionTimer = undefined;
+        }
         if (attemptVersion === this._connectionAttemptVersion) {
           this._disconnectReason = 'timeout';
           abortController.abort();
         }
       }, connectionTimeoutMs);
+      this._connectionTimer = connectionTimer;
     }
 
     const method = (config.method ?? 'get').toUpperCase();
@@ -518,9 +522,11 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     try {
       response = await fetch(config.url, fetchOptions);
     } catch (err) {
-      if (this._connectionTimer) {
-        clearTimeout(this._connectionTimer);
-        this._connectionTimer = undefined;
+      if (connectionTimer !== undefined) {
+        clearTimeout(connectionTimer);
+        if (this._connectionTimer === connectionTimer) {
+          this._connectionTimer = undefined;
+        }
       }
       if (this._isStale(attemptVersion)) return;
 
@@ -540,9 +546,11 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       return;
     }
 
-    if (this._connectionTimer) {
-      clearTimeout(this._connectionTimer);
-      this._connectionTimer = undefined;
+    if (connectionTimer !== undefined) {
+      clearTimeout(connectionTimer);
+      if (this._connectionTimer === connectionTimer) {
+        this._connectionTimer = undefined;
+      }
     }
     if (this._isStale(attemptVersion)) return;
 
@@ -731,7 +739,9 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     }
     this._connectedAt = Date.now();
     this._updateState('open');
+    if (this._isStale(attemptVersion)) return;
     this._pushEvent({ type: 'open', statusCode });
+    if (this._isStale(attemptVersion)) return;
 
     // 5. Initialize streaming reader and parser
     const parser = new SseEventParser(this, this._lastProcessedId);
@@ -929,10 +939,13 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       let totalBytes = 0;
       let timedOut = false;
 
+      let streamTimer: ReturnType<typeof setTimeout> | undefined;
       const timeoutPromise = new Promise<{ value: undefined; done: true }>(
         (resolve) => {
-          this._errorBodyTimer = setTimeout(() => {
-            this._errorBodyTimer = undefined;
+          streamTimer = setTimeout(() => {
+            if (this._errorBodyTimer === streamTimer) {
+              this._errorBodyTimer = undefined;
+            }
             timedOut = true;
             resolve({ value: undefined, done: true });
             try {
@@ -946,6 +959,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
               // Ignore abort errors
             }
           }, remainingTimeoutMs);
+          this._errorBodyTimer = streamTimer;
         }
       );
 
@@ -975,9 +989,11 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       } catch {
         // Preserve already-buffered partial error body bytes before disconnect/abort
       } finally {
-        if (this._errorBodyTimer) {
-          clearTimeout(this._errorBodyTimer);
-          this._errorBodyTimer = undefined;
+        if (streamTimer !== undefined) {
+          clearTimeout(streamTimer);
+          if (this._errorBodyTimer === streamTimer) {
+            this._errorBodyTimer = undefined;
+          }
         }
         if (this._activeReader === reader) {
           this._activeReader = undefined;
@@ -1014,9 +1030,12 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     }
 
     // Fallback for environments without ReadableStream body support
+    let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
     const fallbackTimeoutPromise = new Promise<undefined>((resolve) => {
-      this._errorBodyTimer = setTimeout(() => {
-        this._errorBodyTimer = undefined;
+      fallbackTimer = setTimeout(() => {
+        if (this._errorBodyTimer === fallbackTimer) {
+          this._errorBodyTimer = undefined;
+        }
         resolve(undefined);
         try {
           abortController.abort();
@@ -1024,6 +1043,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
           // Ignore abort errors
         }
       }, remainingTimeoutMs);
+      this._errorBodyTimer = fallbackTimer;
     });
 
     let raw: string | undefined;
@@ -1032,9 +1052,11 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     } catch {
       // Ignore body reading error
     } finally {
-      if (this._errorBodyTimer) {
-        clearTimeout(this._errorBodyTimer);
-        this._errorBodyTimer = undefined;
+      if (fallbackTimer !== undefined) {
+        clearTimeout(fallbackTimer);
+        if (this._errorBodyTimer === fallbackTimer) {
+          this._errorBodyTimer = undefined;
+        }
       }
     }
 

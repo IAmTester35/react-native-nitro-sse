@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.3.0
+
+### Performance
+
+- Reduced memory allocations during event parsing across iOS, Android, and TypeScript.
+
+### Fixed
+
+- **Error Body (#61)**: Preserved HTTP error response bodies (up to 8192 UTF-8 bytes) in `event.data` for all `statusCode >= 400` responses across iOS, Android, and Web (including retries), streamed with timeout partial-body preservation on Web, included a bounded 256-character preview in `event.message` for 4xx/5xx responses, and omitted raw `event.data` from `__DEV__` unhandled-error warnings.
+- **Android**: Prevented memory leaks in `SseNetworkMetricsTracker`, `SseLifecycleManager`, and `SseNetworkMonitor`.
+- **Parser**: Discarded incomplete events on stream EOF per WHATWG spec (streams missing a trailing blank line will no longer emit the final partial event), and fixed UTF-8 BOM and multiline data handling in TypeScript.
+- **Network**: Added a 1s debounce on network interface changes (WiFi ↔ Cellular) to avoid reconnect thrashing, and enforced a `1000ms` floor on server `Retry-After` / SSE `retry:` intervals.
+- **Buffer**: Clamped `maxBufferSize` at 10,000 events across all platforms to prevent out-of-memory crashes under JS backpressure.
+- **DevTools**: Limited Android inspected request bodies to 64 KB and skipped streaming bodies.
+
+### Dependencies
+
+- Upgraded `react-native-nitro-modules` and `nitrogen` to 0.37.2.
+
 ## 3.2.0 (2026-10-20)
 
 ### Features

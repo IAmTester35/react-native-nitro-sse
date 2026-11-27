@@ -16,6 +16,8 @@ internal class SseMetrics {
     private var rawBytesReceived: Double = 0.0
     private var decompressedBytesReceived: Double? = null
     private var sessionRawBytesOffset: Double = 0.0
+    private var retiredPlainRawBytes: Double = 0.0
+    private var activePlainBytes: Double = 0.0
     private val totalBytesReceived = AtomicLong(0)
     private var chunksReceived: Double = 0.0
     private var lastStatusCode: Double? = null
@@ -49,6 +51,8 @@ internal class SseMetrics {
             rawBytesReceived = 0.0
             decompressedBytesReceived = null
             sessionRawBytesOffset = 0.0
+            retiredPlainRawBytes = 0.0
+            activePlainBytes = 0.0
         }
     }
 
@@ -77,9 +81,11 @@ internal class SseMetrics {
             if (isGzip) {
                 decompressedBytesReceived = (decompressedBytesReceived ?: 0.0) + decompressedBytes.toDouble()
                 val raw = SseNetworkMetricsTracker.getRawBytes(requestId)
-                rawBytesReceived = sessionRawBytesOffset + (raw?.toDouble() ?: decompressedBytes.toDouble())
+                rawBytesReceived = retiredPlainRawBytes + sessionRawBytesOffset +
+                    (raw?.toDouble() ?: decompressedBytes.toDouble())
             } else {
-                rawBytesReceived += decompressedBytes.toDouble()
+                activePlainBytes += decompressedBytes.toDouble()
+                rawBytesReceived = retiredPlainRawBytes + sessionRawBytesOffset + activePlainBytes
             }
             if (timeToFirstByteMs == null && connectionAttemptStartTime != null) {
                 timeToFirstByteMs = now - connectionAttemptStartTime!!
@@ -88,10 +94,18 @@ internal class SseMetrics {
     }
 
     fun accumulateGzipRawBytesOffset(retiringRequestId: String?) {
-        if (retiringRequestId == null || !SseNetworkMetricsTracker.isGzip(retiringRequestId)) return
-        val rawBytes = SseNetworkMetricsTracker.getRawBytes(retiringRequestId) ?: return
+        if (retiringRequestId == null) return
+        val isGzip = SseNetworkMetricsTracker.isGzip(retiringRequestId)
+        val rawBytes = if (isGzip) SseNetworkMetricsTracker.getRawBytes(retiringRequestId) else null
         synchronized(lock) {
-            sessionRawBytesOffset += rawBytes.toDouble()
+            if (isGzip) {
+                if (rawBytes != null) {
+                    sessionRawBytesOffset += rawBytes.toDouble()
+                }
+            } else {
+                retiredPlainRawBytes += activePlainBytes
+            }
+            activePlainBytes = 0.0
         }
     }
 

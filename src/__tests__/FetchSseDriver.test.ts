@@ -1957,4 +1957,61 @@ describe('FetchSseDriver', () => {
     expect(errEvent?.data).toBe('{"partial":');
     expect(cancelSpy).toHaveBeenCalled();
   });
+
+  test('superseded fetch does not clear newer attempt connection timer on settle', async () => {
+    let rejectFirst!: (err: Error) => void;
+    let secondSignal: AbortSignal | undefined;
+
+    globalThis.fetch = jest
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((_, reject) => {
+            rejectFirst = reject;
+          })
+      )
+      .mockImplementationOnce((_url: string, init?: RequestInit) => {
+        secondSignal = init?.signal as AbortSignal | undefined;
+        return new Promise(() => {});
+      });
+
+    driver.setup({ url: TEST_URL, connectionTimeoutMs: 5000 });
+    driver.start();
+    await flushMicrotasks();
+
+    driver.restart();
+    await flushMicrotasks();
+    expect(secondSignal).toBeDefined();
+    expect(secondSignal?.aborted).toBe(false);
+
+    // Late rejection from attempt 1 must NOT clear attempt 2's connection timer
+    rejectFirst(new Error('Aborted attempt 1'));
+    await flushMicrotasks();
+
+    jest.advanceTimersByTime(5000);
+    await flushMicrotasks();
+    expect(secondSignal?.aborted).toBe(true);
+  });
+
+  test('stop() called synchronously inside open listener prevents reader setup', async () => {
+    const getReaderSpy = jest.fn();
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 200,
+      headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+      body: { getReader: getReaderSpy },
+    });
+
+    const localDriver = new FetchSseDriver((events) => {
+      if (events.some((e) => e.type === 'open')) {
+        localDriver.stop();
+      }
+    });
+    localDriver.setup({ url: TEST_URL });
+    localDriver.start();
+    await flushMicrotasks();
+
+    expect(localDriver.getState()).toBe('closed');
+    expect(getReaderSpy).not.toHaveBeenCalled();
+    localDriver.dispose();
+  });
 });

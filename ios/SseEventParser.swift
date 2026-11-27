@@ -74,7 +74,17 @@ internal class SseEventParser {
     /// (If the file ends in the middle of an event, before the final empty line,
     /// the incomplete event is not dispatched.)"
     func endOfStream() {
-        buffer.removeAll()
+        if !isAborted && buffer.last == 0x0D {
+            buffer.removeLast()
+            // WHATWG SSE Section 9.2.2: invalid UTF-8 bytes must be replaced with U+FFFD, not dropped.
+            // swiftlint:disable:next optional_data_string_conversion
+            let line = String(decoding: buffer, as: UTF8.self)
+            buffer.removeAll()
+            processLine(line)
+            delegate?.parserDidParseLines(1)
+        } else {
+            buffer.removeAll()
+        }
         dataBuffer = ""
         hasData = false
         eventType = nil

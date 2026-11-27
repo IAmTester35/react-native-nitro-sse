@@ -1785,6 +1785,64 @@ describe('useNitroSse Hook Tests', () => {
 
         warnSpy.mockRestore();
       });
+
+      it('should dispose old client during effect cleanup before child effect can restart on header key removal', () => {
+        const result = useHookHarness({
+          url: TEST_URL,
+          headers: { Authorization: 'Bearer secret' },
+        });
+        flushEffects();
+        mockNative.restart.mockClear();
+
+        // Remove Authorization header key; lifecycle effect must schedule cleanup before setups
+        useHookHarness({
+          url: TEST_URL,
+          headers: {},
+        });
+
+        // Simulate React running all dirty effect cleanups BEFORE any child passive effect runs
+        let ranLifecycleCleanup = false;
+        for (const { idx } of effects) {
+          const cleanup = cleanupsMap.get(idx);
+          if (typeof cleanup === 'function') {
+            cleanup();
+            cleanupsMap.delete(idx);
+            ranLifecycleCleanup = true;
+          }
+        }
+        expect(ranLifecycleCleanup).toBe(true);
+
+        // Old client is disposed and cleared, so calling restart() cannot reuse the removed Authorization header
+        expect(mockNative.dispose).toHaveBeenCalledTimes(1);
+        result.restart();
+        expect(mockNative.restart).not.toHaveBeenCalled();
+      });
+
+      it('should not log unhandled SSE error for custom event: error delivered on message channel', () => {
+        const customErrorHandler = jest.fn();
+
+        useHookHarness({
+          url: TEST_URL,
+          events: { error: customErrorHandler },
+        });
+        flushEffects();
+
+        const warnSpy = jest
+          .spyOn(console, 'warn')
+          .mockImplementation(() => {});
+        nativeCallback([
+          {
+            type: 'message',
+            event: 'error',
+            data: '{"code":"RATE_LIMIT"}',
+            statusCode: 200,
+          },
+        ]);
+
+        expect(customErrorHandler).toHaveBeenCalledTimes(1);
+        expect(warnSpy).not.toHaveBeenCalled();
+        warnSpy.mockRestore();
+      });
     });
   });
 

@@ -1167,4 +1167,36 @@ final class SseConnectionHandlerTests: XCTestCase {
         dispatcher.executeDelayedBlocks()
         XCTAssertFalse(stopDelegate.didFailCalled)
     }
+
+    func testRealSseEventSourceDeliversFinalBareCrEventBeforeCloseAtEof() {
+        let delegate = TestDelegate()
+        let dispatcher = MockSseDispatcher()
+        let url = URL(string: TEST_URL)!
+        let source = RealSseEventSource(
+            delegate: delegate,
+            attemptVersion: 1,
+            dispatcher: dispatcher
+        )
+        let sessionConfig = URLSessionConfiguration.ephemeral
+        let dummySession = URLSession(configuration: sessionConfig)
+        let dummyTask = dummySession.dataTask(with: url)
+        defer {
+            source.stop()
+            dummySession.invalidateAndCancel()
+        }
+
+        source.start(request: URLRequest(url: url), sessionConfig: sessionConfig, connectionTimeout: 15.0)
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"]
+        )!
+        source.urlSession(dummySession, dataTask: dummyTask, didReceive: response) { _ in }
+        source.urlSession(dummySession, dataTask: dummyTask, didReceive: "data: final-cr\r\r".data(using: .utf8)!)
+        source.urlSession(dummySession, task: dummyTask, didCompleteWithError: nil)
+
+        XCTAssertEqual(delegate.receivedMessages.map { $0.data }, ["final-cr"])
+        XCTAssertTrue(delegate.didCloseCalled)
+    }
 }
