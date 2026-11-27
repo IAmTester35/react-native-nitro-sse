@@ -665,4 +665,23 @@ class NitroSseTests: XCTestCase {
         }
         wait(for: [expectation], timeout: 1.0)
     }
+
+    func testReconnectStrategyOverflowWithZeroAndNonZeroRetryIntervalNeverReturnsNaN() {
+        let strategy = SseReconnectStrategy()
+
+        strategy.configure(retryIntervalMs: 0.0, maxRetryIntervalMs: 30000.0, jitterFactor: 0.5, maxReconnectAttempts: -1)
+        for attempt in 0..<1030 {
+            let delay = strategy.nextDelay(isError: true)
+            XCTAssertTrue(delay.isFinite, "Attempt \(attempt) delay must be finite (got \(delay))")
+            XCTAssertEqual(delay, 1.0, accuracy: 0.0001)
+        }
+
+        strategy.configure(retryIntervalMs: 1000.0, maxRetryIntervalMs: 30000.0, jitterFactor: 0.0, maxReconnectAttempts: -1)
+        for attempt in 0..<1030 {
+            let delay = strategy.nextDelay(isError: true)
+            XCTAssertTrue(delay.isFinite, "Attempt \(attempt) delay must be finite")
+            XCTAssertGreaterThanOrEqual(delay, 1.0)
+            XCTAssertLessThanOrEqual(delay, 30.0)
+        }
+    }
 }

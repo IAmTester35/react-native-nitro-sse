@@ -1701,6 +1701,79 @@ describe('useNitroSse Hook Tests', () => {
 
         expect(onClose).toHaveBeenCalled();
       });
+
+      it('should warn once per consecutive identical error when onError is omitted and reset on open', () => {
+        const warnSpy = jest
+          .spyOn(console, 'warn')
+          .mockImplementation(() => {});
+        const errorSpy = jest
+          .spyOn(console, 'error')
+          .mockImplementation(() => {});
+
+        useHookHarness({ url: TEST_URL });
+        flushEffects();
+        warnSpy.mockClear();
+
+        const errEvent = {
+          type: 'error',
+          message: 'Network lost',
+          statusCode: 503,
+        };
+        nativeCallback([errEvent]);
+        nativeCallback([errEvent]);
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('[useNitroSse] Unhandled SSE error:'),
+          errEvent
+        );
+        expect(errorSpy).not.toHaveBeenCalled();
+
+        nativeCallback([{ type: 'open', statusCode: 200 }]);
+        nativeCallback([errEvent]);
+        expect(warnSpy).toHaveBeenCalledTimes(2);
+
+        warnSpy.mockRestore();
+        errorSpy.mockRestore();
+      });
+
+      it('should not warn on error events when onError callback is provided', () => {
+        const warnSpy = jest
+          .spyOn(console, 'warn')
+          .mockImplementation(() => {});
+        const onError = jest.fn();
+
+        useHookHarness({ url: TEST_URL, onError });
+        flushEffects();
+        warnSpy.mockClear();
+
+        nativeCallback([
+          { type: 'error', message: 'Handled error', statusCode: 500 },
+        ]);
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(warnSpy).not.toHaveBeenCalled();
+
+        warnSpy.mockRestore();
+      });
+
+      it('should warn in DEV when getStats throws', () => {
+        const warnSpy = jest
+          .spyOn(console, 'warn')
+          .mockImplementation(() => {});
+        mockNative.getStats.mockImplementationOnce(() => {
+          throw new Error('Stats failure');
+        });
+
+        const result = useHookHarness({ url: TEST_URL });
+        flushEffects();
+
+        expect(result.getStats()).toBeUndefined();
+        expect(warnSpy).toHaveBeenCalledWith(
+          '[useNitroSse] Failed to get stats:',
+          expect.any(Error)
+        );
+
+        warnSpy.mockRestore();
+      });
     });
   });
 

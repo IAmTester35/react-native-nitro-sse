@@ -2,14 +2,14 @@ package com.margelo.nitro.nitrosse
 
 import okhttp3.Call
 import okhttp3.Callback
-import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.BufferedSource
-import okio.ByteString
 import okio.ForwardingSource
 import okio.buffer
 import java.io.IOException
@@ -21,30 +21,9 @@ import java.util.concurrent.TimeUnit
 const val MAX_ERROR_BODY_BYTES = 8192L
 
 /**
- * Maximum bytes allowed for a single SSE line to prevent Out-Of-Memory errors.
- */
-const val MAX_SSE_LINE_LENGTH = 16 * 1024 * 1024L
-
-/**
- * Maximum characters allowed for accumulated event data to prevent Out-Of-Memory errors.
- */
-const val MAX_SSE_EVENT_DATA_SIZE = 16 * 1024 * 1024
-
-/**
- * CRLF delimiter byte sequence (\r, \n) used for optimized line break scanning.
- */
-private val CRLF_DELIMITERS = ByteString.of('\r'.code.toByte(), '\n'.code.toByte())
-
-/**
  * Exception indicating the HTTP response did not have 'text/event-stream' Content-Type per WHATWG SSE specification.
  */
 class InvalidContentTypeException(message: String) : IOException(message)
-
-/**
- * Exception indicating an SSE parser resource limit violation (line length or accumulated event data size).
- * Typed counterpart of iOS NitroSse error codes -2002 / -2003; treated as fatal (no reconnect).
- */
-internal class SseParserLimitException(message: String) : IOException(message)
 
 /**
  * Interface representing an active SSE stream connection that can be cancelled.
@@ -67,193 +46,40 @@ interface SseConnectionDelegate {
     fun connectionDidParseLines(count: Int, requestId: String) {}
     fun connectionDidEncounterParseError(requestId: String) {}
     fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {}
-    fun connectionDidFail(t: Throwable?, response: Response?, requestId: String) {
-        connectionDidFail(t, response, null, requestId)
-    }
     fun connectionDidClose(requestId: String)
 }
 
-/**
- * Sequential line-by-line SSE parser complying with WHATWG Server-Sent Events specification.
- * Ensures strict chronological ordering between data messages, comments, and directives.
- */
-internal class SseEventReader(private val source: BufferedSource) {
-    interface Callback {
-        fun onEvent(id: String?, type: String?, data: String)
-        fun onComment(comment: String)
-        fun onRetryChange(retryMs: Long)
-        fun onIdUpdate(id: String?) {}
-        fun onLinesParsed(count: Int) {}
-    }
+fun SseConnectionDelegate.connectionDidFail(t: Throwable?, response: Response?, requestId: String) {
+    connectionDidFail(t, response, null, requestId)
+}
 
-    private val dataBuffer = StringBuilder()
-    private var hasData = false
-    private var eventType: String? = null
-    private var lastEventId: String? = null
-    private var lastEventIdBuffer: String? = null
-    private var idUpdatedInCurrentEvent = false
-    private var isAtStreamStart = true
-    private var skipLeadingLf = false
-
-    /**
-     * Reads a line from [source] handling CRLF (\r\n), bare CR (\r), and LF (\n).
-     * Strips leading UTF-8 BOM (0xEF, 0xBB, 0xBF) if present at stream start per WHATWG SSE spec.
-     * Operates on [BufferedSource.buffer] using hardware-accelerated [Buffer.indexOfElement] to locate
-     * line endings without byte-by-byte Kotlin loop overhead while properly supporting bare carriage returns.
-     */
-    private fun readSseLine(): String? {
-        val buffer = source.buffer
-        if (source.exhausted()) return null
-
-        if (isAtStreamStart) {
-            if (source.request(3)) {
-                if (buffer.size >= 3 &&
-                    buffer[0] == 0xEF.toByte() &&
-                    buffer[1] == 0xBB.toByte() &&
-                    buffer[2] == 0xBF.toByte()
-                ) {
-                    buffer.skip(3)
-                }
-            }
-            isAtStreamStart = false
-        }
-
-        if (skipLeadingLf) {
-            skipLeadingLf = false
-            if (buffer.size > 0 && buffer[0] == '\n'.code.toByte()) {
-                buffer.skip(1)
-            }
-        }
-
-        var scanned = 0L
-        while (true) {
-            val newlineIndex = buffer.indexOfElement(CRLF_DELIMITERS, scanned)
-            if (newlineIndex != -1L) {
-                if (newlineIndex > MAX_SSE_LINE_LENGTH) {
-                    throw SseParserLimitException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
-                }
-                val b = buffer[newlineIndex]
-                val line = buffer.readUtf8(newlineIndex)
-                buffer.skip(1)
-                if (b == '\r'.code.toByte()) {
-                    // If followed immediately by \n in current buffer, consume \n as CRLF.
-                    // If buffer is exhausted at this exact boundary, defer check via skipLeadingLf
-                    // to avoid blocking on source.request(1) when server sent bare CR.
-                    if (buffer.size > 0) {
-                        if (buffer[0] == '\n'.code.toByte()) {
-                            buffer.skip(1)
-                        }
-                    } else {
-                        skipLeadingLf = true
-                    }
-                }
-                return line
-            }
-
-            if (buffer.size > MAX_SSE_LINE_LENGTH) {
-                throw SseParserLimitException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
-            }
-
-            scanned = buffer.size
-            if (!source.request(buffer.size + 1)) {
-                return if (buffer.size > 0) buffer.readUtf8() else null
-            }
+private fun dispatchInvalidContentType(
+    response: Response,
+    body: ResponseBody?,
+    isCancelled: () -> Boolean,
+    delegate: SseConnectionDelegate,
+    requestId: String
+) {
+    response.use { res ->
+        val receivedType = body?.contentType()?.toString() ?: "none"
+        val error = InvalidContentTypeException(
+            "Invalid Content-Type: expected text/event-stream but received '$receivedType'"
+        )
+        if (!isCancelled()) {
+            delegate.connectionDidFail(error, res, null, requestId)
         }
     }
+}
 
-    /**
-     * Reads lines from source until one event (message or comment) is completed and dispatched.
-     * Returns true if an event was dispatched, or false on EOF.
-     * Per WHATWG SSE spec: "Once the end of the file is reached, any pending data must be discarded.
-     * (If the file ends in the middle of an event, before the final empty line, the incomplete event is not dispatched.)"
-     */
-    fun processNextEvent(callback: Callback): Boolean {
-        var linesParsedInEvent = 0
-        while (true) {
-            val line = readSseLine()
-            if (line == null) {
-                if (linesParsedInEvent > 0) {
-                    callback.onLinesParsed(linesParsedInEvent)
-                }
-                dataBuffer.setLength(0)
-                hasData = false
-                eventType = null
-                lastEventIdBuffer = lastEventId
-                idUpdatedInCurrentEvent = false
-                return false
-            }
-            linesParsedInEvent++
-            if (line.isEmpty()) {
-                if (idUpdatedInCurrentEvent) {
-                    lastEventId = lastEventIdBuffer
-                    idUpdatedInCurrentEvent = false
-                    callback.onIdUpdate(lastEventId)
-                }
-                if (hasData) {
-                    callback.onLinesParsed(linesParsedInEvent)
-                    val data = dataBuffer.toString()
-                    val id = lastEventId
-                    val type = eventType
-                    dataBuffer.setLength(0)
-                    hasData = false
-                    eventType = null
-                    callback.onEvent(id, type, data)
-                    return true
-                }
-                // WHATWG SSE: Dispatching an empty event still resets the event type buffer
-                eventType = null
-                // Delimiter / keepalive empty line without data
-            } else if (line.startsWith(":")) {
-                callback.onLinesParsed(linesParsedInEvent)
-                val commentStart = if (line.length > 1 && line[1] == ' ') 2 else 1
-                callback.onComment(line.substring(commentStart))
-                return true
-            } else {
-                val colonIndex = line.indexOf(':')
-                val field: String
-                val value: String
-                if (colonIndex != -1) {
-                    field = line.substring(0, colonIndex)
-                    val valueStart = if (colonIndex + 1 < line.length && line[colonIndex + 1] == ' ') colonIndex + 2 else colonIndex + 1
-                    value = if (valueStart < line.length) line.substring(valueStart) else ""
-                } else {
-                    field = line
-                    value = ""
-                }
-                when (field) {
-                    "data" -> {
-                        // Account for the '\n' joining this line to the previous ones (parity with iOS / TypeScript).
-                        val separatorSize = if (hasData) 1 else 0
-                        if (dataBuffer.length + separatorSize + value.length > MAX_SSE_EVENT_DATA_SIZE) {
-                            throw SseParserLimitException("SSE event data exceeded maximum limit of $MAX_SSE_EVENT_DATA_SIZE characters")
-                        }
-                        if (hasData) {
-                            dataBuffer.append('\n')
-                        }
-                        dataBuffer.append(value)
-                        hasData = true
-                    }
-                    "id" -> {
-                        if (!value.contains('\u0000')) {
-                            lastEventIdBuffer = if (value.isEmpty()) null else value
-                            idUpdatedInCurrentEvent = true
-                        }
-                    }
-                    "event" -> {
-                        eventType = if (value.isEmpty()) null else value
-                    }
-                    "retry" -> {
-                        // WHATWG SSE: If field value consists solely of ASCII digits 0-9, set reconnection time. Otherwise ignore.
-                        if (value.isNotEmpty() && value.all { it in '0'..'9' }) {
-                            val retryMs = value.toLongOrNull()
-                            if (retryMs != null && retryMs >= 0) {
-                                callback.onRetryChange(retryMs)
-                            }
-                        }
-                    }
-                }
-            }
-        }
+private fun dispatchNonOkResponse(
+    response: Response,
+    errorBody: String?,
+    isCancelled: () -> Boolean,
+    delegate: SseConnectionDelegate,
+    requestId: String
+) {
+    if (!isCancelled()) {
+        delegate.connectionDidFail(null, response, errorBody, requestId)
     }
 }
 
@@ -297,51 +123,70 @@ internal class RealSseEventSource(
         }
     }
 
-    override fun onResponse(call: Call, response: Response) {
-        if (isCancelled) {
-            response.close()
-            return
+    private fun shouldReadErrorBody(response: Response): Boolean {
+        val code = response.code
+        val isUnusedAuthOrRateLimit = code == SseHttpStatus.UNAUTHORIZED ||
+            code == SseHttpStatus.FORBIDDEN ||
+            code == SseHttpStatus.REQUEST_TIMEOUT ||
+            code == SseHttpStatus.TOO_MANY_REQUESTS
+        val isRetryAfterUnavailable = code == SseHttpStatus.SERVICE_UNAVAILABLE &&
+            SseReconnectStrategy.extractRetryAfterMillis(response) != null
+        return code >= SseHttpStatus.BAD_REQUEST && !isUnusedAuthOrRateLimit && !isRetryAfterUnavailable
+    }
+
+    private fun readBoundedErrorBody(response: Response): String? {
+        val source = if (shouldReadErrorBody(response)) response.body?.source() else null
+        return source?.let {
+            val timeoutMs = client.connectTimeoutMillis.toLong().let { if (it > 0L) it else 15000L }
+            it.timeout().deadline(timeoutMs, TimeUnit.MILLISECONDS)
+            try {
+                try {
+                    it.request(MAX_ERROR_BODY_BYTES)
+                } catch (_: IOException) {
+                    // Preserve any partial error body bytes already buffered before disconnect/timeout
+                }
+                val size = minOf(it.buffer.size, MAX_ERROR_BODY_BYTES)
+                if (size > 0L) it.buffer.readUtf8(size) else null
+            } finally {
+                it.timeout().clearDeadline()
+            }
+        }
+    }
+
+    private fun createReaderCallback(): SseEventReader.Callback = object : SseEventReader.Callback {
+        override fun onEvent(id: String?, type: String?, data: String) {
+            if (!isCancelled) {
+                delegate.connectionDidReceiveMessage(id, type, data, requestId)
+            }
         }
 
-        // WHATWG SSE Section 9.1: Only HTTP 200 OK responses with text/event-stream establish an SSE stream.
-        // Any other HTTP response code (including 201, 204, 206, 4xx, 5xx) must fail the connection.
-        if (response.code != 200) {
-            val errorBody = if (response.code != 204) {
-                val source = response.body?.source()
-                if (source != null) {
-                    val timeoutMs = client.connectTimeoutMillis.toLong().let { if (it > 0L) it else 15000L }
-                    source.timeout().deadline(timeoutMs, TimeUnit.MILLISECONDS)
-                    try {
-                        runCatching { source.request(MAX_ERROR_BODY_BYTES) }
-                        val size = minOf(source.buffer.size, MAX_ERROR_BODY_BYTES)
-                        if (size > 0L) source.buffer.readUtf8(size) else null
-                    } catch (_: Exception) {
-                        null
-                    } finally {
-                        source.timeout().clearDeadline()
-                    }
-                } else null
-            } else null
-            delegate.connectionDidFail(null, response, errorBody, requestId)
-            response.close()
-            return
+        override fun onComment(comment: String) {
+            if (!isCancelled) {
+                delegate.connectionDidReceiveComment(comment, requestId)
+            }
         }
 
-
-
-        // WHATWG SSE: permanently fail and stop without reconnecting on non-event-stream Content-Type.
-        val body = response.body
-        if (body == null || !isEventStream(body)) {
-            val receivedType = body?.contentType()?.toString() ?: "none"
-            val error = InvalidContentTypeException("Invalid Content-Type: expected text/event-stream but received '$receivedType'")
-            delegate.connectionDidFail(error, response, null, requestId)
-            response.close()
-            return
+        override fun onRetryChange(retryMs: Long) {
+            if (!isCancelled) {
+                delegate.connectionDidReceiveRetry(retryMs, requestId)
+            }
         }
 
-        val emptyResponse = response.newBuilder().body("".toResponseBody(null)).build()
-        delegate.connectionDidOpen(emptyResponse, requestId)
+        override fun onIdUpdate(id: String?) {
+            if (!isCancelled) {
+                delegate.connectionDidUpdateLastEventId(id, requestId)
+            }
+        }
 
+        override fun onLinesParsed(count: Int) {
+            if (!isCancelled) {
+                delegate.connectionDidParseLines(count, requestId)
+            }
+        }
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun streamResponseEvents(response: Response, body: ResponseBody) {
         try {
             val decompressedSource = object : ForwardingSource(body.source()) {
                 override fun read(sink: okio.Buffer, byteCount: Long): Long {
@@ -353,37 +198,7 @@ internal class RealSseEventSource(
                 }
             }
             val reader = SseEventReader(decompressedSource.buffer())
-            val callback = object : SseEventReader.Callback {
-                override fun onEvent(id: String?, type: String?, data: String) {
-                    if (!isCancelled) {
-                        delegate.connectionDidReceiveMessage(id, type, data, requestId)
-                    }
-                }
-
-                override fun onComment(comment: String) {
-                    if (!isCancelled) {
-                        delegate.connectionDidReceiveComment(comment, requestId)
-                    }
-                }
-
-                override fun onRetryChange(retryMs: Long) {
-                    if (!isCancelled) {
-                        delegate.connectionDidReceiveRetry(retryMs, requestId)
-                    }
-                }
-
-                override fun onIdUpdate(id: String?) {
-                    if (!isCancelled) {
-                        delegate.connectionDidUpdateLastEventId(id, requestId)
-                    }
-                }
-
-                override fun onLinesParsed(count: Int) {
-                    if (!isCancelled) {
-                        delegate.connectionDidParseLines(count, requestId)
-                    }
-                }
-            }
+            val callback = createReaderCallback()
 
             while (!isCancelled && reader.processNextEvent(callback)) {
                 // Read and dispatch events sequentially
@@ -392,15 +207,36 @@ internal class RealSseEventSource(
             if (!isCancelled) {
                 delegate.connectionDidClose(requestId)
             }
+        } catch (e: SseParserLimitException) {
+            if (!isCancelled) {
+                delegate.connectionDidEncounterParseError(requestId)
+                delegate.connectionDidFail(e, null, null, requestId)
+            }
         } catch (e: Exception) {
             if (!isCancelled) {
-                if (e is SseParserLimitException) {
-                    delegate.connectionDidEncounterParseError(requestId)
-                }
                 delegate.connectionDidFail(e, null, null, requestId)
             }
         } finally {
             response.close()
+        }
+    }
+
+    override fun onResponse(call: Call, response: Response) {
+        val body = response.body
+        when {
+            isCancelled -> response.close()
+            response.code != SseHttpStatus.OK -> response.use { res ->
+                // WHATWG SSE Section 9.1: Only HTTP 200 OK responses with text/event-stream establish an SSE stream.
+                dispatchNonOkResponse(res, readBoundedErrorBody(res), { isCancelled }, delegate, requestId)
+            }
+            body == null || !isEventStream(body) ->
+                // WHATWG SSE: permanently fail and stop without reconnecting on non-event-stream Content-Type.
+                dispatchInvalidContentType(response, body, { isCancelled }, delegate, requestId)
+            else -> {
+                val emptyResponse = response.newBuilder().body("".toResponseBody(null)).build()
+                delegate.connectionDidOpen(emptyResponse, requestId)
+                streamResponseEvents(response, body)
+            }
         }
     }
 
@@ -411,101 +247,53 @@ internal class RealSseEventSource(
 }
 
 /**
- * Creates OkHttp [EventSource] instances and translates callbacks into [SseConnectionDelegate] calls.
+ * Creates OkHttp [EventSource] instances and builds sanitized SSE [Request] objects.
  */
 class SseConnectionHandler(private val delegate: SseConnectionDelegate) {
-    
+
     fun createEventSource(client: OkHttpClient, request: Request, requestId: String): SseEventSource {
         val eventSource = RealSseEventSource(client, request, delegate, requestId)
         eventSource.connect()
         return eventSource
     }
-}
 
-/**
- * Shared tracker recording raw network socket transport metrics from InspectorNetworkInterceptor.
- * Implements bounded caching and cleared-request guards to eliminate memory leaks from trailing socket reads.
- */
-object SseNetworkMetricsTracker {
-    private const val MAX_ENTRIES = 200
+    companion object {
+        internal fun buildRequest(
+            currentConfig: SseConfig,
+            currentLastId: String?,
+            newRequestId: String
+        ): Request {
+            // Set SSE headers explicitly for Network Inspector visibility and encoding control.
+            val requestBuilder = Request.Builder()
+                .url(currentConfig.url)
+                .header("Accept", "text/event-stream")
+                .header("Cache-Control", "no-cache")
 
-    private class MetricsEntry(
-        var bytes: Long = 0L,
-        var isGzip: Boolean = false,
-        var cleared: Boolean = false
-    )
-
-    private val entries = object : LinkedHashMap<String, MetricsEntry>(64, 0.75f, false) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MetricsEntry>?): Boolean =
-            size > MAX_ENTRIES
-    }
-
-    @Synchronized
-    fun recordRawBytes(requestId: String, bytes: Long, isGzip: Boolean) {
-        val entry = entries.getOrPut(requestId) { MetricsEntry() }
-        // Drop trailing socket reads after request has been cleared/cancelled to prevent resurrected memory leaks
-        if (entry.cleared) return
-
-        entry.bytes += bytes
-        if (isGzip) {
-            entry.isGzip = true
-        }
-    }
-
-    @Synchronized
-    fun getRawBytes(requestId: String): Long? =
-        entries[requestId]?.takeUnless { it.cleared }?.bytes
-
-    @Synchronized
-    fun isGzip(requestId: String): Boolean =
-        entries[requestId]?.let { !it.cleared && it.isGzip } == true
-
-    @Synchronized
-    fun clear(requestId: String) {
-        val entry = entries.getOrPut(requestId) { MetricsEntry() }
-        entry.bytes = 0L
-        entry.isGzip = false
-        entry.cleared = true
-    }
-
-    @Synchronized
-    internal fun reset() {
-        entries.clear()
-    }
-}
-
-/**
- * Network interceptor for recording raw wire response metadata for React Native DevTools.
- * Runs at the network layer to capture true HTTP status, raw wire headers (e.g. Content-Encoding: gzip), and timing.
- */
-internal class InspectorNetworkInterceptor : Interceptor {
-    override fun intercept(chain: Interceptor.Chain): Response {
-        val request = chain.request()
-        val rid = request.tag(String::class.java)
-        val response = chain.proceed(request)
-        rid?.let {
-            NetworkInspector.reportResponseStart(it, request, response)
-        }
-        val responseBody = response.body
-        if (responseBody != null && rid != null) {
-            val isGzip = response.header("Content-Encoding")?.equals("gzip", ignoreCase = true) == true
-            val trackingSource = object : ForwardingSource(responseBody.source()) {
-                override fun read(sink: okio.Buffer, byteCount: Long): Long {
-                    val read = super.read(sink, byteCount)
-                    if (read > 0) {
-                        SseNetworkMetricsTracker.recordRawBytes(rid, read, isGzip)
-                    }
-                    return read
+            // Populate config headers first, filtering out Last-Event-ID and Accept-Encoding
+            currentConfig.headers?.forEach { (k, v) ->
+                if (!k.equals("Last-Event-ID", ignoreCase = true) &&
+                    !k.equals("Accept-Encoding", ignoreCase = true)
+                ) {
+                    requestBuilder.header(k, v)
                 }
             }
-            val wrappedBody = object : ResponseBody() {
-                override fun contentType() = responseBody.contentType()
-                override fun contentLength() = responseBody.contentLength()
-                override fun source(): BufferedSource = trackingSource.buffer()
+
+            currentLastId?.let {
+                if (it.isNotEmpty()) requestBuilder.header("Last-Event-ID", it)
             }
-            return response.newBuilder().body(wrappedBody).build()
+
+            if (currentConfig.method == HttpMethod.POST) {
+                val customContentType = currentConfig.headers?.entries?.firstOrNull {
+                    it.key.equals("Content-Type", ignoreCase = true)
+                }?.value
+                val mediaType = (customContentType ?: "application/json").toMediaType()
+                val body = (currentConfig.body ?: "").toRequestBody(mediaType)
+                requestBuilder.post(body)
+            }
+
+            requestBuilder.tag(String::class.java, newRequestId)
+            return requestBuilder.build()
         }
-        return response
     }
 }
 

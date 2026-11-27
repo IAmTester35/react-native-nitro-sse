@@ -679,11 +679,9 @@ class NitroSseCoordinatorTest {
         assertEquals(60.0, sse.getStats().totalBytesReceived, 0.001)
     }
 
-    private fun <T> anyLambda(): T {
-        org.mockito.Mockito.any<T>()
-        @Suppress("UNCHECKED_CAST")
-        return { _: Any? -> } as T
-    }
+    @Suppress("UNCHECKED_CAST")
+    private fun <T> anyLambda(): T =
+        org.mockito.Mockito.any<T>() ?: ({ _: Any? -> } as T)
     @Test
     fun testConnectionFailureDoesNotLeakPlainHttpBytesIntoSessionRawBytesOffset() {
         val sse = NitroSse(dispatcher)
@@ -702,14 +700,12 @@ class NitroSseCoordinatorTest {
         sse.connectionDidReceiveDataChunk(100L, currentReqId)
         drainLoopers()
 
-        val offsetField = NitroSse::class.java.getDeclaredField("sessionRawBytesOffset").apply { isAccessible = true }
-
         // Fail connection
         sse.connectionDidFail(java.io.IOException("Transient drop"), null, null, currentReqId)
         drainLoopers()
 
         // Non-gzip bytes must NOT be accumulated into sessionRawBytesOffset
-        assertEquals(0.0, offsetField.get(sse) as Double, 0.001)
+        assertEquals(0.0, sse.metrics.getSessionRawBytesOffset(), 0.001)
 
         sse.stop()
         drainLoopers()

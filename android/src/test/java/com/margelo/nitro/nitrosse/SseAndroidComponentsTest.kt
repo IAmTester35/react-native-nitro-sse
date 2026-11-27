@@ -9,6 +9,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import androidx.test.core.app.ApplicationProvider
+import okhttp3.MediaType.Companion.toMediaType
+import okio.buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -184,5 +186,44 @@ class SseAndroidComponentsTest {
         assertTrue("Should be synchronous when no handler provided", isAvailable)
         
         monitor.stop()
+    }
+
+    @Test
+    fun testStreamResponseEventsReportsNonIoRuntimeExceptionToDelegate() {
+        var failedThrowable: Throwable? = null
+        var closed = false
+        val delegate = object : SseConnectionDelegate {
+            override fun connectionDidOpen(response: okhttp3.Response, requestId: String) {}
+            override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, requestId: String) {}
+            override fun connectionDidFail(t: Throwable?, response: okhttp3.Response?, errorBody: String?, requestId: String) {
+                failedThrowable = t
+            }
+            override fun connectionDidClose(requestId: String) {
+                closed = true
+            }
+        }
+        val request = okhttp3.Request.Builder().url("http://localhost:33333/events").build()
+        val source = RealSseEventSource(okhttp3.OkHttpClient(), request, delegate, "req-runtime-err")
+        val failingBody = object : okhttp3.ResponseBody() {
+            override fun contentType() = "text/event-stream".toMediaType()
+            override fun contentLength() = -1L
+            override fun source(): okio.BufferedSource = object : okio.ForwardingSource(okio.Buffer()) {
+                override fun read(sink: okio.Buffer, byteCount: Long): Long {
+                    throw IllegalStateException("Unexpected framing error")
+                }
+            }.buffer()
+        }
+        val response = okhttp3.Response.Builder()
+            .request(request)
+            .protocol(okhttp3.Protocol.HTTP_1_1)
+            .code(200)
+            .message("OK")
+            .body(failingBody)
+            .build()
+
+        source.onResponse(org.mockito.Mockito.mock(okhttp3.Call::class.java), response)
+
+        assertTrue(failedThrowable is IllegalStateException)
+        assertFalse(closed)
     }
 }

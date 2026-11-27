@@ -21,8 +21,12 @@ import {
   NitroSseDisposedError,
   NitroSseStateError,
 } from './NitroSseError';
-
-declare const __DEV__: boolean | undefined;
+import {
+  devWarn,
+  isDevEnvironment,
+  logError,
+  UnhandledSseErrorReporter,
+} from './SseConsoleLogger';
 
 /**
  * Sanitizes HTTP headers by stripping carriage returns, newlines, null bytes,
@@ -84,28 +88,30 @@ function isLoopbackUrl(url: string): boolean {
 export function warnInsecureCredentials(
   url?: string,
   headers?: Record<string, unknown>
-): void {
-  if (typeof __DEV__ === 'undefined' || !__DEV__) return;
+): boolean {
+  if (!isDevEnvironment()) return false;
   if (
     !url ||
     typeof url !== 'string' ||
     !headers ||
     typeof headers !== 'object'
   )
-    return;
+    return false;
 
   const trimmedUrl = url.trim();
   const lowerUrl = trimmedUrl.toLowerCase();
   if (lowerUrl.startsWith('http://') && !isLoopbackUrl(trimmedUrl)) {
-    const hasSensitiveHeader = Object.keys(headers ?? {}).some((key) =>
+    const hasSensitiveHeader = Object.keys(headers).some((key) =>
       SENSITIVE_HEADER_REGEX.test(key.trim())
     );
     if (hasSensitiveHeader) {
-      console.warn(
+      devWarn(
         `[NitroSse] Security Warning: Sensitive credential header(s) detected over an insecure, unencrypted HTTP connection ("${trimmedUrl}"). Transmitting credentials over plaintext HTTP is vulnerable to interception and token theft. Use HTTPS in production.`
       );
+      return true;
     }
   }
+  return false;
 }
 
 /**
@@ -154,11 +160,9 @@ export function validateConfig(config: SseClientOptions): SseClientOptions {
   }
 
   if (!lowerUrl.startsWith('http://') && !lowerUrl.startsWith('https://')) {
-    if (typeof __DEV__ !== 'undefined' && __DEV__) {
-      console.warn(
-        `[NitroSse] URL "${trimmedUrl}" does not start with http:// or https://. Ensure it is an absolute URL; relative paths will fail on native.`
-      );
-    }
+    devWarn(
+      `[NitroSse] URL "${trimmedUrl}" does not start with http:// or https://. Ensure it is an absolute URL; relative paths will fail on native.`
+    );
   }
 
   if (config.headers !== undefined) {
@@ -214,11 +218,9 @@ export function validateConfig(config: SseClientOptions): SseClientOptions {
   let connectionTimeoutMs = config.connectionTimeoutMs;
   if (connectionTimeoutMs !== undefined) {
     if (!Number.isFinite(connectionTimeoutMs) || connectionTimeoutMs < 0) {
-      if (typeof __DEV__ !== 'undefined' && __DEV__) {
-        console.warn(
-          `[NitroSse] Invalid connectionTimeoutMs (${connectionTimeoutMs}). Resetting to default 15000.`
-        );
-      }
+      devWarn(
+        `[NitroSse] Invalid connectionTimeoutMs (${connectionTimeoutMs}). Resetting to default 15000.`
+      );
       connectionTimeoutMs = 15000;
     }
   }
@@ -226,11 +228,9 @@ export function validateConfig(config: SseClientOptions): SseClientOptions {
   let readTimeoutMs = config.readTimeoutMs;
   if (readTimeoutMs !== undefined) {
     if (!Number.isFinite(readTimeoutMs) || readTimeoutMs <= 0) {
-      if (typeof __DEV__ !== 'undefined' && __DEV__) {
-        console.warn(
-          `[NitroSse] Invalid readTimeoutMs (${readTimeoutMs}). Resetting to default 300000.`
-        );
-      }
+      devWarn(
+        `[NitroSse] Invalid readTimeoutMs (${readTimeoutMs}). Resetting to default 300000.`
+      );
       readTimeoutMs = 300000;
     }
   }
@@ -238,11 +238,9 @@ export function validateConfig(config: SseClientOptions): SseClientOptions {
   let batchingIntervalMs = config.batchingIntervalMs;
   if (batchingIntervalMs !== undefined) {
     if (!Number.isFinite(batchingIntervalMs) || batchingIntervalMs < 0) {
-      if (typeof __DEV__ !== 'undefined' && __DEV__) {
-        console.warn(
-          `[NitroSse] Invalid batchingIntervalMs (${batchingIntervalMs}). Clamping to 0.`
-        );
-      }
+      devWarn(
+        `[NitroSse] Invalid batchingIntervalMs (${batchingIntervalMs}). Clamping to 0.`
+      );
       batchingIntervalMs = 0;
     }
   }
@@ -250,11 +248,9 @@ export function validateConfig(config: SseClientOptions): SseClientOptions {
   let maxBufferSize = config.maxBufferSize;
   if (maxBufferSize !== undefined) {
     if (!Number.isFinite(maxBufferSize) || maxBufferSize <= 0) {
-      if (typeof __DEV__ !== 'undefined' && __DEV__) {
-        console.warn(
-          `[NitroSse] Invalid maxBufferSize (${maxBufferSize}). Resetting to default 1000.`
-        );
-      }
+      devWarn(
+        `[NitroSse] Invalid maxBufferSize (${maxBufferSize}). Resetting to default 1000.`
+      );
       maxBufferSize = 1000;
     }
   }
@@ -276,12 +272,20 @@ export function validateConfig(config: SseClientOptions): SseClientOptions {
     maxRetryIntervalMs !== undefined &&
     retryIntervalMs > maxRetryIntervalMs
   ) {
-    if (typeof __DEV__ !== 'undefined' && __DEV__) {
-      console.warn(
-        `[NitroSse] retryIntervalMs (${retryIntervalMs}) cannot exceed maxRetryIntervalMs (${maxRetryIntervalMs}). Clamping retryIntervalMs.`
-      );
-    }
+    devWarn(
+      `[NitroSse] retryIntervalMs (${retryIntervalMs}) cannot exceed maxRetryIntervalMs (${maxRetryIntervalMs}). Clamping retryIntervalMs.`
+    );
     retryIntervalMs = maxRetryIntervalMs;
+  }
+  if (retryIntervalMs !== undefined && retryIntervalMs < 1000) {
+    devWarn(
+      `[NitroSse] retryIntervalMs (${retryIntervalMs}ms) is below the 1000ms minimum reconnect floor enforced across all platforms. Effective reconnect delays will be at least 1000ms.`
+    );
+  }
+  if (maxRetryIntervalMs !== undefined && maxRetryIntervalMs < 1000) {
+    devWarn(
+      `[NitroSse] maxRetryIntervalMs (${maxRetryIntervalMs}ms) is below the 1000ms minimum reconnect floor enforced across all platforms. Effective reconnect delays will be at least 1000ms.`
+    );
   }
 
   let jitterFactor = config.jitterFactor;
@@ -291,11 +295,9 @@ export function validateConfig(config: SseClientOptions): SseClientOptions {
       jitterFactor < 0 ||
       jitterFactor > 1
     ) {
-      if (typeof __DEV__ !== 'undefined' && __DEV__) {
-        console.warn(
-          `[NitroSse] Invalid jitterFactor (${jitterFactor}). Clamping between 0.0 and 1.0.`
-        );
-      }
+      devWarn(
+        `[NitroSse] Invalid jitterFactor (${jitterFactor}). Clamping between 0.0 and 1.0.`
+      );
       jitterFactor = Math.max(
         0,
         Math.min(1, Number.isFinite(jitterFactor) ? jitterFactor : 0.5)
@@ -306,11 +308,9 @@ export function validateConfig(config: SseClientOptions): SseClientOptions {
   let maxReconnectAttempts = config.maxReconnectAttempts;
   if (maxReconnectAttempts !== undefined) {
     if (!Number.isFinite(maxReconnectAttempts) || maxReconnectAttempts < -1) {
-      if (typeof __DEV__ !== 'undefined' && __DEV__) {
-        console.warn(
-          `[NitroSse] Invalid maxReconnectAttempts (${maxReconnectAttempts}). Defaulting to -1 (infinite).`
-        );
-      }
+      devWarn(
+        `[NitroSse] Invalid maxReconnectAttempts (${maxReconnectAttempts}). Defaulting to -1 (infinite).`
+      );
       maxReconnectAttempts = -1;
     }
   }
@@ -318,11 +318,9 @@ export function validateConfig(config: SseClientOptions): SseClientOptions {
   let maxAuthRetries = config.maxAuthRetries;
   if (maxAuthRetries !== undefined) {
     if (!Number.isFinite(maxAuthRetries) || maxAuthRetries < 0) {
-      if (typeof __DEV__ !== 'undefined' && __DEV__) {
-        console.warn(
-          `[NitroSse] Invalid maxAuthRetries (${maxAuthRetries}). Defaulting to 3.`
-        );
-      }
+      devWarn(
+        `[NitroSse] Invalid maxAuthRetries (${maxAuthRetries}). Defaulting to 3.`
+      );
       maxAuthRetries = 3;
     }
   }
@@ -382,6 +380,8 @@ export class NitroSseClient implements SseClient {
   private _config?: SseConfig;
   private _isDisposed = false;
   private _pendingHeaders: Record<string, string> = {};
+  private _unhandledErrorReporter = new UnhandledSseErrorReporter();
+  private _warnedInsecureInterceptorUrl: string | null = null;
 
   constructor(nativeOrDriver: NitroSse | SseDriver) {
     if (
@@ -391,10 +391,7 @@ export class NitroSseClient implements SseClient {
     ) {
       this._native = null;
       this._baseDriver = nativeOrDriver as SseDriver;
-      if (
-        'setDispatchEvents' in this._baseDriver &&
-        typeof (this._baseDriver as any).setDispatchEvents === 'function'
-      ) {
+      if (typeof (this._baseDriver as any).setDispatchEvents === 'function') {
         (this._baseDriver as any).setDispatchEvents((events: SseEvent[]) =>
           this._dispatchEvents(events)
         );
@@ -437,14 +434,14 @@ export class NitroSseClient implements SseClient {
     }
 
     const validatedConfig = validateConfig(config);
+    this._unhandledErrorReporter.reset();
+    this._warnedInsecureInterceptorUrl = null;
 
     if (this.isConnected()) {
-      if (typeof __DEV__ !== 'undefined' && __DEV__) {
-        console.warn(
-          '[NitroSse] setup() called while connection is active; stopping previous stream before reconfiguring.'
-        );
-      }
-      this._driver?.stop();
+      devWarn(
+        '[NitroSse] setup() called while connection is active; stopping previous stream before reconfiguring.'
+      );
+      this._driver.stop();
     }
 
     const hasHeaders =
@@ -463,29 +460,26 @@ export class NitroSseClient implements SseClient {
           try {
             const h = await rawOnBeforeRequest();
             if (h && typeof h === 'object' && !Array.isArray(h)) {
-              warnInsecureCredentials(
-                validatedConfig.url,
-                h as Record<string, unknown>
-              );
+              if (this._warnedInsecureInterceptorUrl !== validatedConfig.url) {
+                const warned = warnInsecureCredentials(
+                  validatedConfig.url,
+                  h as Record<string, unknown>
+                );
+                if (warned) {
+                  this._warnedInsecureInterceptorUrl = validatedConfig.url;
+                }
+              }
               return sanitizeHeaders(h);
             }
-            if (
-              typeof __DEV__ !== 'undefined' &&
-              __DEV__ &&
-              h !== undefined &&
-              h !== null
-            ) {
-              console.warn(
+            if (h !== undefined && h !== null) {
+              devWarn(
                 '[NitroSse] onBeforeRequest returned an invalid headers value (expected an object):',
                 h
               );
             }
             return {};
           } catch (err) {
-            console.error(
-              '[NitroSse] Error in onBeforeRequest interceptor:',
-              err
-            );
+            logError('[NitroSse] Error in onBeforeRequest interceptor:', err);
             throw err;
           }
         }
@@ -500,14 +494,14 @@ export class NitroSseClient implements SseClient {
     this._pendingHeaders = {};
     this._legacyCallback = onEvent;
 
-    const isDev = typeof __DEV__ !== 'undefined' ? __DEV__ === true : false;
+    const isDev = isDevEnvironment();
     const mockConfig = isDev ? this._config.mock : undefined;
     if (!isDev) {
       delete this._config.mock;
     }
 
     if (mockConfig) {
-      console.warn(
+      devWarn(
         '\n' +
           '=================================================================\n' +
           '⚠️  [react-native-nitro-sse] WARNING: MOCK STREAMING IS ENABLED! ⚠️\n' +
@@ -553,6 +547,9 @@ export class NitroSseClient implements SseClient {
       );
     }
     const cleanType = type.trim();
+    if (cleanType === 'error') {
+      this._unhandledErrorReporter.reset();
+    }
     if (!this._listeners.has(cleanType)) {
       this._listeners.set(cleanType, new Set());
     }
@@ -585,19 +582,7 @@ export class NitroSseClient implements SseClient {
     const listeners = this._listeners.get(type);
     if (!listeners || listeners.size === 0) return;
 
-    // Fast-path for the most common case (single listener)
-    if (listeners.size === 1) {
-      for (const listener of listeners) {
-        try {
-          listener(event);
-        } catch (e) {
-          console.error(`[NitroSse] Error in event listener for "${type}":`, e);
-        }
-        return;
-      }
-    }
-
-    // Multi-listener path: snapshot count to skip listeners added mid-iteration
+    // Snapshot count to skip listeners added mid-iteration
     const snapshot = listeners.size;
     let i = 0;
     for (const listener of listeners) {
@@ -605,7 +590,7 @@ export class NitroSseClient implements SseClient {
       try {
         listener(event);
       } catch (e) {
-        console.error(`[NitroSse] Error in event listener for "${type}":`, e);
+        logError(`[NitroSse] Error in event listener for "${type}":`, e);
       }
     }
   }
@@ -615,10 +600,20 @@ export class NitroSseClient implements SseClient {
     try {
       this._legacyCallback?.(events);
     } catch (e) {
-      console.error('[NitroSse] Error in legacy onEvent callback:', e);
+      logError('[NitroSse] Error in legacy onEvent callback:', e);
     }
     for (const event of events) {
       if (!event || typeof event !== 'object') continue;
+      if (event.type === 'open') {
+        this._unhandledErrorReporter.reset();
+      } else if (event.type === 'error') {
+        const hasErrorHandler =
+          Boolean(this._legacyCallback) ||
+          (this._listeners.get('error')?.size ?? 0) > 0;
+        if (!hasErrorHandler) {
+          this._unhandledErrorReporter.report('[NitroSse]', event);
+        }
+      }
       if (event.type) {
         this._emit(event.type, event);
       }
@@ -758,6 +753,8 @@ export class NitroSseClient implements SseClient {
     this._listeners.clear();
     this._legacyCallback = undefined;
     this._pendingHeaders = {};
-    this._driver?.dispose();
+    this._unhandledErrorReporter.reset();
+    this._warnedInsecureInterceptorUrl = null;
+    this._driver.dispose();
   }
 }

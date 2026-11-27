@@ -14,6 +14,7 @@ export class MockSseEngine {
   private _config: SseMockConfig;
   private _emitEvents: (events: SseEvent[]) => void;
   private _mockIntervalId?: ReturnType<typeof setTimeout>;
+  private _runGeneration: number = 0;
   private _mockIndex: number = 0;
   private _mockState?: SseState;
   private _totalBytesReceived: number = 0;
@@ -68,13 +69,13 @@ export class MockSseEngine {
 
   /**
    * Starts mock stream scheduling.
-   * @returns true if native stream should be skipped (replace mode), false otherwise (inject mode).
    */
-  start(): boolean {
+  start(): void {
     if (this._mockIntervalId) {
       clearTimeout(this._mockIntervalId);
       this._mockIntervalId = undefined;
     }
+    const gen = ++this._runGeneration;
 
     const {
       mode,
@@ -99,7 +100,6 @@ export class MockSseEngine {
     // Validate and normalize eventsPerSecond (must be a finite positive number, default to 1)
     let validatedEventsPerSecond = Number(eventsPerSecond);
     if (
-      Number.isNaN(validatedEventsPerSecond) ||
       !Number.isFinite(validatedEventsPerSecond) ||
       validatedEventsPerSecond <= 0
     ) {
@@ -108,10 +108,7 @@ export class MockSseEngine {
 
     // Validate and normalize errorRate (must be a finite number within [0,1], default to 0)
     let validatedErrorRate = Number(errorRate);
-    if (
-      Number.isNaN(validatedErrorRate) ||
-      !Number.isFinite(validatedErrorRate)
-    ) {
+    if (!Number.isFinite(validatedErrorRate)) {
       validatedErrorRate = 0;
     } else {
       validatedErrorRate = Math.max(0, Math.min(1, validatedErrorRate));
@@ -124,14 +121,13 @@ export class MockSseEngine {
     const intervalMs = Math.max(10, delayMs * batchSize);
 
     const scheduleNext = () => {
+      this._mockIntervalId = undefined;
+      if (gen !== this._runGeneration) return;
+
       if (this._mockIndex >= data.length) {
         if (loop && data.length > 0) {
           this._mockIndex = 0;
         } else {
-          if (this._mockIntervalId) {
-            clearTimeout(this._mockIntervalId);
-            this._mockIntervalId = undefined;
-          }
           if (mode === 'replace') {
             this._setMockState('closed');
           }
@@ -153,6 +149,7 @@ export class MockSseEngine {
         this._lastErrorCode = 'SIMULATED_MOCK_FAILURE';
         this._reconnectCount++;
         this._emitEvents([errorEvent]);
+        if (gen !== this._runGeneration) return;
 
         // Retry / reconnect delay simulator (e.g. 2000ms)
         this._mockIntervalId = setTimeout(scheduleNext, 2000);
@@ -165,10 +162,8 @@ export class MockSseEngine {
 
       const batch: SseEvent[] = [];
       if (hasCustomDelay) {
-        const rawMock = data[this._mockIndex++];
-        if (rawMock) {
-          batch.push(MockSseEngine.createSseEvent(rawMock));
-        }
+        batch.push(MockSseEngine.createSseEvent(currentItem));
+        this._mockIndex++;
       } else {
         for (let i = 0; i < batchSize && this._mockIndex < data.length; i++) {
           const nextItem = data[this._mockIndex];
@@ -216,6 +211,7 @@ export class MockSseEngine {
           this._setMockState('open');
         }
         this._emitEvents(batch);
+        if (gen !== this._runGeneration) return;
       }
 
       const nextItem =
@@ -242,18 +238,14 @@ export class MockSseEngine {
       // Emit simulated open event
       const openEvent: SseEvent = { type: 'open', statusCode: 200 };
       this._emitEvents([openEvent]);
-
-      this._mockIntervalId = setTimeout(scheduleNext, firstDelay);
-      return true; // Indicates replace mode (skip native start)
-    } else if (mode === 'inject') {
-      this._mockIntervalId = setTimeout(scheduleNext, firstDelay);
-      return false; // Indicates inject mode (continue native start)
+      if (gen !== this._runGeneration) return;
     }
 
-    return false;
+    this._mockIntervalId = setTimeout(scheduleNext, firstDelay);
   }
 
   stop(): void {
+    this._runGeneration++;
     if (this._mockIntervalId) {
       clearTimeout(this._mockIntervalId);
       this._mockIntervalId = undefined;

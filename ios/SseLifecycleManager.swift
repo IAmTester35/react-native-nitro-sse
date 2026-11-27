@@ -3,20 +3,22 @@ import Foundation
 import UIKit
 #endif
 
-/// Monitors iOS app lifecycle notifications (`didEnterBackground`, `willEnterForeground`) and manages `UIBackgroundTask`.
+/// Monitors iOS app lifecycle notifications (`didEnterBackground`, `willEnterForeground`)
+/// and manages `UIBackgroundTask`.
 /// Decouples iOS platform lifecycle hooks from connection state transitions.
 class SseLifecycleManager {
     private let dispatcher: SseDispatcher
     private let onBackground: () -> Void
     private let onForeground: () -> Void
-    
+
     private(set) var isAppInBackground: Bool = false
-    
+    private var isObserving: Bool = false
+
 #if os(iOS)
     private var backgroundTaskIdentifier: UIBackgroundTaskIdentifier = .invalid
     private var isBackgroundTaskActive: Bool = false
 #endif
-    
+
     init(
         dispatcher: SseDispatcher,
         onBackground: @escaping () -> Void,
@@ -26,18 +28,18 @@ class SseLifecycleManager {
         self.onBackground = onBackground
         self.onForeground = onForeground
     }
-    
+
     /// Ensures notification observers are unregistered and active background tasks are ended on deallocation.
     deinit {
         stopObserving()
         cleanupBackgroundTask()
     }
-    
+
     /// Registers observer for iOS application state transitions via `NotificationCenter`.
-    /// Calls `removeObserver(self)` first to guarantee idempotency without mutable state.
     func startObserving() {
 #if os(iOS)
-        NotificationCenter.default.removeObserver(self)
+        guard !isObserving else { return }
+        isObserving = true
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleAppDidEnterBackground),
@@ -52,14 +54,17 @@ class SseLifecycleManager {
         )
 #endif
     }
-    
+
     /// Unregisters all lifecycle notification observers.
     func stopObserving() {
 #if os(iOS)
+        guard isObserving else { return }
+        isObserving = false
+        // swiftlint:disable:next notification_center_detachment
         NotificationCenter.default.removeObserver(self)
 #endif
     }
-    
+
     /// Begins a `UIBackgroundTask` to request background execution time from iOS.
     /// `UIApplication` background task calls are routed through `DispatchQueue.main` as required by UIKit,
     /// while task expiration callbacks dispatch safely back to the serial `SseDispatcher`.
@@ -67,7 +72,7 @@ class SseLifecycleManager {
 #if os(iOS)
         cleanupBackgroundTask()
         isBackgroundTaskActive = true
-        
+
         DispatchQueue.main.async { [weak self] in
             let taskId = UIApplication.shared.beginBackgroundTask(withName: "NitroSse-KeepAlive") {
                 self?.dispatcher.async {
@@ -93,7 +98,7 @@ class SseLifecycleManager {
         }
 #endif
     }
-    
+
     /// Ends active `UIBackgroundTask` on the main queue and invalidates the task identifier.
     func cleanupBackgroundTask() {
 #if os(iOS)
@@ -107,7 +112,7 @@ class SseLifecycleManager {
         }
 #endif
     }
-    
+
     @objc private func handleAppDidEnterBackground() {
         dispatcher.async { [weak self] in
             guard let self = self else { return }
@@ -115,7 +120,7 @@ class SseLifecycleManager {
             self.onBackground()
         }
     }
-    
+
     @objc private func handleAppWillEnterForeground() {
         dispatcher.async { [weak self] in
             guard let self = self else { return }
