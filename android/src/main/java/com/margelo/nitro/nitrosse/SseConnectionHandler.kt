@@ -123,16 +123,8 @@ internal class RealSseEventSource(
         }
     }
 
-    private fun shouldReadErrorBody(response: Response): Boolean {
-        val code = response.code
-        val isUnusedAuthOrRateLimit = code == SseHttpStatus.UNAUTHORIZED ||
-            code == SseHttpStatus.FORBIDDEN ||
-            code == SseHttpStatus.REQUEST_TIMEOUT ||
-            code == SseHttpStatus.TOO_MANY_REQUESTS
-        val isRetryAfterUnavailable = code == SseHttpStatus.SERVICE_UNAVAILABLE &&
-            SseReconnectStrategy.extractRetryAfterMillis(response) != null
-        return code >= SseHttpStatus.BAD_REQUEST && !isUnusedAuthOrRateLimit && !isRetryAfterUnavailable
-    }
+    private fun shouldReadErrorBody(response: Response): Boolean =
+        response.code >= SseHttpStatus.BAD_REQUEST
 
     private fun readBoundedErrorBody(response: Response): String? {
         val source = if (shouldReadErrorBody(response)) response.body?.source() else null
