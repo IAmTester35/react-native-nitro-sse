@@ -131,6 +131,7 @@ class NitroSseCoordinatorTest {
                 }
             }
         }
+        detachRealNetwork(sse)
         drainLoopers()
         
         assertEquals(SseState.IDLE, sse.getState())
@@ -160,6 +161,7 @@ class NitroSseCoordinatorTest {
     fun testStopAfterQueuedRestartWins() {
         val sse = NitroSse(dispatcher)
         sse.setup(createMockConfig()) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
         sse.start()
         drainLoopers()
@@ -216,6 +218,7 @@ class NitroSseCoordinatorTest {
         sse.setup(config) { events ->
             emittedEvents.addAll(events)
         }
+        detachRealNetwork(sse)
         drainLoopers()
         
         sse.start()
@@ -247,6 +250,7 @@ class NitroSseCoordinatorTest {
         sse.setup(config) { events ->
             emittedEvents.addAll(events)
         }
+        detachRealNetwork(sse)
         drainLoopers()
         
         sse.start()
@@ -274,6 +278,7 @@ class NitroSseCoordinatorTest {
         val config = createMockConfig()
         
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
         sse.start()
         drainLoopers()
@@ -296,6 +301,7 @@ class NitroSseCoordinatorTest {
         val config = createMockConfig()
         
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
         sse.start()
         drainLoopers()
@@ -318,6 +324,7 @@ class NitroSseCoordinatorTest {
         val config = createMockConfig()
         
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
         sse.start()
         drainLoopers()
@@ -340,6 +347,7 @@ class NitroSseCoordinatorTest {
         val config = createMockConfig()
         
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
         sse.start()
         drainLoopers()
@@ -362,6 +370,7 @@ class NitroSseCoordinatorTest {
         val config = createMockConfig()
         
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
         sse.start()
         drainLoopers()
@@ -387,6 +396,7 @@ class NitroSseCoordinatorTest {
         sse.setup(config) { events ->
             emittedEvents.addAll(events)
         }
+        detachRealNetwork(sse)
         drainLoopers()
         sse.start()
         drainLoopers()
@@ -411,6 +421,7 @@ class NitroSseCoordinatorTest {
         val config = createMockConfig()
         
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
         
         sse.start()
@@ -434,6 +445,7 @@ class NitroSseCoordinatorTest {
         val config = createMockConfig()
         
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
         
         sse.start()
@@ -457,6 +469,7 @@ class NitroSseCoordinatorTest {
         val config = createMockConfig()
         
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
         
         sse.start()
@@ -486,6 +499,7 @@ class NitroSseCoordinatorTest {
         sse.setup(config) { events ->
             emittedEvents.addAll(events)
         }
+        detachRealNetwork(sse)
         drainLoopers()
         
         sse.start()
@@ -509,6 +523,7 @@ class NitroSseCoordinatorTest {
         sse.setup(config) { events ->
             emittedEvents.addAll(events)
         }
+        detachRealNetwork(sse)
         drainLoopers()
         
         sse.start()
@@ -559,6 +574,7 @@ class NitroSseCoordinatorTest {
         val config = createMockConfig()
         
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
         
         sse.start()
@@ -601,6 +617,7 @@ class NitroSseCoordinatorTest {
         val config = createMockConfig().copy(headers = mapOf("X-Initial" to "1", "Authorization" to "old"))
         
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
         
         sse.updateHeaders(mapOf("Authorization" to "new", "Tenant" to "tenant-1"))
@@ -621,6 +638,7 @@ class NitroSseCoordinatorTest {
         val config = createMockConfig()
         
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
 
         sse.start()
@@ -687,6 +705,7 @@ class NitroSseCoordinatorTest {
         val sse = NitroSse(dispatcher)
         val config = createMockConfig()
         sse.setup(config) {}
+        detachRealNetwork(sse)
         drainLoopers()
 
         sse.start()
@@ -771,6 +790,7 @@ class NitroSseCoordinatorTest {
         
         val interceptor = { p1 }
         sse.setup(config, { _ -> }, interceptor)
+        detachRealNetwork(sse)
         drainLoopers()
         
         sse.start()
@@ -799,6 +819,7 @@ class NitroSseCoordinatorTest {
         val interceptor = { p1 }
         
         sse.setup(config, { _ -> }, interceptor)
+        detachRealNetwork(sse)
         drainLoopers()
         
         sse.start()
@@ -842,6 +863,7 @@ class NitroSseCoordinatorTest {
         val sse = NitroSse(dispatcher)
         val config = createMockConfig()
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
 
         // 1. Start client
@@ -894,6 +916,7 @@ class NitroSseCoordinatorTest {
         }
 
         sse.setup(config, { _ -> }, failingInterceptor)
+        detachRealNetwork(sse)
         drainLoopers()
 
         sse.start()
@@ -921,6 +944,7 @@ class NitroSseCoordinatorTest {
         val config = createMockConfig()
 
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
 
         sse.start()
@@ -949,6 +973,7 @@ class NitroSseCoordinatorTest {
         sse.setup(config) { events ->
             emittedEvents.addAll(events)
         }
+        detachRealNetwork(sse)
         drainLoopers()
         sse.start()
         drainLoopers()
@@ -981,6 +1006,7 @@ class NitroSseCoordinatorTest {
         sse.setup(config) { events ->
             emittedEvents.addAll(events)
         }
+        detachRealNetwork(sse)
         drainLoopers()
         sse.start()
         drainLoopers()
@@ -1011,6 +1037,7 @@ class NitroSseCoordinatorTest {
         sse.setup(config) { events ->
             emittedEvents.addAll(events)
         }
+        detachRealNetwork(sse)
         drainLoopers()
         sse.start()
         drainLoopers()
@@ -1048,6 +1075,7 @@ class NitroSseCoordinatorTest {
         val sse = NitroSse(dispatcher)
         val config = createMockConfig()
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
 
         val lastIdField = NitroSse::class.java.getDeclaredField("lastProcessedId").apply { isAccessible = true }
@@ -1090,6 +1118,7 @@ class NitroSseCoordinatorTest {
         val sse = NitroSse(dispatcher)
         val config = createMockConfig()
         sse.setup(config, { _ -> })
+        detachRealNetwork(sse)
         drainLoopers()
 
         sse.start()
@@ -1140,6 +1169,7 @@ class NitroSseCoordinatorTest {
 
         val interceptor = { p1 }
         sse.setup(config, { events -> emittedEvents.addAll(events) }, interceptor)
+        detachRealNetwork(sse)
         drainLoopers()
 
         sse.start()
@@ -1160,6 +1190,7 @@ class NitroSseCoordinatorTest {
         val sse = NitroSse(dispatcher)
         val config = createMockConfig()
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
 
         // Initial stats check
@@ -1271,6 +1302,7 @@ class NitroSseCoordinatorTest {
         val sse = NitroSse(dispatcher)
         val config = createMockConfig()
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
 
         val reqIdField = NitroSse::class.java.getDeclaredField("requestId").apply { isAccessible = true }
@@ -1333,6 +1365,7 @@ class NitroSseCoordinatorTest {
         val config = createMockConfig().copy(batchingIntervalMs = 0.0, retryIntervalMs = 1000.0, jitterFactor = 0.0)
 
         sse.setup(config) {}
+        detachRealNetwork(sse)
         drainLoopers()
 
         sse.start()
@@ -1374,6 +1407,7 @@ class NitroSseCoordinatorTest {
         sse.setup(config) { events ->
             emittedEvents.addAll(events)
         }
+        detachRealNetwork(sse)
         drainLoopers()
 
         val isRunningField = NitroSse::class.java.getDeclaredField("isRunning")
@@ -1415,6 +1449,7 @@ class NitroSseCoordinatorTest {
         sse.setup(config) { events ->
             emittedEvents.addAll(events)
         }
+        detachRealNetwork(sse)
         drainLoopers()
 
         val isRunningField = NitroSse::class.java.getDeclaredField("isRunning")
@@ -1465,6 +1500,7 @@ class NitroSseCoordinatorTest {
         sse.setup(config) { events ->
             emittedEvents.addAll(events)
         }
+        detachRealNetwork(sse)
         drainLoopers()
         sse.start()
         drainLoopers()
@@ -1490,6 +1526,7 @@ class NitroSseCoordinatorTest {
         sse.setup(config) { events ->
             emittedEvents.addAll(events)
         }
+        detachRealNetwork(sse)
         drainLoopers()
         sse.start()
         drainLoopers()
@@ -1518,6 +1555,7 @@ class NitroSseCoordinatorTest {
         val sse = NitroSse(dispatcher)
         val config = createMockConfig()
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
         sse.start()
         drainLoopers()
@@ -1561,6 +1599,7 @@ class NitroSseCoordinatorTest {
         val sse = NitroSse(dispatcher)
         val config = createMockConfig()
         sse.setup(config) { _ -> }
+        detachRealNetwork(sse)
         drainLoopers()
         sse.start()
         drainLoopers()
@@ -1750,6 +1789,7 @@ class NitroSseCoordinatorTest {
         sse.setup(config) { events ->
             emittedEvents.addAll(events)
         }
+        detachRealNetwork(sse)
         drainLoopers()
         sse.start()
         drainLoopers()

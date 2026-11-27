@@ -575,7 +575,6 @@ export async function runSingleScenario(
       },
       (batch) => {
         const clockOffset = cachedClockCalibration?.offsetMs ?? 0;
-        const now = Date.now() - clockOffset;
         let hasDataInBatch = false;
 
         // Filter and sample latency from benchmark data events only
@@ -650,7 +649,8 @@ export async function runSingleScenario(
             }
           }
           if (eventTs > 0) {
-            const lat = Math.max(0, now - eventTs);
+            const sampleNow = Date.now() - clockOffset;
+            const lat = Math.max(0, sampleNow - eventTs);
             const bucket = Math.min(LATENCY_BUCKETS - 1, lat);
             latencyHistogram[bucket] = (latencyHistogram[bucket] ?? 0) + 1;
             latencyCount++;

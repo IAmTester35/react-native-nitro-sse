@@ -352,8 +352,8 @@ extension RealSseEventSource: URLSessionDataDelegate {
                 self.dispatchTerminalFailure(error: error, response: self.lastResponse, errorBody: nil)
             } else {
                 guard !self.isTerminalDispatched else { return }
-                self.isTerminalDispatched = true
                 self.parser.endOfStream()
+                self.isTerminalDispatched = true
                 self.cleanupTransport()
                 self.delegate?.connectionDidClose(attemptVersion: self.attemptVersion)
             }
