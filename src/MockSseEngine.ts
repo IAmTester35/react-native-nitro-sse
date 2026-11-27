@@ -233,7 +233,9 @@ export class MockSseEngine {
 
     if (mode === 'replace') {
       this._setMockState('connecting');
+      if (gen !== this._runGeneration) return;
       this._setMockState('open');
+      if (gen !== this._runGeneration) return;
 
       // Emit simulated open event
       const openEvent: SseEvent = { type: 'open', statusCode: 200 };

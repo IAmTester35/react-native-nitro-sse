@@ -444,4 +444,16 @@ class SseEventReaderTest {
         }
         assertTrue(callback.events.isEmpty())
     }
+
+    @Test
+    fun testUnterminatedRetryDirectiveAtEofIsDiscarded() {
+        val buffer = Buffer().writeUtf8("data: x\n\nretry: 9000")
+        val reader = SseEventReader(buffer)
+        val callback = RecordingCallback()
+
+        assertTrue(reader.processNextEvent(callback))
+        assertFalse(reader.processNextEvent(callback))
+        assertEquals(listOf("x"), callback.events.map { it.data })
+        assertTrue("Unterminated retry line at EOF must not update retry", callback.retries.isEmpty())
+    }
 }

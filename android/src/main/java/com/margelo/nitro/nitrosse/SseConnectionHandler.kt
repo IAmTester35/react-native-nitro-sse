@@ -138,7 +138,7 @@ internal class RealSseEventSource(
                     // Preserve any partial error body bytes already buffered before disconnect/timeout
                 }
                 val size = minOf(it.buffer.size, MAX_ERROR_BODY_BYTES)
-                if (size > 0L) it.buffer.readUtf8(size) else null
+                if (size > 0L) it.buffer.readUtf8(size).removePrefix("\uFEFF").ifEmpty { null } else null
             } finally {
                 it.timeout().clearDeadline()
             }

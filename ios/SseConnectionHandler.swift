@@ -118,6 +118,17 @@ internal class RealSseEventSource: NSObject, SseEventSource {
         }
     }
 
+    private static func decodeErrorBody(_ data: Data) -> String? {
+        guard !data.isEmpty else { return nil }
+        // WHATWG SSE Section 9.2.2: invalid UTF-8 bytes must be replaced with U+FFFD, not dropped.
+        // swiftlint:disable:next optional_data_string_conversion
+        var decoded = String(decoding: data, as: UTF8.self)
+        if decoded.hasPrefix("\u{FEFF}") {
+            decoded.removeFirst()
+        }
+        return decoded.isEmpty ? nil : decoded
+    }
+
     private func cleanupTransport() {
         dispatcher.assertOnQueue()
         task?.cancel()
@@ -138,9 +149,7 @@ internal class RealSseEventSource: NSObject, SseEventSource {
                     code: resp.statusCode,
                     userInfo: [NSLocalizedDescriptionKey: "HTTP \(resp.statusCode)"]
                 )
-                // WHATWG SSE Section 9.2.2: invalid UTF-8 bytes must be replaced with U+FFFD, not dropped.
-                // swiftlint:disable:next optional_data_string_conversion
-                let bodyString = self.errorBodyData.isEmpty ? nil : String(decoding: self.errorBodyData, as: UTF8.self)
+                let bodyString = Self.decodeErrorBody(self.errorBodyData)
                 self.dispatchTerminalFailure(error: error, response: resp, errorBody: bodyString)
                 return
             }
@@ -291,9 +300,7 @@ extension RealSseEventSource: URLSessionDataDelegate {
                         code: statusCode,
                         userInfo: [NSLocalizedDescriptionKey: "HTTP \(statusCode)"]
                     )
-                    // WHATWG SSE Section 9.2.2: invalid UTF-8 bytes must be replaced with U+FFFD, not dropped.
-                    // swiftlint:disable:next optional_data_string_conversion
-                    let bodyString = String(decoding: self.errorBodyData, as: UTF8.self)
+                    let bodyString = Self.decodeErrorBody(self.errorBodyData)
                     self.dispatchTerminalFailure(error: error, response: resp, errorBody: bodyString)
                 }
                 return
@@ -330,9 +337,7 @@ extension RealSseEventSource: URLSessionDataDelegate {
                     code: statusCode,
                     userInfo: [NSLocalizedDescriptionKey: "HTTP \(statusCode)"]
                 )
-                // WHATWG SSE Section 9.2.2: invalid UTF-8 bytes must be replaced with U+FFFD, not dropped.
-                // swiftlint:disable:next optional_data_string_conversion
-                let bodyString = self.errorBodyData.isEmpty ? nil : String(decoding: self.errorBodyData, as: UTF8.self)
+                let bodyString = Self.decodeErrorBody(self.errorBodyData)
                 self.dispatchTerminalFailure(error: finalError, response: resp, errorBody: bodyString)
                 return
             }

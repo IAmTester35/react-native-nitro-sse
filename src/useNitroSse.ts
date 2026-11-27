@@ -200,11 +200,35 @@ export function useNitroSse<
     onBeforeRequest,
   });
 
-  const prevHeaderKeysRef = useRef<string[]>(
-    headers && typeof headers === 'object' ? Object.keys(headers).sort() : []
-  );
   const lastSyncedHeadersKeyRef = useRef<string | null>(null);
   const validUrlRef = useRef<string | null>(validUrl);
+
+  // Track committed header key removals during render (React's derived state from prev render pattern)
+  // so lifecycle cleanup disposes the old client BEFORE any child passive useEffect can call restart().
+  const currentHeaderKeys =
+    headers && typeof headers === 'object' ? Object.keys(headers).sort() : [];
+  const [headerTracking, setHeaderTracking] = useState<{
+    keys: string[];
+    removalEpoch: number;
+  }>(() => ({ keys: currentHeaderKeys, removalEpoch: 0 }));
+
+  const currentKeysSet = new Set(currentHeaderKeys);
+  const hasRemovedHeaderKey = headerTracking.keys.some(
+    (k) => !currentKeysSet.has(k)
+  );
+  const headerRemovalEpoch = hasRemovedHeaderKey
+    ? headerTracking.removalEpoch + 1
+    : headerTracking.removalEpoch;
+  if (
+    hasRemovedHeaderKey ||
+    currentHeaderKeys.length !== headerTracking.keys.length ||
+    currentHeaderKeys.some((k, i) => k !== headerTracking.keys[i])
+  ) {
+    setHeaderTracking({
+      keys: currentHeaderKeys,
+      removalEpoch: headerRemovalEpoch,
+    });
+  }
 
   // Synchronize options, guard, and callback references after render commit without render-phase mutation
   useEffect(() => {
@@ -301,7 +325,7 @@ export function useNitroSse<
           if (callbacksRef.current.onError) {
             unhandledErrorReporter.reset();
             callbacksRef.current.onError(e);
-          } else {
+          } else if (e.type === 'error') {
             unhandledErrorReporter.report('[useNitroSse]', e);
           }
         });
@@ -368,10 +392,6 @@ export function useNitroSse<
   // react-doctor-disable-next-line effect-needs-cleanup -- clientRef.current.dispose() completely releases all event listeners and native socket streams
   useEffect(() => {
     lastSyncedHeadersKeyRef.current = headersKey;
-    prevHeaderKeysRef.current =
-      headersRef.current && typeof headersRef.current === 'object'
-        ? Object.keys(headersRef.current).sort()
-        : [];
 
     if (validUrl === null) {
       if (autoStart && restConfigRef.current.url !== undefined) {
@@ -394,7 +414,7 @@ export function useNitroSse<
         setClient(null);
       }
     };
-    // Recreate client if headers becomes undefined to purge stale native headers
+    // Recreate client if headers becomes undefined or keys are removed to purge stale native headers
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     configKey,
@@ -402,10 +422,11 @@ export function useNitroSse<
     hasBeforeRequest,
     hasValidUrl,
     isHeadersUndefined,
+    headerRemovalEpoch,
     initializeClient,
   ]);
 
-  // Synchronize headers dynamically without reconnecting, or recreate client if header keys were removed
+  // Synchronize value-only or additive header updates dynamically without reconnecting
   useEffect(() => {
     if (lastSyncedHeadersKeyRef.current === headersKey) {
       return;
@@ -413,22 +434,6 @@ export function useNitroSse<
     lastSyncedHeadersKeyRef.current = headersKey;
 
     const currentHeaders = headersRef.current;
-    const currentKeys =
-      currentHeaders && typeof currentHeaders === 'object'
-        ? Object.keys(currentHeaders).sort()
-        : [];
-    const currentKeysSet = new Set(currentKeys);
-    const isKeyRemoved =
-      currentHeaders !== undefined &&
-      prevHeaderKeysRef.current.some((k) => !currentKeysSet.has(k));
-    prevHeaderKeysRef.current = currentKeys;
-
-    if (isKeyRemoved && validUrlRef.current !== null) {
-      clientRef.current?.dispose();
-      initializeClient(validUrlRef.current);
-      return;
-    }
-
     if (clientRef.current && currentHeaders !== undefined) {
       try {
         clientRef.current.updateHeaders(currentHeaders);
@@ -436,7 +441,7 @@ export function useNitroSse<
         logError('[useNitroSse] Failed to dynamically update headers:', err);
       }
     }
-  }, [headersKey, initializeClient]);
+  }, [headersKey]);
 
   // Imperative control callbacks wrapped in useCallback for stable references
   const start = useCallback(() => {

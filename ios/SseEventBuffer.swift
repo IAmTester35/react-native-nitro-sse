@@ -29,10 +29,10 @@ class SseEventBuffer {
         onFlush: @escaping (_ events: [SseEvent]) -> Void
     ) {
         self.batchingIntervalMs = batchingIntervalMs
-        if !maxBufferSize.isFinite || maxBufferSize <= 0 || maxBufferSize > Double(Int.max) {
+        if !maxBufferSize.isFinite || maxBufferSize <= 0 {
             self.maxBufferSize = 1000
         } else {
-            self.maxBufferSize = min(Int(maxBufferSize), Self.hardMaxBufferSize)
+            self.maxBufferSize = Int(min(maxBufferSize, Double(Self.hardMaxBufferSize)))
         }
         self.dispatcher = dispatcher
         self.onFlush = onFlush

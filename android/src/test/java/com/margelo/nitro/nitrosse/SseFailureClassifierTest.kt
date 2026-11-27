@@ -84,6 +84,16 @@ class SseFailureClassifierTest {
             SseFailureClassifier.classify(ctxLimit, policy)
         )
 
+        val ctx201 = SseFailureClassifier.buildContext(
+            null,
+            makeResponse(201, mapOf("Content-Type" to "text/event-stream")),
+            null
+        )
+        assertEquals(
+            SseFailureDecision.FailAndStop("HTTP 201 is not a valid SSE response. Stopping.", 201.0),
+            SseFailureClassifier.classify(ctx201, policy)
+        )
+
         val ctx400 = SseFailureClassifier.buildContext(null, makeResponse(400), "  Bad Request  ")
         assertEquals(
             SseFailureDecision.FailAndStop("Fatal Error (400): Bad Request", 400.0),

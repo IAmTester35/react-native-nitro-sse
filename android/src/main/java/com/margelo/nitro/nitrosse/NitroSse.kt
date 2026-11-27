@@ -68,6 +68,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     internal val metrics = SseMetrics()
 
     private val connectionAttemptVersion = AtomicInteger(0)
+    private var lastCleanupVersion = 0
     private var lastProcessedId: String? = null
     private var currentState = AtomicReference(SseState.IDLE)
     private var wasRunningBeforeNetworkLoss = false
@@ -793,10 +794,12 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
             // An explicit restart supersedes any pending hibernation resume intent (mirrors stop()).
             wasRunningBeforeNetworkLoss = false
             wasRunningBeforePaused = false
-            // Cleanup is unconditional: a start()/restart() issued before this task drained bumps the version,
-            // but the timers and buffers of the retired cycle must still be released. FIFO ordering on
-            // [sseDispatcher] guarantees it runs before that newer cycle's queued connect task.
-            performInternalCleanup()
+            // Run cleanup only if a newer cycle on [sseDispatcher] has not already cleaned up past `version`
+            // (prevents a stale queued restart() from cancelling a connection installed inline on [sseDispatcher]),
+            // while still cleaning up retired timers when JS start() supersedes a queued restart().
+            if (lastCleanupVersion < version) {
+                performInternalCleanup()
+            }
             if (isRunning.get() && version == connectionAttemptVersion.get()) {
                 connectWithFreshBackoff(version)
             }
@@ -868,6 +871,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
      * Always invoked within `sseDispatcherThread` execution context (from lifecycle, network, or stop).
      */
     private fun performInternalCleanup() {
+        lastCleanupVersion = maxOf(lastCleanupVersion, connectionAttemptVersion.get())
         cancelNetworkRestartDebounce()
         interceptorTimeoutRunnable?.let { sseDispatcher?.removeCallbacks(it) }
         interceptorTimeoutRunnable = null

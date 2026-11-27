@@ -2285,5 +2285,53 @@ describe('NitroSseModule Unit Tests', () => {
         jest.useRealTimers();
       }
     });
+
+    it('should still warn on insecure credentials if first interceptor call had no auth header and second did', async () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        let client: any;
+        let intercepted: (() => Promise<Record<string, string>>) | undefined;
+        jest.isolateModules(() => {
+          const { createNitroSse } = require('../index');
+          const {
+            NitroModules: IsolatedNitro,
+          } = require('react-native-nitro-modules');
+          (IsolatedNitro.createHybridObject as jest.Mock).mockReturnValueOnce({
+            setup: jest.fn((_cfg, _cb, onBeforeRequest) => {
+              intercepted = onBeforeRequest;
+            }),
+            start: jest.fn(),
+            stop: jest.fn(),
+            restart: jest.fn(),
+            flush: jest.fn(),
+            updateHeaders: jest.fn(),
+            setLastProcessedId: jest.fn(),
+            isConnected: jest.fn().mockReturnValue(false),
+            getState: jest.fn().mockReturnValue('idle'),
+            getStats: jest.fn(),
+            dispose: jest.fn(),
+          });
+
+          client = createNitroSse();
+          let attempt = 0;
+          client.setup({
+            url: 'http://api.example.com/events',
+            onBeforeRequest: async () =>
+              attempt++ === 0 ? {} : { Authorization: 'Bearer secret' },
+          });
+        });
+
+        await intercepted!();
+        expect(warnSpy).not.toHaveBeenCalled();
+
+        await intercepted!();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Sensitive credential header(s) detected')
+        );
+        client.dispose();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
   });
 });

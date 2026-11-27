@@ -52,14 +52,14 @@ internal enum SseFailureDecision: Equatable {
 /// Pure classifier translating transport, parser, and HTTP errors into disconnection metrics and retry decisions.
 internal enum SseFailureClassifier {
     static func isEventStreamMimeType(_ contentType: String) -> Bool {
-        let rawMime = contentType.split(separator: ";").first
+        let rawMime = contentType.split(separator: ";", omittingEmptySubsequences: false).first
         let mimeType = rawMime?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
         return mimeType == "text/event-stream"
     }
 
     static func resolveHttpStatusCode(response: HTTPURLResponse?, nsError: NSError) -> Int? {
-        // Decouple HTTP status code (meaningful only for HTTP 4xx/5xx/204) from transport and parser error codes
-        if let resp = response, resp.statusCode >= 400 || resp.statusCode == 204 {
+        // Decouple HTTP status code (meaningful only for HTTP 4xx/5xx or non-200 2xx) from transport/parser codes
+        if let resp = response, resp.statusCode >= 400 || ((200..<300).contains(resp.statusCode) && resp.statusCode != 200) {
             return resp.statusCode
         }
         if nsError.code >= 100 && nsError.code < 600 {
@@ -148,6 +148,12 @@ internal enum SseFailureClassifier {
             return .failAndStop(
                 message: "Invalid Content-Type: expected text/event-stream. Stopping.",
                 statusCode: Double(context.reportedStatusCode)
+            )
+        }
+        if let nonOkSuccess = context.httpStatusCode, (200..<300).contains(nonOkSuccess), nonOkSuccess != 200 {
+            return .failAndStop(
+                message: "HTTP \(nonOkSuccess) is not a valid SSE response. Stopping.",
+                statusCode: Double(nonOkSuccess)
             )
         }
         if context.isParserLimit {

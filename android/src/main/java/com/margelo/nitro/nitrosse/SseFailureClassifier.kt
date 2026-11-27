@@ -161,6 +161,11 @@ internal object SseFailureClassifier {
                     "Invalid Content-Type: expected text/event-stream. Stopping.",
                     statusDouble
                 )
+            statusCode in SseHttpStatus.OK..SseHttpStatus.SUCCESS_MAX && statusCode != SseHttpStatus.OK ->
+                SseFailureDecision.FailAndStop(
+                    "HTTP $statusCode is not a valid SSE response. Stopping.",
+                    statusDouble
+                )
             context.throwable is SseParserLimitException ->
                 // Parser resource violations (line length, event data size) are fatal and must not reconnect
                 SseFailureDecision.FailAndStop(context.throwable.message, statusDouble)

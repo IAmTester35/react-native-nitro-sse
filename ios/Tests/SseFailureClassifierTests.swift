@@ -22,6 +22,7 @@ final class SseFailureClassifierTests: XCTestCase {
         XCTAssertTrue(SseFailureClassifier.isEventStreamMimeType("  text/event-stream ; charset=utf-8 "))
 
         XCTAssertFalse(SseFailureClassifier.isEventStreamMimeType(""))
+        XCTAssertFalse(SseFailureClassifier.isEventStreamMimeType(";text/event-stream"))
         XCTAssertFalse(SseFailureClassifier.isEventStreamMimeType("application/json"))
         XCTAssertFalse(SseFailureClassifier.isEventStreamMimeType("application/text/event-stream"))
         XCTAssertFalse(SseFailureClassifier.isEventStreamMimeType("text/event-stream-v2"))
@@ -94,6 +95,15 @@ final class SseFailureClassifierTests: XCTestCase {
         XCTAssertEqual(
             SseFailureClassifier.classify(context: ctx204, policy: defaultPolicy),
             .failAndStop(message: "No Content (204). Stopping.", statusCode: 204)
+        )
+
+        // 201 Created with text/event-stream must stop (non-200 2xx)
+        let resp201 = makeHttpResponse(statusCode: 201, headers: ["Content-Type": "text/event-stream"])
+        let err201 = NSError(domain: "NitroSse", code: 201, userInfo: nil)
+        let ctx201 = SseFailureClassifier.buildContext(error: err201, response: resp201, errorBody: nil)
+        XCTAssertEqual(
+            SseFailureClassifier.classify(context: ctx201, policy: defaultPolicy),
+            .failAndStop(message: "HTTP 201 is not a valid SSE response. Stopping.", statusCode: 201)
         )
 
         // Invalid Content-Type (-2001)

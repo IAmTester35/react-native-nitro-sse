@@ -382,6 +382,7 @@ export class NitroSseClient implements SseClient {
   private _pendingHeaders: Record<string, string> = {};
   private _unhandledErrorReporter = new UnhandledSseErrorReporter();
   private _warnedInsecureInterceptorUrl: string | null = null;
+  private _isConfiguring = false;
 
   constructor(nativeOrDriver: NitroSse | SseDriver) {
     if (
@@ -441,7 +442,12 @@ export class NitroSseClient implements SseClient {
       devWarn(
         '[NitroSse] setup() called while connection is active; stopping previous stream before reconfiguring.'
       );
-      this._driver.stop();
+      this._isConfiguring = true;
+      try {
+        this._driver.stop();
+      } finally {
+        this._isConfiguring = false;
+      }
     }
 
     const hasHeaders =
@@ -632,6 +638,12 @@ export class NitroSseClient implements SseClient {
 
   start(): void {
     this._checkDisposed();
+    if (this._isConfiguring) {
+      devWarn(
+        '[NitroSse] Ignoring start() called synchronously during setup() teardown.'
+      );
+      return;
+    }
     if (!this._config) {
       throw new NitroSseStateError(
         '[NitroSse] Cannot start SSE stream: client is not configured. Call setup(config) first.'
@@ -647,6 +659,12 @@ export class NitroSseClient implements SseClient {
 
   restart(): void {
     this._checkDisposed();
+    if (this._isConfiguring) {
+      devWarn(
+        '[NitroSse] Ignoring restart() called synchronously during setup() teardown.'
+      );
+      return;
+    }
     if (!this._config) {
       throw new NitroSseStateError(
         '[NitroSse] Cannot restart SSE stream: client is not configured. Call setup(config) first.'

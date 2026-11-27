@@ -684,4 +684,45 @@ class NitroSseTests: XCTestCase {
             XCTAssertLessThanOrEqual(delay, 30.0)
         }
     }
+
+    func testEventBufferCapsOversizedMaxBufferSizeAtPow2_63WithoutTrapping() {
+        let queue = DispatchQueue(label: "test.buffer.cap")
+        let key = DispatchSpecificKey<Void>()
+        queue.setSpecific(key: key, value: ())
+        let dispatcher = SseDispatchQueueDispatcher(queue: queue, queueKey: key)
+
+        let buffer = SseEventBuffer()
+        dispatcher.sync {
+            buffer.configure(
+                batchingIntervalMs: 100.0,
+                maxBufferSize: pow(2.0, 63.0),
+                dispatcher: dispatcher
+            ) { _ in }
+        }
+    }
+
+    func testParserDispatchesFinalBareCrTerminatedEventAndDiscardsIncompleteTrailingCrAtEof() {
+        final class Collector: SseEventParserDelegate {
+            var events: [String] = []
+            func parserDidReceiveEvent(id: String?, type: String?, data: String) {
+                events.append(data)
+            }
+            func parserDidReceiveComment(_ comment: String) {}
+            func parserDidReceiveRetry(retryMs: Int64) {}
+        }
+
+        let collector = Collector()
+        let parser = SseEventParser()
+        parser.delegate = collector
+
+        parser.feed(data: Data("data: complete\r\r".utf8))
+        parser.endOfStream()
+        XCTAssertEqual(collector.events, ["complete"])
+
+        parser.reset()
+        collector.events.removeAll()
+        parser.feed(data: Data("data: incomplete\r".utf8))
+        parser.endOfStream()
+        XCTAssertTrue(collector.events.isEmpty)
+    }
 }
