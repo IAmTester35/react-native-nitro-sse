@@ -1892,4 +1892,69 @@ describe('FetchSseDriver', () => {
     expect(zeroErr?.data).toBe('{"ok":"slow-error"}');
     zeroDriver.dispose();
   });
+
+  test('bounds large 400/500 error body preview in event.message while preserving full 8KB event.data', async () => {
+    const bigBody = 'X'.repeat(500);
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 400,
+      headers: new Headers({ 'Content-Type': 'text/plain' }),
+      body: createMockStream([bigBody]),
+    });
+
+    driver.setup({ url: TEST_URL });
+    driver.start();
+    await flushMicrotasks();
+
+    const errEvent = dispatchedEvents.find((e) => e.type === 'error');
+    expect(errEvent?.data).toBe(bigBody);
+    expect(errEvent?.message).toBe(`Fatal Error (400): ${'X'.repeat(256)}…`);
+  });
+
+  test('enforces 1000ms minimum delay floor even when Retry-After is 0', async () => {
+    const randomSpy = jest.spyOn(Math, 'random').mockReturnValue(0);
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 429,
+      headers: new Headers({ 'Retry-After': '0' }),
+      body: createMockStream([]),
+    });
+
+    driver.setup({ url: TEST_URL });
+    driver.start();
+    await flushMicrotasks();
+
+    const errEvent = dispatchedEvents.find((e) => e.type === 'error');
+    expect(errEvent?.retry).toBe(1000);
+    randomSpy.mockRestore();
+  });
+
+  test('stalled error body with connectionTimeoutMs=0 still times out via 15s fallback', async () => {
+    const cancelSpy = jest.fn().mockResolvedValue(undefined);
+    const stalledStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"partial":'));
+      },
+      pull() {
+        return new Promise(() => {});
+      },
+      cancel: cancelSpy,
+    });
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 403,
+      headers: new Headers({ 'Content-Type': 'application/json' }),
+      body: stalledStream,
+    });
+
+    driver.setup({ url: TEST_URL, connectionTimeoutMs: 0 });
+    driver.start();
+    await flushMicrotasks();
+    expect(dispatchedEvents.some((e) => e.type === 'error')).toBe(false);
+
+    jest.advanceTimersByTime(15000);
+    await flushMicrotasks();
+
+    const errEvent = dispatchedEvents.find((e) => e.type === 'error');
+    expect(errEvent?.statusCode).toBe(403);
+    expect(errEvent?.data).toBe('{"partial":');
+    expect(cancelSpy).toHaveBeenCalled();
+  });
 });

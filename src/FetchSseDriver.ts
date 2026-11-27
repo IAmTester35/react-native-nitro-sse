@@ -45,6 +45,16 @@ const DEFAULT_MAX_BUFFER_SIZE = 1000;
 const HARD_MAX_BUFFER_SIZE = 10_000;
 /** Maximum UTF-8 bytes to read from HTTP error responses, matching native 8KB cap. */
 const MAX_ERROR_BODY_BYTES = 8192;
+/** Maximum characters of error body preview included in `event.message` (`event.data` retains the full 8KB body). */
+const MAX_ERROR_MESSAGE_BODY_CHARS = 256;
+
+function formatErrorBodyPreview(errorBody?: string): string | undefined {
+  const trimmed = errorBody?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > MAX_ERROR_MESSAGE_BODY_CHARS
+    ? `${trimmed.slice(0, MAX_ERROR_MESSAGE_BODY_CHARS)}…`
+    : trimmed;
+}
 
 function resolveMaxBufferSize(val: unknown): number {
   return typeof val === 'number' && Number.isFinite(val) && val > 0
@@ -672,9 +682,9 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     } else if (statusCode >= 400 && statusCode <= 499) {
       // 3f. Fatal client error (e.g. 400 Bad Request, 404 Not Found, 405 Method Not Allowed)
       this._disconnectReason = 'server_error';
-      const bodyText = errorBody?.trim();
-      const fatalMessage = bodyText
-        ? `Fatal Error (${statusCode}): ${bodyText}`
+      const bodyPreview = formatErrorBodyPreview(errorBody);
+      const fatalMessage = bodyPreview
+        ? `Fatal Error (${statusCode}): ${bodyPreview}`
         : `Fatal Error (${statusCode}). Stopping.`;
       this._failAndStop(fatalMessage, statusCode, errorBody);
       return;
@@ -682,9 +692,9 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       // 3g. Server error: Recoverable
       this._disconnectReason = 'server_error';
       this._recordError(`Server Error (${statusCode})`, String(statusCode));
-      const bodyText = errorBody?.trim();
-      const errorMsg = bodyText
-        ? `Server Error (${statusCode}): ${bodyText}`
+      const bodyPreview = formatErrorBodyPreview(errorBody);
+      const errorMsg = bodyPreview
+        ? `Server Error (${statusCode}): ${bodyPreview}`
         : `Server Error (${statusCode})`;
       this._pushEvent({
         type: 'error',
@@ -897,7 +907,6 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     abortController: AbortController,
     attemptVersion: number
   ): Promise<string | undefined> {
-    const hasTimeout = true;
     const effectiveTimeoutMs =
       connectionTimeoutMs > 0 ? connectionTimeoutMs : 15000;
     const remainingTimeoutMs = Math.max(
@@ -920,28 +929,25 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       let totalBytes = 0;
       let timedOut = false;
 
-      let timeoutPromise: Promise<{ value: undefined; done: true }> | undefined;
-      if (hasTimeout) {
-        timeoutPromise = new Promise<{ value: undefined; done: true }>(
-          (resolve) => {
-            this._errorBodyTimer = setTimeout(() => {
-              this._errorBodyTimer = undefined;
-              timedOut = true;
-              resolve({ value: undefined, done: true });
-              try {
-                reader.cancel().catch(() => {});
-              } catch {
-                // Ignore reader cancellation errors
-              }
-              try {
-                abortController.abort();
-              } catch {
-                // Ignore abort errors
-              }
-            }, remainingTimeoutMs);
-          }
-        );
-      }
+      const timeoutPromise = new Promise<{ value: undefined; done: true }>(
+        (resolve) => {
+          this._errorBodyTimer = setTimeout(() => {
+            this._errorBodyTimer = undefined;
+            timedOut = true;
+            resolve({ value: undefined, done: true });
+            try {
+              reader.cancel().catch(() => {});
+            } catch {
+              // Ignore reader cancellation errors
+            }
+            try {
+              abortController.abort();
+            } catch {
+              // Ignore abort errors
+            }
+          }, remainingTimeoutMs);
+        }
+      );
 
       try {
         while (
@@ -949,9 +955,10 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
           !timedOut &&
           !this._isStale(attemptVersion)
         ) {
-          const { value, done } = await (timeoutPromise
-            ? Promise.race([reader.read(), timeoutPromise])
-            : reader.read());
+          const { value, done } = await Promise.race([
+            reader.read(),
+            timeoutPromise,
+          ]);
           if (timedOut || this._isStale(attemptVersion) || done) {
             break;
           }
@@ -1007,26 +1014,21 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     }
 
     // Fallback for environments without ReadableStream body support
-    let fallbackTimeoutPromise: Promise<undefined> | undefined;
-    if (hasTimeout) {
-      fallbackTimeoutPromise = new Promise<undefined>((resolve) => {
-        this._errorBodyTimer = setTimeout(() => {
-          this._errorBodyTimer = undefined;
-          resolve(undefined);
-          try {
-            abortController.abort();
-          } catch {
-            // Ignore abort errors
-          }
-        }, remainingTimeoutMs);
-      });
-    }
+    const fallbackTimeoutPromise = new Promise<undefined>((resolve) => {
+      this._errorBodyTimer = setTimeout(() => {
+        this._errorBodyTimer = undefined;
+        resolve(undefined);
+        try {
+          abortController.abort();
+        } catch {
+          // Ignore abort errors
+        }
+      }, remainingTimeoutMs);
+    });
 
     let raw: string | undefined;
     try {
-      raw = await (fallbackTimeoutPromise
-        ? Promise.race([response.text(), fallbackTimeoutPromise])
-        : response.text());
+      raw = await Promise.race([response.text(), fallbackTimeoutPromise]);
     } catch {
       // Ignore body reading error
     } finally {

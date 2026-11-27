@@ -159,10 +159,9 @@ internal enum SseFailureClassifier {
         if let fatalHttp = context.httpStatusCode,
            (400...499).contains(fatalHttp),
            ![401, 403, 408, 429].contains(fatalHttp) {
-            let trimmedBody = context.errorBody?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let fatalMessage = (trimmedBody?.isEmpty == false)
-                ? "Fatal Error (\(fatalHttp)): \(trimmedBody!)"
-                : "Fatal Error (\(fatalHttp)). Stopping."
+            let fatalMessage = formatErrorBodyPreview(context.errorBody)
+                .map { "Fatal Error (\(fatalHttp)): \($0)" }
+                ?? "Fatal Error (\(fatalHttp)). Stopping."
             return .failAndStop(message: fatalMessage, statusCode: Double(fatalHttp))
         }
         return nil
@@ -220,12 +219,24 @@ internal enum SseFailureClassifier {
         return nil
     }
 
+    private static let maxErrorMessageBodyChars = 256
+
+    private static func formatErrorBodyPreview(_ errorBody: String?) -> String? {
+        guard let trimmed = errorBody?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        if trimmed.count > maxErrorMessageBodyChars {
+            return String(trimmed.prefix(maxErrorMessageBodyChars)) + "…"
+        }
+        return trimmed
+    }
+
     private static func buildDefaultErrorMessage(_ context: SseFailureContext) -> String {
         if let http = context.httpStatusCode,
            http >= 500,
-           let bodyText = context.errorBody?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !bodyText.isEmpty {
-            return "Server Error (\(http)): \(bodyText)"
+           let bodyPreview = formatErrorBodyPreview(context.errorBody) {
+            return "Server Error (\(http)): \(bodyPreview)"
         }
         return context.nsError.localizedDescription
     }

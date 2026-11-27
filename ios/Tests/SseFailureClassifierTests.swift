@@ -217,5 +217,36 @@ final class SseFailureClassifierTests: XCTestCase {
                 markStale: true
             )
         )
+
+        // Retry-After: 0 with 0.5s jitter must still respect 1.0s minimum floor
+        let zeroJitterPolicy = SseFailurePolicyInput(
+            hasInterceptor: false,
+            nextAuthAttempt: 1,
+            maxAuthRetries: 3,
+            maxRetryIntervalSeconds: 10.0,
+            retryAfterJitterSeconds: 0.5
+        )
+        let resp429Zero = makeHttpResponse(statusCode: 429, headers: ["Retry-After": "0"])
+        let ctx429Zero = SseFailureClassifier.buildContext(
+            error: NSError(domain: "NitroSse", code: 429, userInfo: nil),
+            response: resp429Zero,
+            errorBody: nil
+        )
+        XCTAssertEqual(
+            SseFailureClassifier.classify(context: ctx429Zero, policy: zeroJitterPolicy),
+            .retryAfter(message: "Retry-After received: 1s", statusCode: 429, delaySeconds: 1.0)
+        )
+
+        // Large 400/500 body is truncated to 256 chars in message preview
+        let longBody = String(repeating: "A", count: 400)
+        let ctxLong400 = SseFailureClassifier.buildContext(
+            error: NSError(domain: "NitroSse", code: 400, userInfo: nil),
+            response: makeHttpResponse(statusCode: 400),
+            errorBody: longBody
+        )
+        XCTAssertEqual(
+            SseFailureClassifier.classify(context: ctxLong400, policy: policy),
+            .failAndStop(message: "Fatal Error (400): " + String(repeating: "A", count: 256) + "…", statusCode: 400)
+        )
     }
 }
