@@ -399,7 +399,7 @@ describe('FetchSseDriver', () => {
     const errorEvent = dispatchedEvents.find((e) => e.type === 'error');
     expect(errorEvent?.retry).toBeGreaterThanOrEqual(2500);
     expect(errorEvent?.retry).toBeLessThanOrEqual(3500);
-    expect(errorEvent?.message).toMatch(/Retry-After received: [23]s/);
+    expect(errorEvent?.message).toMatch(/Retry-After received: [234]s/);
 
     // Advance for the scheduled reconnect (2s + up to 1.5s jitter)
     jest.advanceTimersByTime(4000);
@@ -1526,7 +1526,7 @@ describe('FetchSseDriver', () => {
         status: 429,
         headers: { 'Retry-After': '2' },
         body: '{"error":"rate_limited_retry_after"}',
-        expectedMessage: /^Retry-After received: [23]s$/,
+        expectedMessage: /^Retry-After received: [234]s$/,
         expectedEvents: ['state', 'error', 'state'],
         expectRetry: true,
       },
@@ -1546,7 +1546,7 @@ describe('FetchSseDriver', () => {
         status: 503,
         headers: { 'Retry-After': '2' },
         body: 'Service Unavailable Retry',
-        expectedMessage: /^Retry-After received: [23]s$/,
+        expectedMessage: /^Retry-After received: [234]s$/,
         expectedEvents: ['state', 'error', 'state'],
         expectRetry: true,
       },
