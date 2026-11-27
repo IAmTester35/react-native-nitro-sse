@@ -499,6 +499,12 @@ extension NitroSse {
         }.catch(safeHandleError)
     }
 
+    private static func safeNonNegativeInt(_ value: Double?, defaultValue: Int) -> Int {
+        guard let v = value, v.isFinite, v >= 0 else { return defaultValue }
+        if v >= Double(Int.max) { return Int.max }
+        return Int(v)
+    }
+
     private func handleInterceptorError(_ error: Error, attemptVersion: Int) {
         dispatcher.assertOnQueue()
         guard self.isRunning, attemptVersion == self.connectionAttemptVersion else { return }
@@ -512,7 +518,7 @@ extension NitroSse {
         }
 
         self.consecutiveAuthErrors += 1
-        let limit = Int(self.config?.maxAuthRetries ?? Double(Self.defaultMaxAuthRetries))
+        let limit = Self.safeNonNegativeInt(self.config?.maxAuthRetries, defaultValue: Self.defaultMaxAuthRetries)
         if self.consecutiveAuthErrors > limit {
             self.failAndStop(message: "Auth retry limit reached (\(limit)). Stopping.", statusCode: -1)
             return
@@ -813,7 +819,10 @@ extension NitroSse: SseConnectionDelegate {
         let policy = SseFailurePolicyInput(
             hasInterceptor: self.requestInterceptor != nil,
             nextAuthAttempt: self.consecutiveAuthErrors + 1,
-            maxAuthRetries: Int(self.config?.maxAuthRetries ?? Double(Self.defaultMaxAuthRetries)),
+            maxAuthRetries: Self.safeNonNegativeInt(
+                self.config?.maxAuthRetries,
+                defaultValue: Self.defaultMaxAuthRetries
+            ),
             maxRetryIntervalSeconds: (self.config?.maxRetryIntervalMs ?? 30000.0) / 1000.0
         )
         applyFailureDecision(

@@ -130,7 +130,7 @@ internal class RealSseEventSource(
             code == SseHttpStatus.REQUEST_TIMEOUT ||
             code == SseHttpStatus.TOO_MANY_REQUESTS
         val isRetryAfterUnavailable = code == SseHttpStatus.SERVICE_UNAVAILABLE &&
-            response.header("Retry-After") != null
+            SseReconnectStrategy.extractRetryAfterMillis(response) != null
         return code >= SseHttpStatus.BAD_REQUEST && !isUnusedAuthOrRateLimit && !isRetryAfterUnavailable
     }
 
@@ -185,6 +185,7 @@ internal class RealSseEventSource(
         }
     }
 
+    @Suppress("TooGenericExceptionCaught")
     private fun streamResponseEvents(response: Response, body: ResponseBody) {
         try {
             val decompressedSource = object : ForwardingSource(body.source()) {
@@ -211,7 +212,7 @@ internal class RealSseEventSource(
                 delegate.connectionDidEncounterParseError(requestId)
                 delegate.connectionDidFail(e, null, null, requestId)
             }
-        } catch (e: IOException) {
+        } catch (e: Exception) {
             if (!isCancelled) {
                 delegate.connectionDidFail(e, null, null, requestId)
             }

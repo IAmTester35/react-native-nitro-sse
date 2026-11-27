@@ -88,15 +88,15 @@ function isLoopbackUrl(url: string): boolean {
 export function warnInsecureCredentials(
   url?: string,
   headers?: Record<string, unknown>
-): void {
-  if (!isDevEnvironment()) return;
+): boolean {
+  if (!isDevEnvironment()) return false;
   if (
     !url ||
     typeof url !== 'string' ||
     !headers ||
     typeof headers !== 'object'
   )
-    return;
+    return false;
 
   const trimmedUrl = url.trim();
   const lowerUrl = trimmedUrl.toLowerCase();
@@ -108,8 +108,10 @@ export function warnInsecureCredentials(
       devWarn(
         `[NitroSse] Security Warning: Sensitive credential header(s) detected over an insecure, unencrypted HTTP connection ("${trimmedUrl}"). Transmitting credentials over plaintext HTTP is vulnerable to interception and token theft. Use HTTPS in production.`
       );
+      return true;
     }
   }
+  return false;
 }
 
 /**
@@ -459,11 +461,13 @@ export class NitroSseClient implements SseClient {
             const h = await rawOnBeforeRequest();
             if (h && typeof h === 'object' && !Array.isArray(h)) {
               if (this._warnedInsecureInterceptorUrl !== validatedConfig.url) {
-                warnInsecureCredentials(
+                const warned = warnInsecureCredentials(
                   validatedConfig.url,
                   h as Record<string, unknown>
                 );
-                this._warnedInsecureInterceptorUrl = validatedConfig.url;
+                if (warned) {
+                  this._warnedInsecureInterceptorUrl = validatedConfig.url;
+                }
               }
               return sanitizeHeaders(h);
             }

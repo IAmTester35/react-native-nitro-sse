@@ -109,8 +109,8 @@ internal class SseMetrics {
     }
 
     fun recordMessage(encodedDataSize: Long, eventTypeSize: Long, now: Double) {
-        totalBytesReceived.addAndGet(encodedDataSize + eventTypeSize)
         synchronized(lock) {
+            totalBytesReceived.addAndGet(encodedDataSize + eventTypeSize)
             totalEventsReceived += 1.0
             lastEventTime = now
             recordActivityLocked(now)
@@ -118,8 +118,8 @@ internal class SseMetrics {
     }
 
     fun recordComment(commentBytes: Long, now: Double) {
-        totalBytesReceived.addAndGet(commentBytes)
         synchronized(lock) {
+            totalBytesReceived.addAndGet(commentBytes)
             commentsReceived += 1.0
             lastHeartbeatTime = now
             recordActivityLocked(now)
