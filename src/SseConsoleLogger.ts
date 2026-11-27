@@ -58,9 +58,17 @@ export class UnhandledSseErrorReporter {
         ? 'Provide an `onError` callback to handle stream errors.'
         : "Attach an `addEventListener('error', ...)` listener to handle stream errors.";
 
+    const hasData = event.data !== undefined && event.data.length > 0;
     console.warn(
       `${scope} Unhandled SSE error: ${detail}${statusPart}. ${hint}`,
-      event
+      {
+        type: event.type,
+        statusCode: event.statusCode,
+        message: event.message,
+        retry: event.retry,
+        hasData,
+        dataLength: event.data?.length ?? 0,
+      }
     );
   }
 

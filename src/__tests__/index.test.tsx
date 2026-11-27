@@ -2057,13 +2057,24 @@ describe('NitroSseModule Unit Tests', () => {
             type: 'error',
             message: 'Connection lost',
             statusCode: 503,
+            data: '{"secret":"token-leak"}',
           };
           nativeCallback([netErr]);
           nativeCallback([netErr]);
           expect(warnSpy).toHaveBeenCalledTimes(1);
           expect(warnSpy).toHaveBeenCalledWith(
             expect.stringContaining('[NitroSse] Unhandled SSE error:'),
-            netErr
+            {
+              type: 'error',
+              statusCode: 503,
+              message: 'Connection lost',
+              retry: undefined,
+              hasData: true,
+              dataLength: netErr.data.length,
+            }
+          );
+          expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(
+            'token-leak'
           );
           expect(errorSpy).not.toHaveBeenCalled();
 
