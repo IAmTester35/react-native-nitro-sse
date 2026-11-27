@@ -309,10 +309,8 @@ internal class RealSseEventSource(
             val errorBody = if (response.code != 204) {
                 val source = response.body?.source()
                 if (source != null) {
-                    val timeoutMs = client.connectTimeoutMillis.toLong()
-                    if (timeoutMs > 0L) {
-                        source.timeout().deadline(timeoutMs, TimeUnit.MILLISECONDS)
-                    }
+                    val timeoutMs = client.connectTimeoutMillis.toLong().let { if (it > 0L) it else 15000L }
+                    source.timeout().deadline(timeoutMs, TimeUnit.MILLISECONDS)
                     try {
                         runCatching { source.request(MAX_ERROR_BODY_BYTES) }
                         val size = minOf(source.buffer.size, MAX_ERROR_BODY_BYTES)
@@ -320,9 +318,7 @@ internal class RealSseEventSource(
                     } catch (_: Exception) {
                         null
                     } finally {
-                        if (timeoutMs > 0L) {
-                            source.timeout().clearDeadline()
-                        }
+                        source.timeout().clearDeadline()
                     }
                 } else null
             } else null

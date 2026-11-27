@@ -374,6 +374,7 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
     private var isGzip: Bool = false
     private var decompressedBytesReceived: Int64 = 0
     private var isCollectingErrorBody: Bool = false
+    private var hasConnectionTimer: Bool = false
     private var errorBodyData = Data()
     private var pendingErrorResponse: HTTPURLResponse?
     
@@ -426,6 +427,7 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
     
     private func startConnectionTimer(timeout: TimeInterval) {
         guard timeout > 0 else { return }
+        hasConnectionTimer = true
         dispatcher.asyncAfter(delay: timeout) { [weak self] in
             guard let self = self, !self.didReceiveValidResponse, !self.isFinished, !self.isCancelled else { return }
             self.isFinished = true
@@ -458,7 +460,7 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
         dispatcher.async { [weak self] in
-            guard let self = self, !self.isCancelled else {
+            guard let self = self, !self.isCancelled, !self.isTerminalDispatched else {
                 completionHandler(.cancel)
                 return
             }
@@ -497,6 +499,9 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
                 self.isCollectingErrorBody = true
                 self.pendingErrorResponse = httpResponse
                 self.errorBodyData.removeAll()
+                if !self.hasConnectionTimer {
+                    self.startConnectionTimer(timeout: 15.0)
+                }
                 completionHandler(.allow)
                 return
             }

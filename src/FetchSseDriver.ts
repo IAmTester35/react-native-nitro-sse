@@ -532,9 +532,11 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       response.status !== 408 &&
       response.status !== 429
     ) {
+      const bodyTimeoutMs =
+        connectionTimeoutMs > 0 ? connectionTimeoutMs : 15000;
       const bodyTimer = setTimeout(
         () => abortController.abort(),
-        connectionTimeoutMs
+        bodyTimeoutMs
       );
       try {
         const raw = await response.text();
@@ -624,7 +626,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
           Math.min(rawRetryAfterMs, maxIntervalMs)
         );
         const jitter = 500 + Math.floor(Math.random() * 1001); // 0.5s - 1.5s matching Native
-        const totalDelayMs = boundedRetryMs + jitter;
+        const totalDelayMs = Math.max(1000, boundedRetryMs + jitter);
 
         this._pushEvent({
           type: 'error',

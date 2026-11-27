@@ -906,7 +906,7 @@ extension NitroSse: SseConnectionDelegate {
             let maxInterval = (self.config?.maxRetryIntervalMs ?? 30000.0) / 1000.0
             let boundedRetryAfter = max(0.0, min(retryAfter, maxInterval))
             let jitter = Double.random(in: 0.5...1.5)
-            let totalDelay = boundedRetryAfter + jitter
+            let totalDelay = max(1.0, boundedRetryAfter + jitter)
             self.eventBuffer.push(SseEvent(type: .error, data: nil, parsedData: nil, id: nil, event: nil, message: "Retry-After received: \(Int(totalDelay))s", statusCode: Double(http), retry: totalDelay * 1000.0, state: nil))
             self.scheduleAutomaticReconnect(isError: true, fixedDelay: totalDelay, attemptVersion: attemptVersion)
             return

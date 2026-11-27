@@ -786,7 +786,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 val maxInterval = synchronized(this@NitroSse) { (config?.maxRetryIntervalMs ?: 30000.0).toLong() }
                 val boundedRetryAfter = retryAfterMillis.coerceIn(0L, maxInterval)
                 val jitter = (500 + Random.nextInt(1001)).toLong()
-                val totalDelay = boundedRetryAfter + jitter
+                val totalDelay = (boundedRetryAfter + jitter).coerceAtLeast(1000L)
                 eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, "Retry-After received: ${totalDelay / 1000}s", statusCode.toDouble(), totalDelay.toDouble(), null))
                 scheduleReconnect(true, connectionAttemptVersion.get(), totalDelay)
                 return@post
