@@ -1,9 +1,14 @@
 package com.margelo.nitro.nitrosse
 
 import android.util.Log
+import okhttp3.Interceptor
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.ResponseBody
 import okio.Buffer
+import okio.BufferedSource
+import okio.ForwardingSource
+import okio.buffer
 import java.lang.reflect.Method
 
 /**
@@ -141,5 +146,99 @@ object NetworkInspector {
         } catch (e: Exception) {
             Log.e(TAG, "Error reporting request failure", e)
         }
+    }
+}
+
+private const val INITIAL_CACHE_CAPACITY = 64
+private const val CACHE_LOAD_FACTOR = 0.75f
+
+/**
+ * Shared tracker recording raw network socket transport metrics from [InspectorNetworkInterceptor].
+ * Implements bounded caching and cleared-request guards to eliminate memory leaks from trailing socket reads.
+ */
+object SseNetworkMetricsTracker {
+    private const val MAX_ENTRIES = 200
+
+    private class MetricsEntry(
+        var bytes: Long = 0L,
+        var isGzip: Boolean = false,
+        var cleared: Boolean = false
+    )
+
+    private val entries = object : LinkedHashMap<String, MetricsEntry>(
+        INITIAL_CACHE_CAPACITY,
+        CACHE_LOAD_FACTOR,
+        false
+    ) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MetricsEntry>?): Boolean =
+            size > MAX_ENTRIES
+    }
+
+    @Synchronized
+    fun recordRawBytes(requestId: String, bytes: Long, isGzip: Boolean) {
+        val entry = entries.getOrPut(requestId) { MetricsEntry() }
+        // Drop trailing socket reads after request has been cleared/cancelled to prevent resurrected memory leaks
+        if (entry.cleared) return
+
+        entry.bytes += bytes
+        if (isGzip) {
+            entry.isGzip = true
+        }
+    }
+
+    @Synchronized
+    fun getRawBytes(requestId: String): Long? =
+        entries[requestId]?.takeUnless { it.cleared }?.bytes
+
+    @Synchronized
+    fun isGzip(requestId: String): Boolean =
+        entries[requestId]?.let { !it.cleared && it.isGzip } == true
+
+    @Synchronized
+    fun clear(requestId: String) {
+        val entry = entries.getOrPut(requestId) { MetricsEntry() }
+        entry.bytes = 0L
+        entry.isGzip = false
+        entry.cleared = true
+    }
+
+    @Synchronized
+    internal fun reset() {
+        entries.clear()
+    }
+}
+
+/**
+ * Network interceptor for recording raw wire response metadata for React Native DevTools.
+ * Runs at the network layer to capture true HTTP status, raw wire headers (e.g. Content-Encoding: gzip), and timing.
+ */
+internal class InspectorNetworkInterceptor : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val rid = request.tag(String::class.java)
+        val response = chain.proceed(request)
+        rid?.let {
+            NetworkInspector.reportResponseStart(it, request, response)
+        }
+        val responseBody = response.body
+        if (responseBody != null && rid != null) {
+            val isGzip = response.header("Content-Encoding")?.equals("gzip", ignoreCase = true) == true
+            val trackingSource = object : ForwardingSource(responseBody.source()) {
+                override fun read(sink: okio.Buffer, byteCount: Long): Long {
+                    val read = super.read(sink, byteCount)
+                    if (read > 0) {
+                        SseNetworkMetricsTracker.recordRawBytes(rid, read, isGzip)
+                    }
+                    return read
+                }
+            }
+            val wrappedBody = object : ResponseBody() {
+                override fun contentType() = responseBody.contentType()
+                override fun contentLength() = responseBody.contentLength()
+                override fun source(): BufferedSource = trackingSource.buffer()
+            }
+            return response.newBuilder().body(wrappedBody).build()
+        }
+        return response
     }
 }
