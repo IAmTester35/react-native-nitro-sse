@@ -700,14 +700,12 @@ class NitroSseCoordinatorTest {
         sse.connectionDidReceiveDataChunk(100L, currentReqId)
         drainLoopers()
 
-        val offsetField = NitroSse::class.java.getDeclaredField("sessionRawBytesOffset").apply { isAccessible = true }
-
         // Fail connection
         sse.connectionDidFail(java.io.IOException("Transient drop"), null, null, currentReqId)
         drainLoopers()
 
         // Non-gzip bytes must NOT be accumulated into sessionRawBytesOffset
-        assertEquals(0.0, offsetField.get(sse) as Double, 0.001)
+        assertEquals(0.0, sse.metrics.getSessionRawBytesOffset(), 0.001)
 
         sse.stop()
         drainLoopers()
