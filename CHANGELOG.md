@@ -1,6 +1,6 @@
 # Changelog
 
-## No version yet
+## 3.3.0
 
 ### Performance
 
@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- **Error Body (#61)**: Preserved HTTP error response bodies (up to 8192 UTF-8 bytes) in `event.data` for all `statusCode >= 400` responses across iOS, Android, and Web (including retries), streamed with timeout partial-body preservation on Web, and omitted raw `event.data` from `__DEV__` unhandled-error warnings.
 - **Android**: Prevented memory leaks in `SseNetworkMetricsTracker`, `SseLifecycleManager`, and `SseNetworkMonitor`.
 - **Parser**: Discarded incomplete events on stream EOF per WHATWG spec, and fixed UTF-8 BOM and multiline data handling in TypeScript.
 - **Network**: Added a 1s debounce on network interface changes (WiFi ↔ Cellular) to avoid reconnect thrashing.
