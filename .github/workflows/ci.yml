@@ -48,6 +48,11 @@ jobs:
       - name: Run unit tests
         run: yarn test --maxWorkers=50% --coverage
 
+      - name: Check dead code and duplication
+        run: |
+          yarn check:deadcode
+          yarn check:duplication
+
       - name: Build package
         run: yarn prepare
 
@@ -102,6 +107,12 @@ jobs:
       - name: Setup Gradle
         if: env.turbo_cache_hit != 1
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      - name: Run Android unit tests
+        if: env.turbo_cache_hit != 1
+        env:
+          JAVA_OPTS: "-XX:MaxHeapSize=6g"
+        run: yarn test:android
 
       - name: Build example for Android
         env:
@@ -168,6 +179,16 @@ jobs:
           cd example
           bundle install
           bundle exec pod install --project-directory=ios --no-repo-update
+
+      - name: Run iOS unit tests
+        if: env.turbo_cache_hit != 1
+        run: |
+          SIM_ID=$(xcrun simctl list devices available -j | node -e "const d = JSON.parse(require('fs').readFileSync(0, 'utf8')); const all = Object.values(d.devices).flat(); const iphone = all.find(x => x.isAvailable && x.name.startsWith('iPhone')); if (iphone) process.stdout.write(iphone.udid);")
+          if [[ -n "$SIM_ID" ]]; then
+            (cd example/ios && xcodebuild test -workspace NitroSseExample.xcworkspace -scheme NitroSse-Unit-Tests -sdk iphonesimulator -destination "id=$SIM_ID")
+          else
+            yarn test:ios
+          fi
 
       - name: Build example for iOS
         run: |

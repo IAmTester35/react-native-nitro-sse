@@ -59,6 +59,8 @@
     "server": "node example/script/sse-server.mjs",
     "bench:server": "node example/script/sse-benchmark-server.mjs",
     "lint": "eslint \"**/*.{js,ts,tsx}\"",
+    "check:deadcode": "knip",
+    "check:duplication": "jscpd",
     "check:native": "bash scripts/check-native.sh"
   },
   "keywords": [
