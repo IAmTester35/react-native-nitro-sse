@@ -82,7 +82,8 @@ export interface SseConfig {
   /**
    * Initial delay (in ms) for reconnection attempts.
    * Subsequent attempts use exponential backoff.
-   * Note: Native applies a minimum floor of 1000ms.
+   * Note: All platforms (iOS, Android, and Web) enforce a minimum effective reconnect floor of 1000ms
+   * (including server-sent `retry:` directives) to prevent tight reconnect loops.
    * @default 1000
    */
   retryIntervalMs?: number;
@@ -256,7 +257,7 @@ export interface SseStats {
   linesParsed: number;
   /** Number of parsing errors encountered (line length limit exceeded, invalid UTF-8, etc.). */
   parseErrors: number;
-  /** Latest retry delay requested by server via 'retry:' directive (ms). */
+  /** Latest retry delay requested by server via 'retry:' directive (ms). Effective reconnect delays still enforce a 1000ms minimum floor. */
   serverRetryDelayMs?: number;
 
   // === Latency & Timing ===

@@ -13,6 +13,7 @@ import okio.ByteString
 import okio.ForwardingSource
 import okio.buffer
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 /**
  * Maximum bytes to read from HTTP error responses to prevent Out-Of-Memory errors.
@@ -40,6 +41,12 @@ private val CRLF_DELIMITERS = ByteString.of('\r'.code.toByte(), '\n'.code.toByte
 class InvalidContentTypeException(message: String) : IOException(message)
 
 /**
+ * Exception indicating an SSE parser resource limit violation (line length or accumulated event data size).
+ * Typed counterpart of iOS NitroSse error codes -2002 / -2003; treated as fatal (no reconnect).
+ */
+internal class SseParserLimitException(message: String) : IOException(message)
+
+/**
  * Interface representing an active SSE stream connection that can be cancelled.
  */
 interface SseEventSource {
@@ -59,10 +66,10 @@ interface SseConnectionDelegate {
     fun connectionDidReceiveDataChunk(decompressedBytes: Long, requestId: String) {}
     fun connectionDidParseLines(count: Int, requestId: String) {}
     fun connectionDidEncounterParseError(requestId: String) {}
-    fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {
-        connectionDidFail(t, response, requestId)
+    fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {}
+    fun connectionDidFail(t: Throwable?, response: Response?, requestId: String) {
+        connectionDidFail(t, response, null, requestId)
     }
-    fun connectionDidFail(t: Throwable?, response: Response?, requestId: String) {}
     fun connectionDidClose(requestId: String)
 }
 
@@ -83,6 +90,8 @@ internal class SseEventReader(private val source: BufferedSource) {
     private var hasData = false
     private var eventType: String? = null
     private var lastEventId: String? = null
+    private var lastEventIdBuffer: String? = null
+    private var idUpdatedInCurrentEvent = false
     private var isAtStreamStart = true
     private var skipLeadingLf = false
 
@@ -121,7 +130,7 @@ internal class SseEventReader(private val source: BufferedSource) {
             val newlineIndex = buffer.indexOfElement(CRLF_DELIMITERS, scanned)
             if (newlineIndex != -1L) {
                 if (newlineIndex > MAX_SSE_LINE_LENGTH) {
-                    throw IOException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
+                    throw SseParserLimitException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
                 }
                 val b = buffer[newlineIndex]
                 val line = buffer.readUtf8(newlineIndex)
@@ -142,14 +151,11 @@ internal class SseEventReader(private val source: BufferedSource) {
             }
 
             if (buffer.size > MAX_SSE_LINE_LENGTH) {
-                throw IOException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
+                throw SseParserLimitException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
             }
 
             scanned = buffer.size
             if (!source.request(buffer.size + 1)) {
-                if (buffer.size > MAX_SSE_LINE_LENGTH) {
-                    throw IOException("SSE line exceeded maximum limit of $MAX_SSE_LINE_LENGTH bytes")
-                }
                 return if (buffer.size > 0) buffer.readUtf8() else null
             }
         }
@@ -158,7 +164,8 @@ internal class SseEventReader(private val source: BufferedSource) {
     /**
      * Reads lines from source until one event (message or comment) is completed and dispatched.
      * Returns true if an event was dispatched, or false on EOF.
-     * Per WHATWG SSE spec: "Once the end of the file is reached, any pending data must be dispatched as an event."
+     * Per WHATWG SSE spec: "Once the end of the file is reached, any pending data must be discarded.
+     * (If the file ends in the middle of an event, before the final empty line, the incomplete event is not dispatched.)"
      */
     fun processNextEvent(callback: Callback): Boolean {
         var linesParsedInEvent = 0
@@ -168,20 +175,20 @@ internal class SseEventReader(private val source: BufferedSource) {
                 if (linesParsedInEvent > 0) {
                     callback.onLinesParsed(linesParsedInEvent)
                 }
-                if (hasData) {
-                    val data = dataBuffer.toString()
-                    val id = lastEventId
-                    val type = eventType
-                    dataBuffer.setLength(0)
-                    hasData = false
-                    eventType = null
-                    callback.onEvent(id, type, data)
-                    return true
-                }
+                dataBuffer.setLength(0)
+                hasData = false
+                eventType = null
+                lastEventIdBuffer = lastEventId
+                idUpdatedInCurrentEvent = false
                 return false
             }
             linesParsedInEvent++
             if (line.isEmpty()) {
+                if (idUpdatedInCurrentEvent) {
+                    lastEventId = lastEventIdBuffer
+                    idUpdatedInCurrentEvent = false
+                    callback.onIdUpdate(lastEventId)
+                }
                 if (hasData) {
                     callback.onLinesParsed(linesParsedInEvent)
                     val data = dataBuffer.toString()
@@ -193,12 +200,13 @@ internal class SseEventReader(private val source: BufferedSource) {
                     callback.onEvent(id, type, data)
                     return true
                 }
+                // WHATWG SSE: Dispatching an empty event still resets the event type buffer
+                eventType = null
                 // Delimiter / keepalive empty line without data
             } else if (line.startsWith(":")) {
                 callback.onLinesParsed(linesParsedInEvent)
-                val rawComment = line.substring(1)
-                val commentText = if (rawComment.startsWith(" ")) rawComment.substring(1) else rawComment
-                callback.onComment(commentText)
+                val commentStart = if (line.length > 1 && line[1] == ' ') 2 else 1
+                callback.onComment(line.substring(commentStart))
                 return true
             } else {
                 val colonIndex = line.indexOf(':')
@@ -206,27 +214,29 @@ internal class SseEventReader(private val source: BufferedSource) {
                 val value: String
                 if (colonIndex != -1) {
                     field = line.substring(0, colonIndex)
-                    val rawValue = line.substring(colonIndex + 1)
-                    value = if (rawValue.startsWith(" ")) rawValue.substring(1) else rawValue
+                    val valueStart = if (colonIndex + 1 < line.length && line[colonIndex + 1] == ' ') colonIndex + 2 else colonIndex + 1
+                    value = if (valueStart < line.length) line.substring(valueStart) else ""
                 } else {
                     field = line
                     value = ""
                 }
                 when (field) {
                     "data" -> {
-                        if (dataBuffer.length + value.length > MAX_SSE_EVENT_DATA_SIZE) {
-                            throw IOException("SSE event data exceeded maximum limit of $MAX_SSE_EVENT_DATA_SIZE characters")
+                        // Account for the '\n' joining this line to the previous ones (parity with iOS / TypeScript).
+                        val separatorSize = if (hasData) 1 else 0
+                        if (dataBuffer.length + separatorSize + value.length > MAX_SSE_EVENT_DATA_SIZE) {
+                            throw SseParserLimitException("SSE event data exceeded maximum limit of $MAX_SSE_EVENT_DATA_SIZE characters")
                         }
                         if (hasData) {
-                            dataBuffer.append("\n")
+                            dataBuffer.append('\n')
                         }
                         dataBuffer.append(value)
                         hasData = true
                     }
                     "id" -> {
                         if (!value.contains('\u0000')) {
-                            lastEventId = if (value.isEmpty()) null else value
-                            callback.onIdUpdate(lastEventId)
+                            lastEventIdBuffer = if (value.isEmpty()) null else value
+                            idUpdatedInCurrentEvent = true
                         }
                     }
                     "event" -> {
@@ -297,11 +307,20 @@ internal class RealSseEventSource(
         // Any other HTTP response code (including 201, 204, 206, 4xx, 5xx) must fail the connection.
         if (response.code != 200) {
             val errorBody = if (response.code != 204) {
-                try {
-                    response.peekBody(MAX_ERROR_BODY_BYTES).string()
-                } catch (e: Exception) {
-                    null
-                }
+                val source = response.body?.source()
+                if (source != null) {
+                    val timeoutMs = client.connectTimeoutMillis.toLong().let { if (it > 0L) it else 15000L }
+                    source.timeout().deadline(timeoutMs, TimeUnit.MILLISECONDS)
+                    try {
+                        runCatching { source.request(MAX_ERROR_BODY_BYTES) }
+                        val size = minOf(source.buffer.size, MAX_ERROR_BODY_BYTES)
+                        if (size > 0L) source.buffer.readUtf8(size) else null
+                    } catch (_: Exception) {
+                        null
+                    } finally {
+                        source.timeout().clearDeadline()
+                    }
+                } else null
             } else null
             delegate.connectionDidFail(null, response, errorBody, requestId)
             response.close()
@@ -375,10 +394,7 @@ internal class RealSseEventSource(
             }
         } catch (e: Exception) {
             if (!isCancelled) {
-                if (e is InvalidContentTypeException ||
-                    e.message?.contains("SSE line exceeded") == true ||
-                    e.message?.contains("SSE event data exceeded") == true
-                ) {
+                if (e is SseParserLimitException) {
                     delegate.connectionDidEncounterParseError(requestId)
                 }
                 delegate.connectionDidFail(e, null, null, requestId)
@@ -408,28 +424,53 @@ class SseConnectionHandler(private val delegate: SseConnectionDelegate) {
 
 /**
  * Shared tracker recording raw network socket transport metrics from InspectorNetworkInterceptor.
+ * Implements bounded caching and cleared-request guards to eliminate memory leaks from trailing socket reads.
  */
 object SseNetworkMetricsTracker {
-    private val rawBytesMap = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
-    private val gzipMap = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
-    private val chunksMap = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+    private const val MAX_ENTRIES = 200
 
+    private class MetricsEntry(
+        var bytes: Long = 0L,
+        var isGzip: Boolean = false,
+        var cleared: Boolean = false
+    )
+
+    private val entries = object : LinkedHashMap<String, MetricsEntry>(64, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MetricsEntry>?): Boolean =
+            size > MAX_ENTRIES
+    }
+
+    @Synchronized
     fun recordRawBytes(requestId: String, bytes: Long, isGzip: Boolean) {
-        rawBytesMap.computeIfAbsent(requestId) { java.util.concurrent.atomic.AtomicLong(0) }.addAndGet(bytes)
-        chunksMap.computeIfAbsent(requestId) { java.util.concurrent.atomic.AtomicLong(0) }.incrementAndGet()
+        val entry = entries.getOrPut(requestId) { MetricsEntry() }
+        // Drop trailing socket reads after request has been cleared/cancelled to prevent resurrected memory leaks
+        if (entry.cleared) return
+
+        entry.bytes += bytes
         if (isGzip) {
-            gzipMap[requestId] = true
+            entry.isGzip = true
         }
     }
 
-    fun getRawBytes(requestId: String): Long? = rawBytesMap[requestId]?.get()
-    fun getChunks(requestId: String): Long? = chunksMap[requestId]?.get()
-    fun isGzip(requestId: String): Boolean = gzipMap[requestId] == true
+    @Synchronized
+    fun getRawBytes(requestId: String): Long? =
+        entries[requestId]?.takeUnless { it.cleared }?.bytes
 
+    @Synchronized
+    fun isGzip(requestId: String): Boolean =
+        entries[requestId]?.let { !it.cleared && it.isGzip } == true
+
+    @Synchronized
     fun clear(requestId: String) {
-        rawBytesMap.remove(requestId)
-        gzipMap.remove(requestId)
-        chunksMap.remove(requestId)
+        val entry = entries.getOrPut(requestId) { MetricsEntry() }
+        entry.bytes = 0L
+        entry.isGzip = false
+        entry.cleared = true
+    }
+
+    @Synchronized
+    internal fun reset() {
+        entries.clear()
     }
 }
 

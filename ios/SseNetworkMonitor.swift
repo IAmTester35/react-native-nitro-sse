@@ -37,9 +37,15 @@ class SseNetworkMonitor {
         let generation = monitorGeneration
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
-            self?.dispatcher.async { [weak self] in
+            guard let self = self else { return }
+            let handleBlock = { [weak self] in
                 guard let self = self, self.monitorGeneration == generation else { return }
                 self.handlePathUpdate(path)
+            }
+            if self.dispatcher.isCurrentDispatcher() {
+                handleBlock()
+            } else {
+                self.dispatcher.async(handleBlock)
             }
         }
         self.pathMonitor = monitor

@@ -243,7 +243,7 @@ class SseEventReaderTest {
     }
 
     @Test
-    fun testStreamEndingAtEofWithoutTrailingEmptyLineDispatchesPendingEvent() {
+    fun testStreamEndingAtEofWithoutTrailingEmptyLineDiscardsPendingEvent() {
         val buffer = Buffer()
         // Server sends data line without the second trailing empty line before closing
         buffer.writeUtf8("id: 101\nevent: final_event\ndata: last_payload\n")
@@ -251,15 +251,28 @@ class SseEventReaderTest {
         val reader = SseEventReader(buffer)
         val callback = RecordingCallback()
 
-        // WHATWG SSE: EOF must flush and dispatch any pending data event
-        assertTrue(reader.processNextEvent(callback))
-        assertEquals(1, callback.events.size)
-        assertEquals("101", callback.events[0].id)
-        assertEquals("final_event", callback.events[0].type)
-        assertEquals("last_payload", callback.events[0].data)
-
-        // Subsequent call on exhausted source returns false
+        // WHATWG SSE: EOF must discard incomplete event without trailing empty line
         assertFalse(reader.processNextEvent(callback))
+        assertEquals(0, callback.events.size)
+        assertTrue(callback.idUpdates.isEmpty())
+    }
+
+    @Test
+    fun testBlankLineWithoutDataResetsEventTypeAndCommitsId() {
+        val buffer = Buffer()
+        buffer.writeUtf8("event: ping\nid: 42\n\ndata: hello\n\n")
+
+        val reader = SseEventReader(buffer)
+        val callback = RecordingCallback()
+
+        assertTrue(reader.processNextEvent(callback))
+        assertFalse(reader.processNextEvent(callback))
+
+        assertEquals(listOf("42"), callback.idUpdates)
+        assertEquals(1, callback.events.size)
+        assertEquals("42", callback.events[0].id)
+        assertNull(callback.events[0].type)
+        assertEquals("hello", callback.events[0].data)
     }
 
     @Test
@@ -277,6 +290,7 @@ class SseEventReaderTest {
             reader.processNextEvent(callback)
             org.junit.Assert.fail("Should throw IOException when line exceeds 16MB")
         } catch (e: java.io.IOException) {
+            assertTrue("Must be typed SseParserLimitException", e is SseParserLimitException)
             assertTrue("Exception message should mention line limit", e.message?.contains("SSE line exceeded maximum limit") == true)
         }
     }
@@ -299,6 +313,7 @@ class SseEventReaderTest {
             reader.processNextEvent(callback)
             org.junit.Assert.fail("Should throw IOException when event data exceeds 16MB")
         } catch (e: java.io.IOException) {
+            assertTrue("Must be typed SseParserLimitException", e is SseParserLimitException)
             assertTrue("Exception message should mention event data limit", e.message?.contains("SSE event data exceeded maximum limit") == true)
         }
     }
@@ -337,7 +352,96 @@ class SseEventReaderTest {
         assertEquals("Hello 🚀", callback.events[0].data)
         executor.shutdown()
     }
+
+    @Test
+    fun testChunkSplitAcrossFieldColonAndLeadingSpace() {
+        val pipe = okio.Pipe(1024)
+        val sink = pipe.sink
+        val source = pipe.source.buffer()
+        val reader = SseEventReader(source)
+        val callback = RecordingCallback()
+
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val future = executor.submit(java.util.concurrent.Callable {
+            reader.processNextEvent(callback)
+        })
+
+        // Split across "da", "ta", ":", " ", " ", "hello\n\n"
+        val fragments = listOf("da", "ta", ":", " ", " ", "hello\n\n")
+        for (fragment in fragments) {
+            val chunk = Buffer().writeUtf8(fragment)
+            sink.write(chunk, chunk.size)
+            sink.flush()
+            Thread.sleep(10)
+        }
+        sink.close()
+
+        assertTrue(future.get(2, java.util.concurrent.TimeUnit.SECONDS))
+        assertEquals(1, callback.events.size)
+        // Only the first space after ':' is stripped; the second space is preserved
+        assertEquals(" hello", callback.events[0].data)
+        executor.shutdown()
+    }
+
+    @Test
+    fun testMultipleColonsInJsonDataValue() {
+        val buffer = Buffer()
+        val jsonValue = "{\"url\":\"https://example.com:8080/stream\",\"ratio\":\"16:9:1\"}"
+        buffer.writeUtf8("data: $jsonValue\n\n")
+
+        val reader = SseEventReader(buffer)
+        val callback = RecordingCallback()
+
+        assertTrue(reader.processNextEvent(callback))
+        assertEquals(1, callback.events.size)
+        assertEquals(jsonValue, callback.events[0].data)
+    }
+
+    @Test
+    fun testMultilineTransitionFromEmptyFirstLineToNonEmptySecondLine() {
+        val buffer = Buffer()
+        // Event 1: empty first data line ("data") followed by "data: second line"
+        // Event 2: "data: first" -> empty "data:" -> "data: third"
+        buffer.writeUtf8("data\ndata: second line\n\ndata: first\ndata:\ndata: third\n\n")
+
+        val reader = SseEventReader(buffer)
+        val callback = RecordingCallback()
+
+        assertTrue(reader.processNextEvent(callback))
+        assertTrue(reader.processNextEvent(callback))
+        assertEquals(2, callback.events.size)
+        assertEquals("\nsecond line", callback.events[0].data)
+        assertEquals("first\n\nthird", callback.events[1].data)
+    }
+
+    @Test
+    fun testUnknownFieldsWithAndWithoutColonAreIgnored() {
+        val buffer = Buffer()
+        buffer.writeUtf8("custom_field: some_value\nbare_unknown_field\ndata_extra: ignored\ndata: valid_payload\n\n")
+
+        val reader = SseEventReader(buffer)
+        val callback = RecordingCallback()
+
+        assertTrue(reader.processNextEvent(callback))
+        assertEquals(1, callback.events.size)
+        assertEquals("valid_payload", callback.events[0].data)
+    }
+
+    @Test
+    fun testEventDataLimitCountsNewlineSeparatorBetweenDataLines() {
+        // Two lines of MAX/2 chars each are individually valid, but joined with '\n' they total MAX + 1.
+        val half = MAX_SSE_EVENT_DATA_SIZE / 2
+        val part = "a".repeat(half)
+        val buffer = Buffer().writeUtf8("data: $part\ndata: $part\n\n")
+        val reader = SseEventReader(buffer)
+        val callback = RecordingCallback()
+
+        try {
+            reader.processNextEvent(callback)
+            org.junit.Assert.fail("Expected SseParserLimitException: separator must count towards the limit")
+        } catch (e: SseParserLimitException) {
+            assertTrue(e.message!!.contains("SSE event data exceeded maximum limit"))
+        }
+        assertTrue(callback.events.isEmpty())
+    }
 }
-
-
-

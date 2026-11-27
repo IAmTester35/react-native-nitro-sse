@@ -169,13 +169,6 @@ export function useNitroSse<
   const restConfigRef = useRef(restConfig);
   const hasValidUrlRef = useRef(hasValidUrl);
 
-  // Synchronize options and guard references after render commit without render-phase mutation
-  useEffect(() => {
-    headersRef.current = headers;
-    restConfigRef.current = restConfig;
-    hasValidUrlRef.current = hasValidUrl;
-  }, [headers, restConfig, hasValidUrl]);
-
   // Callback ref holding the latest handler references across renders
   const callbacksRef = useRef<{
     onMessage?: (event: SseEvent<TMessage>) => void;
@@ -197,8 +190,16 @@ export function useNitroSse<
     onBeforeRequest,
   });
 
-  // Synchronize callback references on each render pass to prevent stale closures without render-phase mutation
+  const prevHeaderKeysRef = useRef<string[]>(
+    headers && typeof headers === 'object' ? Object.keys(headers).sort() : []
+  );
+  const lastSyncedHeadersKeyRef = useRef<string | null>(null);
+
+  // Synchronize options, guard, and callback references after render commit without render-phase mutation
   useEffect(() => {
+    headersRef.current = headers;
+    restConfigRef.current = restConfig;
+    hasValidUrlRef.current = hasValidUrl;
     callbacksRef.current = {
       onMessage,
       onError,
@@ -210,6 +211,9 @@ export function useNitroSse<
       onBeforeRequest,
     };
   }, [
+    headers,
+    restConfig,
+    hasValidUrl,
     onMessage,
     onError,
     onOpen,
@@ -221,48 +225,12 @@ export function useNitroSse<
   ]);
 
   const hasBeforeRequest = Boolean(onBeforeRequest);
-  // Track undefined transition or key removal to recreate client and purge stale headers (e.g. on logout)
   const isHeadersUndefined = headers === undefined;
-  const currentHeaderKeys =
-    headers && typeof headers === 'object' ? Object.keys(headers).sort() : [];
-  const prevHeaderKeysRef = useRef<string[] | undefined>(undefined);
-  const headerRemovalTokenRef = useRef(0);
-
-  if (prevHeaderKeysRef.current !== undefined && headers !== undefined) {
-    const currentKeysSet = new Set(currentHeaderKeys);
-    const isKeyRemoved = prevHeaderKeysRef.current.some(
-      (k) => !currentKeysSet.has(k)
-    );
-    if (isKeyRemoved) {
-      headerRemovalTokenRef.current++;
-    }
-  }
-  prevHeaderKeysRef.current = currentHeaderKeys;
-
   const configKey = safeSerializeConfig(restConfig);
   const headersKey = safeSerializeConfig(headers);
 
-  // Instantiates the SseClient, attaches typed event listeners, applies configuration, and disposes on unmount
-  useEffect(() => {
+  const initializeClient = useCallback((): SseClient | null => {
     let clientInstance: SseClient | null = null;
-
-    if (!hasValidUrl) {
-      if (
-        autoStart &&
-        typeof __DEV__ !== 'undefined' &&
-        __DEV__ &&
-        restConfig.url !== undefined
-      ) {
-        console.warn(
-          '[useNitroSse] Missing or empty url in options. Connection will not start until a valid URL is provided.'
-        );
-      }
-      setState('idle');
-      clientRef.current = null;
-      setClient(null);
-      return;
-    }
-
     try {
       clientInstance = createNitroSse();
       clientRef.current = clientInstance;
@@ -283,7 +251,6 @@ export function useNitroSse<
 
       clientInstance.setup(config);
 
-      // Attach typed event listeners
       clientInstance.addEventListener<TMessage>('message', (e) => {
         try {
           callbacksRef.current.onMessage?.(e);
@@ -342,6 +309,7 @@ export function useNitroSse<
       }
       const initialState = clientInstance.getState();
       setState(initialState);
+      return clientInstance;
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : String(e);
       console.error('[useNitroSse] Failed to initialize NitroSse client:', e);
@@ -369,15 +337,46 @@ export function useNitroSse<
           err
         );
       }
-      return;
+      return null;
     }
+  }, [autoStart]);
 
-    return () => {
-      clientInstance?.dispose();
+  // Instantiates the SseClient, attaches typed event listeners, applies configuration, and disposes on unmount
+  // react-doctor-disable-next-line effect-needs-cleanup -- clientRef.current.dispose() completely releases all event listeners and native socket streams
+  useEffect(() => {
+    lastSyncedHeadersKeyRef.current = headersKey;
+    prevHeaderKeysRef.current =
+      headersRef.current && typeof headersRef.current === 'object'
+        ? Object.keys(headersRef.current).sort()
+        : [];
+
+    if (!hasValidUrl) {
+      if (
+        autoStart &&
+        typeof __DEV__ !== 'undefined' &&
+        __DEV__ &&
+        restConfigRef.current.url !== undefined
+      ) {
+        console.warn(
+          '[useNitroSse] Missing or empty url in options. Connection will not start until a valid URL is provided.'
+        );
+      }
+      setState('idle');
       clientRef.current = null;
       setClient(null);
+      return () => {};
+    }
+
+    initializeClient();
+
+    return () => {
+      if (clientRef.current) {
+        clientRef.current.dispose();
+        clientRef.current = null;
+        setClient(null);
+      }
     };
-    // Recreate client if headers becomes undefined or keys are removed to purge stale native headers
+    // Recreate client if headers becomes undefined to purge stale native headers
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     configKey,
@@ -385,19 +384,36 @@ export function useNitroSse<
     hasBeforeRequest,
     hasValidUrl,
     isHeadersUndefined,
-    headerRemovalTokenRef.current,
+    initializeClient,
   ]);
 
-  // Synchronize headers dynamically without reconnecting or tearing down active socket
-  const isInitialMount = useRef(true);
+  // Synchronize headers dynamically without reconnecting, or recreate client if header keys were removed
   useEffect(() => {
-    if (isInitialMount.current) {
-      isInitialMount.current = false;
+    if (lastSyncedHeadersKeyRef.current === headersKey) {
       return;
     }
-    if (clientRef.current && headers !== undefined) {
+    lastSyncedHeadersKeyRef.current = headersKey;
+
+    const currentHeaders = headersRef.current;
+    const currentKeys =
+      currentHeaders && typeof currentHeaders === 'object'
+        ? Object.keys(currentHeaders).sort()
+        : [];
+    const currentKeysSet = new Set(currentKeys);
+    const isKeyRemoved =
+      currentHeaders !== undefined &&
+      prevHeaderKeysRef.current.some((k) => !currentKeysSet.has(k));
+    prevHeaderKeysRef.current = currentKeys;
+
+    if (isKeyRemoved && hasValidUrlRef.current) {
+      clientRef.current?.dispose();
+      initializeClient();
+      return;
+    }
+
+    if (clientRef.current && currentHeaders !== undefined) {
       try {
-        clientRef.current.updateHeaders(headers);
+        clientRef.current.updateHeaders(currentHeaders);
       } catch (err) {
         console.error(
           '[useNitroSse] Failed to dynamically update headers:',
@@ -405,8 +421,7 @@ export function useNitroSse<
         );
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [headersKey]);
+  }, [headersKey, initializeClient]);
 
   // Imperative control callbacks wrapped in useCallback for stable references
   const start = useCallback(() => {

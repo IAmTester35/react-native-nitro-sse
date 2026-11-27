@@ -9,6 +9,7 @@ final class NitroSseWireProtocolTests: XCTestCase {
         var events: [(id: String?, type: String?, data: String)] = []
         var comments: [String] = []
         var retries: [Int64] = []
+        var idUpdates: [String?] = []
         var chronologicalItems: [String] = []
         var failedError: Error?
         
@@ -25,6 +26,10 @@ final class NitroSseWireProtocolTests: XCTestCase {
         func parserDidReceiveRetry(retryMs: Int64) {
             retries.append(retryMs)
             chronologicalItems.append("retry:\(retryMs)")
+        }
+        
+        func parserDidUpdateLastEventId(_ id: String?) {
+            idUpdates.append(id)
         }
         
         func parserDidFail(error: Error) {
@@ -422,7 +427,7 @@ final class NitroSseWireProtocolTests: XCTestCase {
         XCTAssertEqual(nsError?.localizedDescription, "SSE event data exceeded maximum limit of 16777216 bytes")
     }
 
-    func testStreamEndingAtEofWithoutTrailingEmptyLineDispatchesPendingEvent() {
+    func testStreamEndingAtEofWithoutTrailingEmptyLineDiscardsPendingEvent() {
         let parser = SseEventParser()
         let delegate = MockParserDelegate()
         parser.delegate = delegate
@@ -434,13 +439,41 @@ final class NitroSseWireProtocolTests: XCTestCase {
         // Before EOF, no event dispatched yet because of missing blank line
         XCTAssertEqual(delegate.events.count, 0)
 
-        // WHATWG SSE: EOF triggers flush of pending data event
+        // WHATWG SSE: EOF discards pending incomplete data event and uncommitted id
         parser.endOfStream()
 
+        XCTAssertEqual(delegate.events.count, 0)
+        XCTAssertTrue(delegate.idUpdates.isEmpty)
+    }
+
+    func testBlankLineWithoutDataResetsEventTypeAndCommitsId() {
+        let parser = SseEventParser()
+        let delegate = MockParserDelegate()
+        parser.delegate = delegate
+
+        let raw = "event: ping\nid: 42\n\ndata: hello\n\n"
+        parser.feed(data: raw.data(using: .utf8)!)
+
+        XCTAssertEqual(delegate.idUpdates, ["42"])
         XCTAssertEqual(delegate.events.count, 1)
-        XCTAssertEqual(delegate.events.first?.id, "999")
-        XCTAssertEqual(delegate.events.first?.type, "finish")
-        XCTAssertEqual(delegate.events.first?.data, "payload_at_eof")
+        XCTAssertEqual(delegate.events[0].id, "42")
+        XCTAssertNil(delegate.events[0].type)
+        XCTAssertEqual(delegate.events[0].data, "hello")
+    }
+
+    func testUncommittedIdDoesNotPersistAcrossEndOfStream() {
+        let parser = SseEventParser()
+        let delegate = MockParserDelegate()
+        parser.delegate = delegate
+
+        parser.feed(data: "id: 99\ndata: partial\n".data(using: .utf8)!)
+        parser.endOfStream()
+        parser.feed(data: "data: next\n\n".data(using: .utf8)!)
+
+        XCTAssertTrue(delegate.idUpdates.isEmpty)
+        XCTAssertEqual(delegate.events.count, 1)
+        XCTAssertNil(delegate.events[0].id)
+        XCTAssertEqual(delegate.events[0].data, "next")
     }
 
     func testBareCarriageReturnAcrossChunkBoundaryWhenNextChunkDoesNotStartWithLf() {
@@ -471,12 +504,66 @@ final class NitroSseWireProtocolTests: XCTestCase {
 
         XCTAssertEqual(delegate.events.count, 0)
 
-        // endOfStream must strip the trailing \r before decoding and dispatching
+        // endOfStream must discard incomplete event
         parser.endOfStream()
 
+        XCTAssertEqual(delegate.events.count, 0)
+    }
+
+    func testChunkSplitAcrossFieldColonAndLeadingSpace() {
+        let parser = SseEventParser()
+        let delegate = MockParserDelegate()
+        parser.delegate = delegate
+
+        // Split right across "da", "ta", ":", " ", " ", "hello\n", "\n"
+        let fragments = ["da", "ta", ":", " ", " ", "hello\n", "\n"]
+        for fragment in fragments {
+            parser.feed(data: fragment.data(using: .utf8)!)
+        }
+
         XCTAssertEqual(delegate.events.count, 1)
-        XCTAssertEqual(delegate.events.first?.id, "123")
-        XCTAssertEqual(delegate.events.first?.data, "value_at_eof")
+        // Only the first space after ':' is stripped; the second space is preserved
+        XCTAssertEqual(delegate.events.first?.data, " hello")
+    }
+
+    func testMultipleColonsInJsonDataValue() {
+        let parser = SseEventParser()
+        let delegate = MockParserDelegate()
+        parser.delegate = delegate
+
+        let jsonValue = "{\"url\":\"https://example.com:8080/stream\",\"ratio\":\"16:9:1\"}"
+        let raw = "data: \(jsonValue)\n\n"
+        parser.feed(data: raw.data(using: .utf8)!)
+
+        XCTAssertEqual(delegate.events.count, 1)
+        XCTAssertEqual(delegate.events.first?.data, jsonValue)
+    }
+
+    func testMultilineTransitionFromEmptyFirstLineToNonEmptySecondLine() {
+        let parser = SseEventParser()
+        let delegate = MockParserDelegate()
+        parser.delegate = delegate
+
+        // Event 1: empty first data line ("data") followed by "data: second line"
+        // Event 2: "data: first" -> empty "data:" -> "data: third"
+        let raw = "data\ndata: second line\n\ndata: first\ndata:\ndata: third\n\n"
+        parser.feed(data: raw.data(using: .utf8)!)
+
+        XCTAssertEqual(delegate.events.count, 2)
+        XCTAssertEqual(delegate.events[0].data, "\nsecond line")
+        XCTAssertEqual(delegate.events[1].data, "first\n\nthird")
+    }
+
+    func testUnknownFieldsWithAndWithoutColonAreIgnored() {
+        let parser = SseEventParser()
+        let delegate = MockParserDelegate()
+        parser.delegate = delegate
+
+        let raw = "custom_field: some_value\nbare_unknown_field\ndata_extra: ignored\ndata: valid_payload\n\n"
+        parser.feed(data: raw.data(using: .utf8)!)
+
+        XCTAssertEqual(delegate.events.count, 1)
+        XCTAssertEqual(delegate.events.first?.data, "valid_payload")
     }
 }
 

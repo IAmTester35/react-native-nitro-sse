@@ -138,16 +138,12 @@ describe('SseEventParser', () => {
     );
   });
 
-  test('dispatches pending event at endOfStream (EOF)', () => {
+  test('discards incomplete event at endOfStream (EOF)', () => {
     parser.feed('data: final_unclosed');
     expect(delegate.onEvent).not.toHaveBeenCalled();
 
     parser.endOfStream();
-    expect(delegate.onEvent).toHaveBeenCalledWith(
-      undefined,
-      undefined,
-      'final_unclosed'
-    );
+    expect(delegate.onEvent).not.toHaveBeenCalled();
   });
 
   test('ignores unknown field names silently', () => {
@@ -210,5 +206,148 @@ describe('SseEventParser', () => {
       undefined,
       'Xin chào 🇻🇳 🚀'
     );
+  });
+
+  test('buffers many tiny fragments without line breaks correctly', () => {
+    const message = 'data: streaming payload across many tiny chunks\n\n';
+    // Feed one character at a time to test fragment accumulation
+    for (const char of message) {
+      parser.feed(char);
+    }
+    expect(delegate.onEvent).toHaveBeenCalledTimes(1);
+    expect(delegate.onEvent).toHaveBeenCalledWith(
+      undefined,
+      undefined,
+      'streaming payload across many tiny chunks'
+    );
+  });
+
+  test('handles colonless fields per WHATWG specification', () => {
+    // Colonless 'data' line appends empty string; colonless 'event' resets eventType
+    parser.feed('data\nevent\n\n');
+    expect(delegate.onEvent).toHaveBeenCalledWith(undefined, undefined, '');
+  });
+
+  test('Issue 2.6 repro: aborts parser and rejects subsequent chunks when trailing unclosed fragment exceeds MAX_SSE_LINE_LENGTH', () => {
+    const hugeTrailing =
+      'data: valid\n\n' + 'x'.repeat(MAX_SSE_LINE_LENGTH + 10);
+    parser.feed(hugeTrailing);
+    expect(delegate.onParseError).toHaveBeenCalledTimes(1);
+
+    // Subsequent feed should be ignored because parser is aborted
+    parser.feed('data: ignored\n\n');
+    expect(delegate.onEvent).toHaveBeenCalledTimes(1);
+    expect(delegate.onEvent).toHaveBeenCalledWith(
+      undefined,
+      undefined,
+      'valid'
+    );
+  });
+
+  test('Issue 2.6 repro: aborts parser on slow-path trailing unclosed fragment exceeding MAX_SSE_LINE_LENGTH', () => {
+    parser.feed('data: valid\r\n\r\n');
+    parser.feed(':\r' + 'x'.repeat(MAX_SSE_LINE_LENGTH + 10));
+    expect(delegate.onParseError).toHaveBeenCalledTimes(1);
+
+    // Subsequent feed should be ignored because parser is aborted
+    parser.feed('data: ignored\n\n');
+    expect(delegate.onEvent).toHaveBeenCalledTimes(1);
+    expect(delegate.onEvent).toHaveBeenCalledWith(
+      undefined,
+      undefined,
+      'valid'
+    );
+  });
+
+  test('WHATWG: does not commit lastEventId before blank line and discards pending ID on endOfStream', () => {
+    parser.reset('initial_id');
+    parser.feed('id: 5\ndata: partial');
+    expect(delegate.onIdUpdate).not.toHaveBeenCalled();
+    expect(parser.lastEventId).toBe('initial_id');
+
+    parser.endOfStream();
+    expect(delegate.onIdUpdate).not.toHaveBeenCalled();
+    expect(parser.lastEventId).toBe('initial_id');
+
+    // Next stream reconnects with initial_id, not 5
+    parser.feed('data: next\n\n');
+    expect(delegate.onEvent).toHaveBeenCalledWith(
+      'initial_id',
+      undefined,
+      'next'
+    );
+  });
+
+  test('WHATWG: commits lastEventId on blank line even when event has no data', () => {
+    parser.feed('id: 42\n\n');
+    expect(delegate.onIdUpdate).toHaveBeenCalledWith('42');
+    expect(parser.lastEventId).toBe('42');
+    expect(delegate.onEvent).not.toHaveBeenCalled();
+  });
+
+  test('WHATWG: resets eventType on blank line even when event has no data', () => {
+    parser.feed('event: ping\n\n');
+    expect(delegate.onEvent).not.toHaveBeenCalled();
+
+    parser.feed('data: hello\n\n');
+    expect(delegate.onEvent).toHaveBeenCalledWith(
+      undefined,
+      undefined,
+      'hello'
+    );
+  });
+
+  test('exhaustive chunk-boundary split produces identical events', () => {
+    const testPayloads = [
+      'data: simple\n\n',
+      'data: crlf_message\r\n\r\n',
+      'data: bare_cr_1\rdata: bare_cr_2\r\r',
+      '\uFEFFevent: custom\nid: 123\ndata: line1\ndata: line2\n\n',
+      'data: Tiếng Việt có dấu 🇻🇳 và emoji 🚀\r\n\r\n',
+      'event: ping\n\nid: 99\ndata: message\n\n',
+    ];
+
+    for (const payload of testPayloads) {
+      const expectedEvents: any[] = [];
+      const expectedComments: any[] = [];
+      const baselineDelegate: SseEventParserDelegate = {
+        onEvent: (id, type, data) => expectedEvents.push({ id, type, data }),
+        onComment: (comment) => expectedComments.push(comment),
+        onRetry: () => {},
+        onIdUpdate: () => {},
+        onParseError: (err) => {
+          throw err;
+        },
+        onLinesParsed: () => {},
+      };
+      const baselineParser = new SseEventParser(baselineDelegate);
+      baselineParser.feed(payload);
+      baselineParser.endOfStream();
+
+      for (let split = 0; split <= payload.length; split++) {
+        const actualEvents: any[] = [];
+        const actualComments: any[] = [];
+        const testDelegate: SseEventParserDelegate = {
+          onEvent: (id, type, data) => actualEvents.push({ id, type, data }),
+          onComment: (comment) => actualComments.push(comment),
+          onRetry: () => {},
+          onIdUpdate: () => {},
+          onParseError: (err) => {
+            throw err;
+          },
+          onLinesParsed: () => {},
+        };
+        const testParser = new SseEventParser(testDelegate);
+
+        const chunk1 = payload.slice(0, split);
+        const chunk2 = payload.slice(split);
+        testParser.feed(chunk1);
+        testParser.feed(chunk2);
+        testParser.endOfStream();
+
+        expect(actualEvents).toEqual(expectedEvents);
+        expect(actualComments).toEqual(expectedComments);
+      }
+    }
   });
 });

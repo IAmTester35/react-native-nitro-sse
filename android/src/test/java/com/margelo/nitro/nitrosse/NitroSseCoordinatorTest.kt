@@ -157,6 +157,57 @@ class NitroSseCoordinatorTest {
     }
 
     @Test
+    fun testStopAfterQueuedRestartWins() {
+        val sse = NitroSse(dispatcher)
+        sse.setup(createMockConfig()) { _ -> }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        // Both calls originate from the JS thread before the dispatcher drains: the queued restart task
+        // must not resurrect the stream after stop() has been issued.
+        sse.restart()
+        sse.stop()
+        drainLoopers()
+
+        assertFalse("stop() issued after restart() must leave the client stopped", sse.isConnected())
+        assertEquals(SseState.CLOSED, sse.getState())
+
+        // No delayed reconnect may revive the stream either.
+        dispatcher.advanceTimeBy(60000)
+        drainLoopers()
+        assertFalse(sse.isConnected())
+        assertEquals(SseState.CLOSED, sse.getState())
+    }
+
+    @Test
+    fun testRestartDetachesActiveRequestImmediately() {
+        val sse = NitroSse(dispatcher)
+        val emittedEvents = mutableListOf<SseEvent>()
+        sse.setup(createMockConfig()) { events -> emittedEvents.addAll(events) }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId").apply { isAccessible = true }
+        val oldReqId = reqIdField.get(sse) as String
+
+        sse.restart()
+        assertNull("restart must clear the active requestId synchronously", reqIdField.get(sse))
+        // Late failure from the retired socket must be rejected as stale and not hijack the restart.
+        sse.connectionDidFail(java.io.IOException("stale-socket-failure"), null, null, oldReqId)
+        drainLoopers()
+
+        assertTrue(sse.isConnected())
+        assertTrue(
+            "Stale socket failure must not surface as an ERROR event",
+            emittedEvents.none { it.type == SseEventType.ERROR && it.message == "stale-socket-failure" }
+        )
+        sse.stop()
+        drainLoopers()
+    }
+
+    @Test
     fun testCoordinatorHandlesFatalError400() {
         val sse = NitroSse(dispatcher)
         val config = createMockConfig()
@@ -521,11 +572,13 @@ class NitroSseCoordinatorTest {
         lastIdField.isAccessible = true
         
         // 1. Receive event with id "event-1"
+        sse.connectionDidUpdateLastEventId("event-1", currentReqId)
         sse.connectionDidReceiveMessage("event-1", "message", "hello", currentReqId)
         drainLoopers()
         assertEquals("event-1", lastIdField.get(sse))
         
         // 2. Receive event with empty id -> resets to null per WHATWG SSE spec
+        sse.connectionDidUpdateLastEventId("", currentReqId)
         sse.connectionDidReceiveMessage("", "message", "world", currentReqId)
         drainLoopers()
         assertNull(lastIdField.get(sse))
@@ -536,6 +589,7 @@ class NitroSseCoordinatorTest {
         assertNull(lastIdField.get(sse))
         
         // 4. Receive event with new id -> sets new id
+        sse.connectionDidUpdateLastEventId("event-2", currentReqId)
         sse.connectionDidReceiveMessage("event-2", "message", "foo", currentReqId)
         drainLoopers()
         assertEquals("event-2", lastIdField.get(sse))
@@ -579,6 +633,7 @@ class NitroSseCoordinatorTest {
         assertEquals(0.0, sse.getStats().totalBytesReceived, 0.001)
         
         // 1. Push message with data (12 B), id (4 B), type (6 B) -> total 22 B
+        sse.connectionDidUpdateLastEventId("id-1", currentReqId)
         sse.connectionDidReceiveMessage("id-1", "custom", "payload-data", currentReqId)
         drainLoopers()
         
@@ -591,6 +646,7 @@ class NitroSseCoordinatorTest {
         assertEquals(27.0, sse.getStats().totalBytesReceived, 0.001)
 
         // 3. Push message with a newly updated id ("id-2" = 4 B) and default type="message" -> 4 B (new id) + 5 B (data) = 9 B
+        sse.connectionDidUpdateLastEventId("id-2", currentReqId)
         sse.connectionDidReceiveMessage("id-2", "message", "world", currentReqId)
         drainLoopers()
 
@@ -603,12 +659,14 @@ class NitroSseCoordinatorTest {
         assertEquals(40.0, sse.getStats().totalBytesReceived, 0.001)
 
         // 5. Push message with empty id ("" = 0 B) resetting lastProcessedId per WHATWG SSE -> only data (5 B)
+        sse.connectionDidUpdateLastEventId("", currentReqId)
         sse.connectionDidReceiveMessage("", "message", "reset", currentReqId)
         drainLoopers()
 
         assertEquals(45.0, sse.getStats().totalBytesReceived, 0.001)
 
         // 6. Push message re-using "id-2" (4 B) after reset -> counts as new id because lastProcessedId was cleared -> 4 B + 5 B = 9 B
+        sse.connectionDidUpdateLastEventId("id-2", currentReqId)
         sse.connectionDidReceiveMessage("id-2", "message", "after", currentReqId)
         drainLoopers()
 
@@ -625,6 +683,67 @@ class NitroSseCoordinatorTest {
         org.mockito.Mockito.any<T>()
         @Suppress("UNCHECKED_CAST")
         return { _: Any? -> } as T
+    }
+    @Test
+    fun testConnectionFailureDoesNotLeakPlainHttpBytesIntoSessionRawBytesOffset() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        sse.setup(config) {}
+        drainLoopers()
+
+        sse.start()
+        drainLoopers()
+
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId").apply { isAccessible = true }
+        val currentReqId = reqIdField.get(sse) as String
+
+        // Simulate receiving 100 bytes over plain HTTP (non-gzip)
+        SseNetworkMetricsTracker.recordRawBytes(currentReqId, 100L, isGzip = false)
+        sse.connectionDidReceiveDataChunk(100L, currentReqId)
+        drainLoopers()
+
+        val offsetField = NitroSse::class.java.getDeclaredField("sessionRawBytesOffset").apply { isAccessible = true }
+
+        // Fail connection
+        sse.connectionDidFail(java.io.IOException("Transient drop"), null, null, currentReqId)
+        drainLoopers()
+
+        // Non-gzip bytes must NOT be accumulated into sessionRawBytesOffset
+        assertEquals(0.0, offsetField.get(sse) as Double, 0.001)
+
+        sse.stop()
+        drainLoopers()
+    }
+
+    @Test
+    fun testSseNetworkMetricsTrackerDropsTrailingReadsAfterClearAndDoesNotLeak() {
+        SseNetworkMetricsTracker.reset()
+        val testReqId = "test-req-leak-prevention"
+        SseNetworkMetricsTracker.recordRawBytes(testReqId, 500L, isGzip = true)
+        assertEquals(500L, SseNetworkMetricsTracker.getRawBytes(testReqId))
+        assertTrue(SseNetworkMetricsTracker.isGzip(testReqId))
+
+        // Clear request (simulate stream teardown/failure)
+        SseNetworkMetricsTracker.clear(testReqId)
+        assertNull(SseNetworkMetricsTracker.getRawBytes(testReqId))
+        assertFalse(SseNetworkMetricsTracker.isGzip(testReqId))
+
+        // Simulate trailing socket read arriving from OkHttp AFTER clear()
+        SseNetworkMetricsTracker.recordRawBytes(testReqId, 250L, isGzip = true)
+
+        // Trailing read MUST be dropped and must NOT resurrect the request in memory
+        assertNull(SseNetworkMetricsTracker.getRawBytes(testReqId))
+        assertFalse(SseNetworkMetricsTracker.isGzip(testReqId))
+
+        // Verify FIFO eviction past MAX_CLEARED_ENTRIES (200) never evicts the newly cleared requestId
+        for (i in 1..250) {
+            val id = "req-fifo-$i"
+            SseNetworkMetricsTracker.recordRawBytes(id, 100L, isGzip = false)
+            SseNetworkMetricsTracker.clear(id)
+            // Immediately test trailing read right after clear when size exceeds 200
+            SseNetworkMetricsTracker.recordRawBytes(id, 50L, isGzip = true)
+            assertNull("Newly cleared request $id must not be evicted by its own insertion", SseNetworkMetricsTracker.getRawBytes(id))
+        }
     }
 
     @Test
@@ -911,6 +1030,11 @@ class NitroSseCoordinatorTest {
 
         assertFalse("Client must not remain connected", sse.isConnected())
         assertEquals("Client must permanently transition to FAILED state", SseState.FAILED, sse.getState())
+        assertEquals(
+            "Invalid Content-Type is a server/protocol error (iOS parity), not a parser error",
+            SseDisconnectReason.SERVER_ERROR,
+            sse.getStats().disconnectReason
+        )
 
         val errorEvent = emittedEvents.find { it.type == SseEventType.ERROR }
         assertNotNull(errorEvent)
@@ -938,6 +1062,7 @@ class NitroSseCoordinatorTest {
         assertNull(lastIdField.get(sse))
 
         // 1. Receive event with id="evt-100"
+        sse.connectionDidUpdateLastEventId("evt-100", currentReqId)
         sse.connectionDidReceiveMessage("evt-100", "message", "payload", currentReqId)
         drainLoopers()
         assertEquals("evt-100", lastIdField.get(sse))
@@ -948,11 +1073,13 @@ class NitroSseCoordinatorTest {
         assertEquals("evt-100", lastIdField.get(sse))
 
         // 3. Receive event with id="evt-101" -> updates to new id
+        sse.connectionDidUpdateLastEventId("evt-101", currentReqId)
         sse.connectionDidReceiveMessage("evt-101", "message", "payload3", currentReqId)
         drainLoopers()
         assertEquals("evt-101", lastIdField.get(sse))
 
         // 4. Receive event with empty id="" -> resets lastProcessedId to null per WHATWG SSE spec
+        sse.connectionDidUpdateLastEventId("", currentReqId)
         sse.connectionDidReceiveMessage("", "message", "reset", currentReqId)
         drainLoopers()
         assertNull(lastIdField.get(sse))
@@ -1349,7 +1476,7 @@ class NitroSseCoordinatorTest {
         reqIdField.isAccessible = true
         val actualReqId = reqIdField.get(sse) as String
 
-        val error = java.io.IOException("SSE line exceeded maximum limit of 16777216 bytes")
+        val error = SseParserLimitException("SSE line exceeded maximum limit of 16777216 bytes")
         sse.connectionDidFail(error, null, null, actualReqId)
         drainLoopers()
 
@@ -1388,6 +1515,197 @@ class NitroSseCoordinatorTest {
         assertNotNull("Error event must be emitted on transport timeout", errorEvent)
         org.junit.Assert.assertNotEquals("Transport timeout must not report 200 statusCode", 200.0, errorEvent?.statusCode ?: 0.0, 0.0)
     }
+
+    @Test
+    fun testNetworkInterfaceChangeIsDebounced() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId").apply { isAccessible = true }
+        val actualReqId = reqIdField.get(sse) as String
+        val eventSourceField = NitroSse::class.java.getDeclaredField("eventSource").apply { isAccessible = true }
+        (eventSourceField.get(sse) as? SseEventSource)?.cancel()
+
+        val response = createResponse(200, "OK", "text/event-stream")
+        sse.connectionDidOpen(response, actualReqId)
+        drainLoopers()
+
+        val versionField = NitroSse::class.java.getDeclaredField("connectionAttemptVersion").apply { isAccessible = true }
+        val versionObj = versionField.get(sse) as java.util.concurrent.atomic.AtomicInteger
+        val initialVersion = versionObj.get()
+
+        val mockCaps = org.mockito.Mockito.mock(android.net.NetworkCapabilities::class.java)
+
+        // Rapid flapping: 3 interface changes within debounce window
+        sse.handleNetworkChange(isAvailable = true, interfaceChanged = true, capabilities = mockCaps)
+        sse.handleNetworkChange(isAvailable = true, interfaceChanged = true, capabilities = mockCaps)
+        sse.handleNetworkChange(isAvailable = true, interfaceChanged = true, capabilities = mockCaps)
+        dispatcher.executePending()
+
+        // Before advancing virtual time by debounce window (1000ms), version must NOT have changed
+        assertEquals("Debounce should prevent immediate restart", initialVersion, versionObj.get())
+
+        // Advance virtual time by 1000ms
+        dispatcher.advanceTimeBy(1000)
+        drainLoopers()
+
+        // Debounced restart executed exactly once (restart() claims a single new attempt version)
+        assertEquals("Debounced restart should execute once", initialVersion + 1, versionObj.get())
+        sse.stop()
+        drainLoopers()
+    }
+
+    @Test
+    fun testNetworkLossCancelsPendingDebouncedRestart() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        sse.setup(config) { _ -> }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId").apply { isAccessible = true }
+        val actualReqId = reqIdField.get(sse) as String
+        val eventSourceField = NitroSse::class.java.getDeclaredField("eventSource").apply { isAccessible = true }
+        (eventSourceField.get(sse) as? SseEventSource)?.cancel()
+
+        val response = createResponse(200, "OK", "text/event-stream")
+        sse.connectionDidOpen(response, actualReqId)
+        drainLoopers()
+
+        val versionField = NitroSse::class.java.getDeclaredField("connectionAttemptVersion").apply { isAccessible = true }
+        val versionObj = versionField.get(sse) as java.util.concurrent.atomic.AtomicInteger
+        val initialVersion = versionObj.get()
+
+        val mockCaps = org.mockito.Mockito.mock(android.net.NetworkCapabilities::class.java)
+
+        // Trigger interface change
+        sse.handleNetworkChange(isAvailable = true, interfaceChanged = true, capabilities = mockCaps)
+        dispatcher.executePending()
+
+        // Before debounce fires, network is lost
+        sse.handleNetworkChange(isAvailable = false, interfaceChanged = false, capabilities = null)
+        drainLoopers()
+        val lostVersion = versionObj.get()
+
+        // Advance virtual time by 1000ms
+        dispatcher.advanceTimeBy(1000)
+        drainLoopers()
+
+        // The debounced restart must have been cancelled; stream remains paused
+        assertEquals(SseState.PAUSED, sse.getState())
+        assertEquals("Debounced restart must be cancelled on network loss", lostVersion, versionObj.get())
+        sse.stop()
+        drainLoopers()
+    }
+
+    /**
+     * Swaps the OkHttp client for one whose dispatcher never runs real socket calls, so tests deterministically
+     * drive connection callbacks without racing a real connection attempt to localhost.
+     */
+    private fun detachRealNetwork(sse: NitroSse) {
+        val noOpExecutor = object : java.util.concurrent.AbstractExecutorService() {
+            override fun shutdown() {}
+            override fun shutdownNow(): MutableList<Runnable> = mutableListOf()
+            override fun isShutdown(): Boolean = false
+            override fun isTerminated(): Boolean = false
+            override fun awaitTermination(timeout: Long, unit: java.util.concurrent.TimeUnit): Boolean = true
+            override fun execute(command: Runnable) {}
+        }
+        val clientField = NitroSse::class.java.getDeclaredField("client").apply { isAccessible = true }
+        clientField.set(sse, okhttp3.OkHttpClient.Builder().dispatcher(okhttp3.Dispatcher(noOpExecutor)).build())
+    }
+
+    @Test
+    fun testStartAfterQueuedRestartStillCleansUpRetiredCycle() {
+        val sse = NitroSse(dispatcher)
+        sse.setup(createMockConfig()) { _ -> }
+        detachRealNetwork(sse)
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        val caps = org.mockito.Mockito.mock(android.net.NetworkCapabilities::class.java)
+        sse.handleNetworkChange(true, true, caps)
+        val debounceField = NitroSse::class.java.getDeclaredField("networkRestartRunnable").apply { isAccessible = true }
+        assertNotNull("Debounced network restart must be scheduled", debounceField.get(sse))
+
+        // Both issued from the JS thread before the dispatcher drains: start() supersedes restart()'s version.
+        sse.restart()
+        sse.start()
+        drainLoopers()
+
+        assertNull("restart() task must still release the retired cycle's timers", debounceField.get(sse))
+        sse.dispose()
+        drainLoopers()
+    }
+
+    @Test
+    fun testRestartClearsHibernationResumeFlags() {
+        val sse = NitroSse(dispatcher)
+        sse.setup(createMockConfig()) { _ -> }
+        detachRealNetwork(sse)
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        val background = NitroSse::class.java.getDeclaredMethod("handleAppBackground").apply { isAccessible = true }
+        background.invoke(sse)
+        assertEquals(SseState.PAUSED, sse.getState())
+        val pausedField = NitroSse::class.java.getDeclaredField("wasRunningBeforePaused").apply { isAccessible = true }
+        assertTrue(pausedField.getBoolean(sse))
+
+        sse.restart()
+        drainLoopers()
+        assertFalse("restart() must supersede the pending background-resume intent", pausedField.getBoolean(sse))
+
+        // Fatal failure of the restarted stream must not be resurrected by a later foreground event.
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId").apply { isAccessible = true }
+        sse.connectionDidFail(null, createResponse(204, "No Content"), null, reqIdField.get(sse) as String)
+        drainLoopers()
+        assertEquals(SseState.FAILED, sse.getState())
+
+        val foreground = NitroSse::class.java.getDeclaredMethod("handleAppForeground").apply { isAccessible = true }
+        foreground.invoke(sse)
+        drainLoopers()
+        assertEquals("FAILED is terminal and must not be revived by foreground", SseState.FAILED, sse.getState())
+        sse.dispose()
+        drainLoopers()
+    }
+
+    @Test
+    fun testRestartDeliversPriorBufferedEventsBeforeReconnectingState() {
+        val batches = mutableListOf<List<SseEvent>>()
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig().copy(batchingIntervalMs = 500.0)
+        sse.setup(config) { events -> batches.add(events.toList()) }
+        detachRealNetwork(sse)
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId").apply { isAccessible = true }
+        val reqId = reqIdField.get(sse) as String
+        sse.connectionDidOpen(createResponse(200, "OK"), reqId)
+        drainLoopers()
+        sse.flush()
+        batches.clear()
+
+        sse.connectionDidReceiveMessage("1", "message", "from_old_connection", reqId)
+        drainLoopers()
+        assertTrue("Message must still be batched", batches.isEmpty())
+
+        sse.restart()
+
+        val flattened = batches.flatten()
+        assertEquals(listOf(SseEventType.MESSAGE, SseEventType.STATE), flattened.map { it.type })
+        assertEquals("Old message must be delivered in its own batch before the state change", 2, batches.size)
+        assertEquals(SseState.RECONNECTING, flattened[1].state)
+        sse.dispose()
+        drainLoopers()
+    }
 }
-
-

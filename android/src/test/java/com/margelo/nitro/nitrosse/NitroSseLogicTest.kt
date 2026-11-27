@@ -244,6 +244,24 @@ class NitroSseLogicTest {
     }
 
     @Test
+    fun testEventBufferCapsMaxBufferSizeAtHardLimit() {
+        val flushedBatches = mutableListOf<Array<SseEvent>>()
+        val dispatcher = TestSseDispatcher()
+        val buffer = SseEventBuffer(onFlush = { events -> flushedBatches.add(events) }, dispatcher = dispatcher)
+        buffer.configure(batchingIntervalMs = 1000.0, maxBufferSize = 15000)
+
+        val mockEvent = SseEvent(SseEventType.MESSAGE, "test", null, "1", "message", null, 200.0, null, null)
+
+        repeat(10_000) { buffer.push(mockEvent) }
+        dispatcher.executePending()
+
+        assertEquals(1, flushedBatches.size)
+        assertEquals(10_000, flushedBatches.first().size)
+        assertEquals(1L, buffer.getBufferOverflowCount())
+        assertEquals(0, buffer.getEventsBuffered())
+    }
+
+    @Test
     fun testEventBufferBatchingByTime() {
         var receivedEvents = 0
         val dispatcher = TestSseDispatcher()
@@ -479,6 +497,22 @@ class NitroSseLogicTest {
 
         eventSource.cancel()
         server.shutdown()
+    }
+
+    @Test
+    fun testConnectionDidFailDelegationNoRecursion() {
+        var called4Param = false
+        val delegate = object : SseConnectionDelegate {
+            override fun connectionDidOpen(response: Response, requestId: String) {}
+            override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, requestId: String) {}
+            override fun connectionDidClose(requestId: String) {}
+            override fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {
+                called4Param = true
+            }
+        }
+        // Invoking 3-param must route cleanly to 4-param
+        delegate.connectionDidFail(Exception("test"), null, "req-1")
+        assertTrue("3-parameter connectionDidFail must delegate to 4-parameter implementation", called4Param)
     }
 }
 

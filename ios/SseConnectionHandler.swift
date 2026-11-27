@@ -75,10 +75,16 @@ internal class SseEventParser {
     private var hasData: Bool = false
     private var eventType: String? = nil
     private var lastEventId: String? = nil
+    private var lastEventIdBuffer: String? = nil
+    private var idUpdatedInCurrentEvent: Bool = false
     private var isAtStreamStart: Bool = true
+    /// Set once a resource limit violation (-2002 / -2003) is reported; all further input is ignored
+    /// until `reset()`, mirroring `_aborted` in the TypeScript parser and `SseParserLimitException` on Android.
+    private var isAborted: Bool = false
     
     init(initialLastEventId: String? = nil) {
         self.lastEventId = initialLastEventId
+        self.lastEventIdBuffer = initialLastEventId
     }
     
     func reset(initialLastEventId: String? = nil) {
@@ -87,36 +93,38 @@ internal class SseEventParser {
         hasData = false
         eventType = nil
         lastEventId = initialLastEventId
+        lastEventIdBuffer = initialLastEventId
+        idUpdatedInCurrentEvent = false
         isAtStreamStart = true
+        isAborted = false
     }
     
-    /// Flushes any pending data or un-terminated line when the stream reaches EOF.
-    /// Per WHATWG SSE specification: "Once the end of the file is reached, any pending data must be dispatched as an event."
+    /// Reports a fatal parser limit violation exactly once and stops all further parsing.
+    private func abort(code: Int, message: String) {
+        guard !isAborted else { return }
+        isAborted = true
+        buffer.removeAll()
+        dataBuffer = ""
+        hasData = false
+        eventType = nil
+        lastEventIdBuffer = lastEventId
+        idUpdatedInCurrentEvent = false
+        delegate?.parserDidFail(error: NSError(domain: "NitroSse", code: code, userInfo: [NSLocalizedDescriptionKey: message]))
+    }
+    
+    /// Signals end of stream (EOF).
+    /// Per WHATWG SSE specification: "Once the end of the file is reached, any pending data must be discarded. (If the file ends in the middle of an event, before the final empty line, the incomplete event is not dispatched.)"
     func endOfStream() {
-        if !buffer.isEmpty {
-            if buffer.last == 0x0D {
-                buffer.removeLast()
-            }
-            let line = String(decoding: buffer, as: UTF8.self)
-            buffer.removeAll()
-            processLine(line)
-            delegate?.parserDidParseLines(1)
-        }
-        if hasData {
-            let eventData = dataBuffer
-            let id = lastEventId
-            let type = eventType
-            
-            dataBuffer = ""
-            hasData = false
-            eventType = nil
-            
-            delegate?.parserDidReceiveEvent(id: id, type: type, data: eventData)
-        }
+        buffer.removeAll()
+        dataBuffer = ""
+        hasData = false
+        eventType = nil
+        lastEventIdBuffer = lastEventId
+        idUpdatedInCurrentEvent = false
     }
     
     func feed(data: Data) {
-        guard !data.isEmpty else { return }
+        guard !data.isEmpty, !isAborted else { return }
         var parsedLinesInChunk = 0
         defer {
             if parsedLinesInChunk > 0 {
@@ -129,7 +137,7 @@ internal class SseEventParser {
             if buffer.isEmpty && currentData.count >= 3 {
                 let sIdx = currentData.startIndex
                 if currentData[sIdx] == 0xEF && currentData[sIdx + 1] == 0xBB && currentData[sIdx + 2] == 0xBF {
-                    currentData = currentData.subdata(in: (sIdx + 3)..<currentData.endIndex)
+                    currentData = currentData[(sIdx + 3)..<currentData.endIndex]
                 }
                 isAtStreamStart = false
             } else {
@@ -175,12 +183,10 @@ internal class SseEventParser {
                 }
             } else if let firstLine = findNextLine(in: currentData, from: readIndex) {
                 if buffer.count + firstLine.content.count > MAX_SSE_LINE_LENGTH {
-                    let error = NSError(domain: "NitroSse", code: -2002, userInfo: [NSLocalizedDescriptionKey: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes"])
-                    delegate?.parserDidFail(error: error)
-                    buffer.removeAll()
+                    abort(code: -2002, message: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes")
                     return
                 }
-                buffer.append(currentData.subdata(in: firstLine.content))
+                buffer.append(currentData[firstLine.content])
                 let line = String(decoding: buffer, as: UTF8.self)
                 buffer.removeAll()
                 processLine(line)
@@ -189,9 +195,7 @@ internal class SseEventParser {
             } else {
                 // currentData has no line ending: append chunk to buffer if within limit
                 if buffer.count + currentData.count > MAX_SSE_LINE_LENGTH {
-                    let error = NSError(domain: "NitroSse", code: -2002, userInfo: [NSLocalizedDescriptionKey: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes"])
-                    delegate?.parserDidFail(error: error)
-                    buffer.removeAll()
+                    abort(code: -2002, message: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes")
                     return
                 }
                 buffer.append(currentData)
@@ -199,37 +203,35 @@ internal class SseEventParser {
             }
         }
         
-        // Scan remaining lines directly from currentData without buffering full chunk
-        while readIndex < endIndex {
+        // Scan remaining lines directly from currentData using zero-copy slices
+        while readIndex < endIndex && !isAborted {
             guard let lineRange = findNextLine(in: currentData, from: readIndex) else {
                 break
             }
             
             if lineRange.content.count > MAX_SSE_LINE_LENGTH {
-                let error = NSError(domain: "NitroSse", code: -2002, userInfo: [NSLocalizedDescriptionKey: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes"])
-                delegate?.parserDidFail(error: error)
-                buffer.removeAll()
+                abort(code: -2002, message: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes")
                 return
             }
             
-            let lineData = currentData.subdata(in: lineRange.content)
+            let lineSlice = currentData[lineRange.content]
             readIndex = lineRange.nextIndex
             
-            let line = String(decoding: lineData, as: UTF8.self)
+            let line = String(decoding: lineSlice, as: UTF8.self)
             processLine(line)
             parsedLinesInChunk += 1
         }
         
+        if isAborted { return }
+        
         // Save trailing incomplete line fragment into buffer
         if readIndex < endIndex {
-            let trailingData = currentData.subdata(in: readIndex..<endIndex)
-            if buffer.count + trailingData.count > MAX_SSE_LINE_LENGTH {
-                let error = NSError(domain: "NitroSse", code: -2002, userInfo: [NSLocalizedDescriptionKey: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes"])
-                delegate?.parserDidFail(error: error)
-                buffer.removeAll()
+            let trailingSlice = currentData[readIndex..<endIndex]
+            if buffer.count + trailingSlice.count > MAX_SSE_LINE_LENGTH {
+                abort(code: -2002, message: "SSE line exceeded maximum limit of \(MAX_SSE_LINE_LENGTH) bytes")
                 return
             }
-            buffer.append(trailingData)
+            buffer.append(trailingSlice)
         }
     }
     
@@ -238,36 +240,47 @@ internal class SseEventParser {
         let nextIndex: Int
     }
     
-    /// Finds next line in data from startIndex handling \r\n, \r, and \n.
+    /// Finds next line in data from startIndex handling \r\n, \r, and \n using UnsafeRawBufferPointer.
     /// If data ends with \r at the very end, returns nil to defer until next chunk so \r\n can be resolved.
     private func findNextLine(in data: Data, from startIndex: Int) -> LineRange? {
         let endIndex = data.endIndex
         guard startIndex < endIndex else { return nil }
+        let baseIndex = data.startIndex
         
-        var index = startIndex
-        while index < endIndex {
-            let byte = data[index]
-            if byte == 0x0A { // \n (LF)
-                return LineRange(content: startIndex..<index, nextIndex: index + 1)
-            } else if byte == 0x0D { // \r (CR)
-                if index + 1 < endIndex {
-                    if data[index + 1] == 0x0A { // \r\n (CRLF)
-                        return LineRange(content: startIndex..<index, nextIndex: index + 2)
-                    } else { // Single \r
-                        return LineRange(content: startIndex..<index, nextIndex: index + 1)
+        return data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> LineRange? in
+            var offset = startIndex - baseIndex
+            let endOffset = endIndex - baseIndex
+            while offset < endOffset {
+                let byte = raw[offset]
+                if byte == 0x0A { // \n (LF)
+                    let foundIndex = baseIndex + offset
+                    return LineRange(content: startIndex..<foundIndex, nextIndex: foundIndex + 1)
+                } else if byte == 0x0D { // \r (CR)
+                    let foundIndex = baseIndex + offset
+                    if offset + 1 < endOffset {
+                        if raw[offset + 1] == 0x0A { // \r\n (CRLF)
+                            return LineRange(content: startIndex..<foundIndex, nextIndex: foundIndex + 2)
+                        } else { // Single \r
+                            return LineRange(content: startIndex..<foundIndex, nextIndex: foundIndex + 1)
+                        }
+                    } else {
+                        // Buffer ends with \r; wait for next chunk to verify if it is \r\n
+                        return nil
                     }
-                } else {
-                    // Buffer ends with \r; wait for next chunk to verify if it is \r\n
-                    return nil
                 }
+                offset += 1
             }
-            index += 1
+            return nil
         }
-        return nil
     }
     
     private func processLine(_ line: String) {
         if line.isEmpty {
+            if idUpdatedInCurrentEvent {
+                lastEventId = lastEventIdBuffer
+                idUpdatedInCurrentEvent = false
+                delegate?.parserDidUpdateLastEventId(lastEventId)
+            }
             // Empty line dispatches the current event per WHATWG specification
             if hasData {
                 let eventData = dataBuffer
@@ -279,6 +292,9 @@ internal class SseEventParser {
                 eventType = nil
                 
                 delegate?.parserDidReceiveEvent(id: id, type: type, data: eventData)
+            } else {
+                // WHATWG SSE: Dispatching an empty event still resets the event type buffer
+                eventType = nil
             }
             return
         }
@@ -294,7 +310,7 @@ internal class SseEventParser {
         
         let colonIndex = line.firstIndex(of: ":")
         let field: String
-        var value: String
+        let value: String
         
         if let colon = colonIndex {
             field = String(line[..<colon])
@@ -309,10 +325,7 @@ internal class SseEventParser {
         case "data":
             let separatorSize = hasData ? 1 : 0
             if dataBuffer.utf8.count + separatorSize + value.utf8.count > MAX_SSE_EVENT_DATA_SIZE {
-                let error = NSError(domain: "NitroSse", code: -2003, userInfo: [NSLocalizedDescriptionKey: "SSE event data exceeded maximum limit of \(MAX_SSE_EVENT_DATA_SIZE) bytes"])
-                delegate?.parserDidFail(error: error)
-                dataBuffer = ""
-                hasData = false
+                abort(code: -2003, message: "SSE event data exceeded maximum limit of \(MAX_SSE_EVENT_DATA_SIZE) bytes")
                 return
             }
             if hasData {
@@ -325,8 +338,8 @@ internal class SseEventParser {
         case "id":
             // WHATWG: If field value contains a U+0000 NULL character, the field must be ignored.
             if !value.contains("\0") {
-                lastEventId = value.isEmpty ? nil : value
-                delegate?.parserDidUpdateLastEventId(lastEventId)
+                lastEventIdBuffer = value.isEmpty ? nil : value
+                idUpdatedInCurrentEvent = true
             }
         case "event":
             eventType = value.isEmpty ? nil : value
@@ -361,6 +374,7 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
     private var isGzip: Bool = false
     private var decompressedBytesReceived: Int64 = 0
     private var isCollectingErrorBody: Bool = false
+    private var hasConnectionTimer: Bool = false
     private var errorBodyData = Data()
     private var pendingErrorResponse: HTTPURLResponse?
     
@@ -413,9 +427,17 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
     
     private func startConnectionTimer(timeout: TimeInterval) {
         guard timeout > 0 else { return }
+        hasConnectionTimer = true
         dispatcher.asyncAfter(delay: timeout) { [weak self] in
             guard let self = self, !self.didReceiveValidResponse, !self.isFinished, !self.isCancelled else { return }
             self.isFinished = true
+            if self.isCollectingErrorBody, let resp = self.pendingErrorResponse {
+                self.isCollectingErrorBody = false
+                let error = NSError(domain: "NitroSse", code: resp.statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP \(resp.statusCode)"])
+                let bodyString = self.errorBodyData.isEmpty ? nil : String(decoding: self.errorBodyData, as: UTF8.self)
+                self.dispatchTerminalFailure(error: error, response: resp, errorBody: bodyString)
+                return
+            }
             let error = NSError(
                 domain: NSURLErrorDomain,
                 code: NSURLErrorTimedOut,
@@ -438,14 +460,13 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
         dispatcher.async { [weak self] in
-            guard let self = self, !self.isCancelled else {
+            guard let self = self, !self.isCancelled, !self.isTerminalDispatched else {
                 completionHandler(.cancel)
                 return
             }
             
             guard let httpResponse = response as? HTTPURLResponse else {
                 let error = NSError(domain: "NitroSse", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid non-HTTP response"])
-                self.isFinished = true
                 self.dispatchTerminalFailure(error: error, response: nil, errorBody: nil)
                 completionHandler(.cancel)
                 return
@@ -461,7 +482,6 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
                     code: 204,
                     userInfo: [NSLocalizedDescriptionKey: "HTTP 204 No Content"]
                 )
-                self.isFinished = true
                 self.dispatchTerminalFailure(error: error, response: httpResponse, errorBody: nil)
                 completionHandler(.cancel)
                 return
@@ -469,7 +489,6 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
             
             // Validate HTTP Status Code (Collect bounded body if statusCode is not 200)
             guard statusCode == 200 else {
-                self.isFinished = true
                 if httpResponse.expectedContentLength == 0 {
                     let error = NSError(domain: "NitroSse", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP \(statusCode)"])
                     self.dispatchTerminalFailure(error: error, response: httpResponse, errorBody: nil)
@@ -480,6 +499,9 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
                 self.isCollectingErrorBody = true
                 self.pendingErrorResponse = httpResponse
                 self.errorBodyData.removeAll()
+                if !self.hasConnectionTimer {
+                    self.startConnectionTimer(timeout: 15.0)
+                }
                 completionHandler(.allow)
                 return
             }
@@ -494,7 +516,6 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
                     code: -2001,
                     userInfo: [NSLocalizedDescriptionKey: "Invalid Content-Type: expected text/event-stream but received '\(contentType)'"]
                 )
-                self.isFinished = true
                 self.dispatchTerminalFailure(error: error, response: httpResponse, errorBody: nil)
                 completionHandler(.cancel)
                 return
@@ -637,31 +658,12 @@ internal class RealSseEventSource: NSObject, URLSessionDataDelegate, SseEventSou
 /// Factory creating native `RealSseEventSource` instances configured with custom timeouts, headers, and HTTP methods.
 enum SseConnectionHandler {
     
-    /// Instantiates and starts a native `SseEventSource` connection using `SseConfig` and session parameters.
-    static func createEventSource(
+    /// Constructs a standardized and sanitized URLRequest for SSE streaming.
+    static func createRequest(
         url: URL,
         config: SseConfig,
-        lastProcessedId: String?,
-        delegate: SseConnectionDelegate,
-        attemptVersion: Int,
-        dispatcher: SseDispatcher,
-        protocolClasses: [AnyClass]? = nil
-    ) -> SseEventSource {
-        let sessionConfig = URLSessionConfiguration.default
-        let rawReadTimeout = (config.readTimeoutMs ?? 300000.0) / 1000.0
-        // Use timeoutIntervalForRequest (resets on incoming chunks) rather than timeoutIntervalForResource.
-        // Setting timeoutIntervalForResource would hard-cap the total lifetime of persistent SSE streams.
-        // A non-positive timeout interval is treated as infinite fallback sentinel (7 days) to prevent immediate timeout.
-        let readTimeout = rawReadTimeout > 0 ? rawReadTimeout : 604800.0
-        sessionConfig.timeoutIntervalForRequest = readTimeout
-        
-        if let protocolClasses = protocolClasses {
-            sessionConfig.protocolClasses = protocolClasses
-        }
-        
-        let rawConnectionTimeout = (config.connectionTimeoutMs ?? 15000.0) / 1000.0
-        let connectionTimeout = rawConnectionTimeout > 0 ? rawConnectionTimeout : 0.0
-        
+        lastProcessedId: String?
+    ) -> URLRequest {
         var request = URLRequest(url: url)
         request.httpMethod = config.method?.stringValue.uppercased() ?? "GET"
         
@@ -690,6 +692,35 @@ enum SseConnectionHandler {
         if let body = config.body {
             request.httpBody = body.data(using: .utf8)
         }
+        return request
+    }
+    
+    /// Instantiates and starts a native `SseEventSource` connection using `SseConfig` and session parameters.
+    static func createEventSource(
+        url: URL,
+        config: SseConfig,
+        lastProcessedId: String?,
+        delegate: SseConnectionDelegate,
+        attemptVersion: Int,
+        dispatcher: SseDispatcher,
+        protocolClasses: [AnyClass]? = nil
+    ) -> SseEventSource {
+        let sessionConfig = URLSessionConfiguration.default
+        let rawReadTimeout = (config.readTimeoutMs ?? 300000.0) / 1000.0
+        // Use timeoutIntervalForRequest (resets on incoming chunks) rather than timeoutIntervalForResource.
+        // Setting timeoutIntervalForResource would hard-cap the total lifetime of persistent SSE streams.
+        // A non-positive timeout interval is treated as infinite fallback sentinel (7 days) to prevent immediate timeout.
+        let readTimeout = rawReadTimeout > 0 ? rawReadTimeout : 604800.0
+        sessionConfig.timeoutIntervalForRequest = readTimeout
+        
+        if let protocolClasses = protocolClasses {
+            sessionConfig.protocolClasses = protocolClasses
+        }
+        
+        let rawConnectionTimeout = (config.connectionTimeoutMs ?? 15000.0) / 1000.0
+        let connectionTimeout = rawConnectionTimeout > 0 ? rawConnectionTimeout : 0.0
+        
+        let request = createRequest(url: url, config: config, lastProcessedId: lastProcessedId)
         
         let source = RealSseEventSource(delegate: delegate, attemptVersion: attemptVersion, dispatcher: dispatcher, initialLastEventId: lastProcessedId)
         source.start(request: request, sessionConfig: sessionConfig, connectionTimeout: connectionTimeout)

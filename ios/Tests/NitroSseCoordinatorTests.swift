@@ -420,7 +420,7 @@ class NitroSseCoordinatorTests: XCTestCase {
         
         // Discard initial dummy connection failure tasks before asserting Retry-After timer.
         dispatcher.pendingDelayedBlocks.removeAll()
-        sse.connectionDidFail(error: error, attemptVersion: sse.connectionAttemptVersion)
+        sse.connectionDidFail(error: error, response: response, attemptVersion: sse.connectionAttemptVersion)
         dispatcher.executeAllPendingBlocks()
         
         let delayedBlock = dispatcher.pendingDelayedBlocks.first(where: { $0.delay >= 5.0 })
@@ -714,6 +714,7 @@ class NitroSseCoordinatorTests: XCTestCase {
         XCTAssertEqual(try! sse.getStats().totalBytesReceived, 0)
 
         // 1. Push message with data (12 B), id (4 B), type (6 B) -> total 22 B
+        sse.connectionDidUpdateLastEventId(id: "id-1", attemptVersion: currentVersion)
         sse.connectionDidReceiveMessage(eventType: "custom", data: "payload-data", lastEventId: "id-1", attemptVersion: currentVersion)
         dispatcher.executeAllPendingBlocks()
 
@@ -727,6 +728,7 @@ class NitroSseCoordinatorTests: XCTestCase {
         XCTAssertEqual(try! sse.getStats().totalBytesReceived, 27.0)
 
         // 3. Push message with a newly updated id ("id-2" = 4 B) and default eventType="message" -> 4 B (new id) + 5 B (data) = 9 B
+        sse.connectionDidUpdateLastEventId(id: "id-2", attemptVersion: currentVersion)
         sse.connectionDidReceiveMessage(eventType: "message", data: "world", lastEventId: "id-2", attemptVersion: currentVersion)
         dispatcher.executeAllPendingBlocks()
 
@@ -739,12 +741,14 @@ class NitroSseCoordinatorTests: XCTestCase {
         XCTAssertEqual(try! sse.getStats().totalBytesReceived, 40.0)
 
         // 5. Push message with empty id ("" = 0 B) resetting lastProcessedId per WHATWG SSE -> only data (5 B)
+        sse.connectionDidUpdateLastEventId(id: "", attemptVersion: currentVersion)
         sse.connectionDidReceiveMessage(eventType: "message", data: "reset", lastEventId: "", attemptVersion: currentVersion)
         dispatcher.executeAllPendingBlocks()
 
         XCTAssertEqual(try! sse.getStats().totalBytesReceived, 45.0)
 
         // 6. Push message re-using "id-2" (4 B) after reset -> counts as new id because lastProcessedId was cleared -> 4 B + 5 B = 9 B
+        sse.connectionDidUpdateLastEventId(id: "id-2", attemptVersion: currentVersion)
         sse.connectionDidReceiveMessage(eventType: "message", data: "after", lastEventId: "id-2", attemptVersion: currentVersion)
         dispatcher.executeAllPendingBlocks()
 
@@ -765,16 +769,19 @@ class NitroSseCoordinatorTests: XCTestCase {
         let currentVersion = sse.connectionAttemptVersion
 
         // 1. Receive event with id "event-1"
+        sse.connectionDidUpdateLastEventId(id: "event-1", attemptVersion: currentVersion)
         sse.connectionDidReceiveMessage(eventType: "message", data: "hello", lastEventId: "event-1", attemptVersion: currentVersion)
         dispatcher.executeAllPendingBlocks()
         XCTAssertEqual(sse.lastProcessedId, "event-1")
 
         // 2. Receive event with empty id -> resets to nil per WHATWG SSE spec
+        sse.connectionDidUpdateLastEventId(id: "", attemptVersion: currentVersion)
         sse.connectionDidReceiveMessage(eventType: "message", data: "world", lastEventId: "", attemptVersion: currentVersion)
         dispatcher.executeAllPendingBlocks()
         XCTAssertNil(sse.lastProcessedId)
 
         // 3. Receive event with new id -> sets new id
+        sse.connectionDidUpdateLastEventId(id: "event-2", attemptVersion: currentVersion)
         sse.connectionDidReceiveMessage(eventType: "message", data: "foo", lastEventId: "event-2", attemptVersion: currentVersion)
         dispatcher.executeAllPendingBlocks()
         XCTAssertEqual(sse.lastProcessedId, "event-2")
@@ -1454,5 +1461,83 @@ class NitroSseCoordinatorTests: XCTestCase {
         XCTAssertEqual(state, .failed, "Should stop permanently after exceeding maxAuthRetries")
         XCTAssertLessThanOrEqual(callCount, 3)
     }
+
+    func testNetworkInterfaceChangeIsDebounced() {
+        let dispatcher = MockSseDispatcher()
+        dispatcher.executeImmediately = false
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig().copyWith(batchingIntervalMs: 0.0)
+        try! sse.setup(config: config, onEvent: { _ in })
+        dispatcher.executeAllPendingBlocks()
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+        
+        let initialVersion = sse.connectionAttemptVersion
+        
+        // Rapid flapping: 3 interface changes within debounce window
+        sse.handleNetworkChange(isSatisfied: true, interfaceChanged: true)
+        sse.handleNetworkChange(isSatisfied: true, interfaceChanged: true)
+        sse.handleNetworkChange(isSatisfied: true, interfaceChanged: true)
+        
+        // Before executing delayed debounce block, version must NOT have changed
+        XCTAssertEqual(sse.connectionAttemptVersion, initialVersion, "Debounce should prevent immediate restart")
+        
+        // Execute delayed blocks (debounce fires)
+        dispatcher.executeDelayedBlocks()
+        dispatcher.executeAllPendingBlocks()
+        
+        // Exactly one restart should have occurred
+        XCTAssertEqual(sse.connectionAttemptVersion, initialVersion + 1, "Exactly one debounced restart should execute")
+        sse.stop()
+    }
+
+    func testNetworkLossCancelsPendingDebouncedRestart() {
+        let dispatcher = MockSseDispatcher()
+        dispatcher.executeImmediately = false
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig().copyWith(batchingIntervalMs: 0.0)
+        try! sse.setup(config: config, onEvent: { _ in })
+        dispatcher.executeAllPendingBlocks()
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+        
+        let initialVersion = sse.connectionAttemptVersion
+        
+        // Trigger interface change
+        sse.handleNetworkChange(isSatisfied: true, interfaceChanged: true)
+        
+        // Before debounce fires, network is lost
+        sse.handleNetworkChange(isSatisfied: false, interfaceChanged: false)
+        let lostVersion = sse.connectionAttemptVersion
+        
+        // Execute any delayed blocks
+        dispatcher.executeDelayedBlocks()
+        dispatcher.executeAllPendingBlocks()
+        
+        // The debounced restart must have been cancelled; stream remains paused
+        let state = try! sse.getState()
+        XCTAssertEqual(state, .paused)
+        XCTAssertEqual(sse.connectionAttemptVersion, lostVersion, "Debounced restart must be cancelled on network loss")
+        sse.stop()
+    }
+
+    func testSanitizedURLRequestConstruction() {
+        let url = URL(string: "https://example.com/stream")!
+        let config = createMockConfig().copyWith(
+            headers: [
+                "Accept-Encoding": "gzip",
+                "Last-Event-Id": "forged-id",
+                "Authorization": "Bearer token123"
+            ]
+        )
+        let request = SseConnectionHandler.createRequest(url: url, config: config, lastProcessedId: "valid-id")
+        
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "text/event-stream")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cache-Control"), "no-cache")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Last-Event-ID"), "valid-id")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer token123")
+        XCTAssertNil(request.value(forHTTPHeaderField: "Accept-Encoding"), "Accept-Encoding must be stripped to prevent raw compression leaks")
+    }
 }
+
 

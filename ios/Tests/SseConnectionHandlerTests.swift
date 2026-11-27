@@ -923,5 +923,93 @@ final class SseConnectionHandlerTests: XCTestCase {
         let sentContentType = interceptedRequest?.value(forHTTPHeaderField: "Content-Type")
         XCTAssertEqual(sentContentType, "application/x-www-form-urlencoded")
     }
-}
 
+    // MARK: - SseEventParser abort semantics
+
+    private class RecordingParserDelegate: SseEventParserDelegate {
+        var failErrors: [NSError] = []
+        var receivedEvents: [String] = []
+        func parserDidReceiveEvent(id: String?, type: String?, data: String) { receivedEvents.append(data) }
+        func parserDidReceiveComment(_ comment: String) {}
+        func parserDidReceiveRetry(retryMs: Int64) {}
+        func parserDidFail(error: Error) { failErrors.append(error as NSError) }
+    }
+
+    func testParserStopsProcessingAfterEventDataLimitExceeded() {
+        let parser = SseEventParser(initialLastEventId: nil)
+        let delegate = RecordingParserDelegate()
+        parser.delegate = delegate
+
+        // Two ~9 MB lines (each below the line limit) exceed the 16 MB event-data limit together.
+        let bigLine = "data: " + String(repeating: "x", count: 9 * 1024 * 1024) + "\n"
+        parser.feed(data: bigLine.data(using: .utf8)!)
+        XCTAssertTrue(delegate.failErrors.isEmpty)
+
+        // The trailing complete event in the SAME chunk must be ignored once the parser has aborted.
+        parser.feed(data: (bigLine + "data: after_abort\n\n").data(using: .utf8)!)
+        XCTAssertEqual(delegate.failErrors.count, 1)
+        XCTAssertEqual(delegate.failErrors.first?.code, -2003)
+        XCTAssertTrue(delegate.receivedEvents.isEmpty, "No event may be dispatched after a limit violation")
+
+        // Subsequent chunks are ignored too: failure is reported exactly once.
+        parser.feed(data: "data: later\n\n".data(using: .utf8)!)
+        XCTAssertEqual(delegate.failErrors.count, 1)
+        XCTAssertTrue(delegate.receivedEvents.isEmpty)
+    }
+
+    func testParserResetClearsAbortedState() {
+        let parser = SseEventParser(initialLastEventId: nil)
+        let delegate = RecordingParserDelegate()
+        parser.delegate = delegate
+
+        let bigLine = "data: " + String(repeating: "x", count: 9 * 1024 * 1024) + "\n"
+        parser.feed(data: (bigLine + bigLine).data(using: .utf8)!)
+        XCTAssertEqual(delegate.failErrors.count, 1)
+
+        parser.reset()
+        parser.feed(data: "data: ok\n\n".data(using: .utf8)!)
+        XCTAssertEqual(delegate.receivedEvents, ["ok"])
+    }
+
+    func testStalledErrorBodyPreservesHttpStatusAndPartialBodyOnConnectionTimeout() {
+        let delegate = TestDelegate()
+        let dispatcher = MockSseDispatcher()
+        let url = URL(string: TEST_URL)!
+        let source = RealSseEventSource(
+            delegate: delegate,
+            attemptVersion: 1,
+            dispatcher: dispatcher
+        )
+        let sessionConfig = URLSessionConfiguration.ephemeral
+        let dummySession = URLSession(configuration: sessionConfig)
+        let dummyTask = dummySession.dataTask(with: url)
+        defer {
+            source.stop()
+            dummySession.invalidateAndCancel()
+        }
+
+        source.start(request: URLRequest(url: url), sessionConfig: sessionConfig, connectionTimeout: 15.0)
+
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 500,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/plain"]
+        )!
+        var disposition: URLSession.ResponseDisposition?
+        source.urlSession(dummySession, dataTask: dummyTask, didReceive: response) { disposition = $0 }
+        XCTAssertEqual(disposition, .allow)
+
+        source.urlSession(dummySession, dataTask: dummyTask, didReceive: "partial error".data(using: .utf8)!)
+
+        // Fire the existing connectionTimeout timer while error body collection is still active
+        dispatcher.executeDelayedBlocks()
+
+        XCTAssertTrue(delegate.didFailCalled)
+        XCTAssertEqual(delegate.failedResponse?.statusCode, 500)
+        XCTAssertEqual(delegate.failedErrorBody, "partial error")
+        let nsError = delegate.failedError as NSError?
+        XCTAssertEqual(nsError?.domain, "NitroSse")
+        XCTAssertEqual(nsError?.code, 500)
+    }
+}

@@ -32,15 +32,20 @@ class SseEventBuffer(
 
     fun configure(batchingIntervalMs: Double, maxBufferSize: Int) {
         this.batchingIntervalMs = if (!batchingIntervalMs.isNaN() && !batchingIntervalMs.isInfinite() && batchingIntervalMs >= 0) batchingIntervalMs else 0.0
-        this.maxBufferSize = if (maxBufferSize > 0) maxBufferSize else 1000
+        this.maxBufferSize = if (maxBufferSize > 0) minOf(maxBufferSize, HARD_MAX_BUFFER_SIZE) else 1000
     }
 
     fun setCallback(newCallback: (Array<SseEvent>) -> Unit) {
         this.onFlush = newCallback
     }
 
+    companion object {
+        private const val HARD_MAX_BUFFER_SIZE = 10000
+    }
+
     fun clearCallback() {
         this.onFlush = {}
+        this.onFlushError = null
     }
 
     fun getEventsBuffered(): Int = synchronized(eventBuffer) { eventBuffer.size }
@@ -86,13 +91,9 @@ class SseEventBuffer(
 
         if (shouldFlush) {
             if (dispatcher == null || dispatcher.isCurrentDispatcher()) {
-                dispatcher?.removeCallbacks(flushRunnable)
                 flush()
             } else {
-                dispatcher.post {
-                    dispatcher.removeCallbacks(flushRunnable)
-                    flush()
-                }
+                dispatcher.post { flush() }
             }
         } else if (!isFlushPending.getAndSet(true)) {
             dispatcher?.postDelayed(flushRunnable, batchingIntervalMs.toLong())

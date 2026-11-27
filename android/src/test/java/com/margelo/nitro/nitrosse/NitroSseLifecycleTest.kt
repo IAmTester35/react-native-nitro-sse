@@ -207,4 +207,42 @@ class NitroSseLifecycleTest {
 
         sse.dispose()
     }
+
+    @Test
+    fun testDispatcherDestroyedLeavesStateClosedAfterDispose() {
+        val sse = NitroSse(dispatcher)
+        sse.setup(createConfig()) {}
+        dispatcher.executePending()
+        sse.start()
+        dispatcher.executePending()
+        assertEquals(SseState.CONNECTING, sse.getState())
+
+        val handleFlushError = NitroSse::class.java.getDeclaredMethod("handleRuntimeOrFlushError", Throwable::class.java)
+        handleFlushError.isAccessible = true
+        handleFlushError.invoke(sse, RuntimeException("Dispatcher has already been destroyed!"))
+
+        // dispose() discards the dispatcher queue, so getState() must be correct without a queued stop task.
+        assertEquals(SseState.CLOSED, sse.getState())
+        sse.stop()
+        assertEquals(SseState.CLOSED, sse.getState())
+    }
+
+    @Test
+    fun testDispatcherDestroyedPreservesFailedState() {
+        val sse = NitroSse(dispatcher)
+        sse.setup(createConfig()) {}
+        dispatcher.executePending()
+        sse.start()
+        dispatcher.executePending()
+
+        val stateField = NitroSse::class.java.getDeclaredField("currentState").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        (stateField.get(sse) as java.util.concurrent.atomic.AtomicReference<SseState>).set(SseState.FAILED)
+
+        val handleFlushError = NitroSse::class.java.getDeclaredMethod("handleRuntimeOrFlushError", Throwable::class.java)
+        handleFlushError.isAccessible = true
+        handleFlushError.invoke(sse, RuntimeException("Dispatcher has already been destroyed!"))
+
+        assertEquals(SseState.FAILED, sse.getState())
+    }
 }

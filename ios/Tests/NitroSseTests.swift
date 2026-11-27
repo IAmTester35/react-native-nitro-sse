@@ -111,18 +111,15 @@ class NitroSseTests: XCTestCase {
     }
 
     func testRetryAfterDateParsing() {
-        func createError(withRetryAfter headerValue: String?) -> Error {
+        func createResponse(withRetryAfter headerValue: String?) -> HTTPURLResponse {
             let url = URL(string: TEST_URL)!
             var headers: [String: String] = [:]
             if let val = headerValue { headers["Retry-After"] = val }
-            
-            let response = HTTPURLResponse(url: url, statusCode: 429, httpVersion: nil, headerFields: headers)!
-            let userInfo: [String: Any] = ["response": response]
-            return NSError(domain: "test", code: 429, userInfo: userInfo)
+            return HTTPURLResponse(url: url, statusCode: 429, httpVersion: nil, headerFields: headers)!
         }
 
-        let err1 = createError(withRetryAfter: "5")
-        XCTAssertEqual(SseReconnectStrategy.extractRetryAfterSeconds(from: err1), 5.0)
+        let resp1 = createResponse(withRetryAfter: "5")
+        XCTAssertEqual(SseReconnectStrategy.extractRetryAfterSeconds(from: resp1), 5.0)
         
         // Verifies RFC 1123 HTTP-date string parsing converts to remaining time interval in seconds.
         let formatter = DateFormatter()
@@ -130,15 +127,15 @@ class NitroSseTests: XCTestCase {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss z"
         let futureDate = formatter.string(from: Date().addingTimeInterval(3600))
-        let err2 = createError(withRetryAfter: futureDate)
+        let resp2 = createResponse(withRetryAfter: futureDate)
         
-        let extracted = SseReconnectStrategy.extractRetryAfterSeconds(from: err2)
+        let extracted = SseReconnectStrategy.extractRetryAfterSeconds(from: resp2)
         XCTAssertNotNil(extracted)
         XCTAssertGreaterThan(extracted!, 3590.0)
         XCTAssertLessThanOrEqual(extracted!, 3600.0)
         
-        let err3 = createError(withRetryAfter: nil)
-        XCTAssertNil(SseReconnectStrategy.extractRetryAfterSeconds(from: err3))
+        let resp3 = createResponse(withRetryAfter: nil)
+        XCTAssertNil(SseReconnectStrategy.extractRetryAfterSeconds(from: resp3))
     }
 
     // MARK: - SseEventBuffer Tests
@@ -286,6 +283,39 @@ class NitroSseTests: XCTestCase {
         XCTAssertEqual(flushedCount, 1, "Should flush immediately when batching is disabled")
     }
 
+    func testEventBufferBatchingAndOverflowBranching() {
+        let buffer = SseEventBuffer()
+        let dispatcher = MockSseDispatcher()
+        var flushedBatches: [[SseEvent]] = []
+        
+        // When batchingIntervalMs <= 0, buffer flushes immediately and does not increment bufferOverflowCount
+        buffer.configure(batchingIntervalMs: 0, maxBufferSize: 2, dispatcher: dispatcher) { events in
+            flushedBatches.append(events)
+        }
+        
+        let mockEvent = SseEvent(type: .message, data: "test", parsedData: nil, id: "1", event: "message", message: nil, statusCode: 200, retry: nil, state: nil)
+        buffer.push(mockEvent)
+        buffer.push(mockEvent)
+        buffer.push(mockEvent)
+        XCTAssertEqual(flushedBatches.count, 3)
+        XCTAssertEqual(buffer.bufferOverflowCount, 0, "No batching should never count as buffer overflow")
+        
+        // When batchingIntervalMs > 0, reaching maxBufferSize increments bufferOverflowCount
+        let batchedBuffer = SseEventBuffer()
+        var batchedFlushes: [[SseEvent]] = []
+        batchedBuffer.configure(batchingIntervalMs: 50, maxBufferSize: 2, dispatcher: dispatcher) { events in
+            batchedFlushes.append(events)
+        }
+        batchedBuffer.push(mockEvent)
+        XCTAssertEqual(batchedFlushes.count, 0)
+        XCTAssertEqual(batchedBuffer.bufferOverflowCount, 0)
+        
+        batchedBuffer.push(mockEvent) // Reaches maxBufferSize (2)
+        XCTAssertEqual(batchedFlushes.count, 1)
+        XCTAssertEqual(batchedBuffer.bufferOverflowCount, 1)
+        XCTAssertEqual(batchedBuffer.eventsBuffered, 0)
+    }
+
     // MARK: - SseNetworkMonitor Tests
 
     func testNetworkMonitorStartStop() {
@@ -302,6 +332,22 @@ class NitroSseTests: XCTestCase {
         wait(for: [expectation], timeout: 2.0)
         
         monitor.stop()
+    }
+
+    func testNetworkMonitorDropsStaleGenerationOnStop() {
+        let dispatcher = MockSseDispatcher()
+        var callbackCount = 0
+        
+        let monitor = SseNetworkMonitor(dispatcher: dispatcher) { _, _, _ in
+            callbackCount += 1
+        }
+        
+        monitor.start()
+        monitor.stop()
+        
+        // Even if dispatcher has pending blocks, monitor.stop() incremented generation, so stale callbacks don't fire onChange
+        dispatcher.executeAllPendingBlocks()
+        XCTAssertEqual(callbackCount, 0, "Stale network callbacks after stop must be dropped")
     }
 
     // MARK: - SseLifecycleManager Tests
@@ -346,6 +392,24 @@ class NitroSseTests: XCTestCase {
         manager.cleanupBackgroundTask()
         
         // Verifies calling cleanup repeated times is idempotent and safe.
+        manager.cleanupBackgroundTask()
+    }
+
+    func testLifecycleManagerRapidSequentialKeepAliveCallsDoNotLeak() {
+        let dispatcher = MockSseDispatcher()
+        let manager = SseLifecycleManager(dispatcher: dispatcher, onBackground: {}, onForeground: {})
+        
+        // Rapid sequential calls before main thread blocks execute
+        manager.beginBackgroundKeepAlive {}
+        manager.beginBackgroundKeepAlive {}
+        
+        let exp = XCTestExpectation(description: "Wait for main queue task creation")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            dispatcher.executeAllPendingBlocks()
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 1.0)
+        
         manager.cleanupBackgroundTask()
     }
 #endif
