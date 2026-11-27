@@ -536,17 +536,22 @@ class NitroSseTests: XCTestCase {
             }
         }
 
+        let queue = DispatchQueue(label: "test.connection.no_reconnect")
+        let key = DispatchSpecificKey<Void>()
+        queue.setSpecific(key: key, value: ())
+        let dispatcher = SseDispatchQueueDispatcher(queue: queue, queueKey: key)
+
         let eventSource = SseConnectionHandler.createEventSource(
             url: URL(string: config.url)!,
             config: config,
             lastProcessedId: nil,
             delegate: delegate,
             attemptVersion: 1,
-            dispatcher: MockSseDispatcher()
+            dispatcher: dispatcher
         )
         defer { eventSource.stop() }
 
-        wait(for: [firstFailure], timeout: 1.0)
+        wait(for: [firstFailure], timeout: 5.0)
         wait(for: [duplicateFailure], timeout: 2.5)
         XCTAssertEqual(delegate.failureCount, 1)
     }
