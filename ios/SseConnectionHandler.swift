@@ -189,7 +189,7 @@ extension RealSseEventSource: URLSessionDataDelegate {
             return
         }
 
-        if httpResponse.expectedContentLength == 0 {
+        if statusCode < 400 || httpResponse.expectedContentLength == 0 {
             let error = NSError(
                 domain: "NitroSse",
                 code: statusCode,

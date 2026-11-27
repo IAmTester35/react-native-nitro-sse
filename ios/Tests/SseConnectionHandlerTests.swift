@@ -1008,4 +1008,163 @@ final class SseConnectionHandlerTests: XCTestCase {
         XCTAssertEqual(nsError?.domain, "NitroSse")
         XCTAssertEqual(nsError?.code, 500)
     }
+
+    func testBoundedErrorBodyCapturedOnHttp403WithUtf8Json() {
+        let config = createTestConfig()
+        let delegate = TestDelegate()
+        let dispatcher = MockSseDispatcher()
+
+        let failExp = expectation(description: "Fail connection on HTTP 403 with UTF-8 JSON body")
+        delegate.onFail = { failExp.fulfill() }
+
+        let jsonError = "{\"code\":\"input_rejected\",\"message\":\"输入包含违规内容\",\"risk\":100}"
+        MockURLProtocol.setHandler { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 403,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            let chunk = jsonError.data(using: .utf8)!
+            return (response, [chunk], 0.0)
+        }
+
+        let source = SseConnectionHandler.createEventSource(
+            url: URL(string: config.url)!,
+            config: config,
+            lastProcessedId: nil,
+            delegate: delegate,
+            attemptVersion: 1,
+            dispatcher: dispatcher,
+            protocolClasses: [MockURLProtocol.self]
+        )
+        defer { source.stop() }
+
+        wait(for: [failExp], timeout: 2.0)
+
+        XCTAssertTrue(delegate.didFailCalled)
+        XCTAssertEqual(delegate.failedResponse?.statusCode, 403)
+        XCTAssertEqual(delegate.failedErrorBody, jsonError)
+    }
+
+    func testErrorBodyBoundarySizesUtf8EmptyAndLessThan400() {
+        func fetchErrorBody(statusCode: Int, data: Data, headers: [String: String] = [:]) -> String? {
+            let config = createTestConfig()
+            let delegate = TestDelegate()
+            let dispatcher = MockSseDispatcher()
+            let failExp = expectation(description: "Fail \(statusCode)")
+            delegate.onFail = { failExp.fulfill() }
+
+            MockURLProtocol.setHandler { request in
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: statusCode,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: headers
+                )!
+                let chunks = data.isEmpty ? [] : [data]
+                return (response, chunks, 0.0)
+            }
+
+            let source = SseConnectionHandler.createEventSource(
+                url: URL(string: config.url)!,
+                config: config,
+                lastProcessedId: nil,
+                delegate: delegate,
+                attemptVersion: 1,
+                dispatcher: dispatcher,
+                protocolClasses: [MockURLProtocol.self]
+            )
+            defer { source.stop() }
+            wait(for: [failExp], timeout: 2.0)
+            XCTAssertTrue(delegate.didFailCalled)
+            return delegate.failedErrorBody
+        }
+
+        // Exact 8192 bytes intact; 8193 bytes truncated to 8192
+        let exact8192 = String(repeating: "A", count: 8192)
+        XCTAssertEqual(fetchErrorBody(statusCode: 403, data: exact8192.data(using: .utf8)!), exact8192)
+
+        let over8193 = String(repeating: "A", count: 8193)
+        let captured8193 = fetchErrorBody(statusCode: 403, data: over8193.data(using: .utf8)!)
+        XCTAssertEqual(captured8193?.utf8.count, 8192)
+
+        // Multi-byte UTF-8 boundary: 3-byte Chinese ('中') & 4-byte emoji ('😀') straddling 8192
+        let exactChinese = String(repeating: "A", count: 8189) + "中"
+        XCTAssertEqual(exactChinese.utf8.count, 8192)
+        XCTAssertEqual(fetchErrorBody(statusCode: 403, data: exactChinese.data(using: .utf8)!), exactChinese)
+
+        let straddleChinese = String(repeating: "A", count: 8190) + "中"
+        XCTAssertEqual(straddleChinese.utf8.count, 8193)
+        XCTAssertEqual(
+            fetchErrorBody(statusCode: 403, data: straddleChinese.data(using: .utf8)!),
+            String(repeating: "A", count: 8190) + "\u{FFFD}"
+        )
+
+        let straddleEmoji = String(repeating: "A", count: 8190) + "😀"
+        XCTAssertEqual(straddleEmoji.utf8.count, 8194)
+        XCTAssertEqual(
+            fetchErrorBody(statusCode: 403, data: straddleEmoji.data(using: .utf8)!),
+            String(repeating: "A", count: 8190) + "\u{FFFD}"
+        )
+
+        // Empty body via Content-Length: 0 and chunked/unspecified Content-Length -> nil
+        XCTAssertNil(fetchErrorBody(statusCode: 403, data: Data(), headers: ["Content-Length": "0"]))
+        XCTAssertNil(fetchErrorBody(statusCode: 403, data: Data()))
+
+        // Status < 400 (e.g. 201 Created) must not collect error body
+        XCTAssertNil(fetchErrorBody(statusCode: 201, data: "created".data(using: .utf8)!))
+    }
+
+    func testStalled403ErrorBodyPreservesPartialBodyAndStopMidReadSuppressesFailure() {
+        let delegate = TestDelegate()
+        let dispatcher = MockSseDispatcher()
+        let url = URL(string: TEST_URL)!
+        let source = RealSseEventSource(
+            delegate: delegate,
+            attemptVersion: 1,
+            dispatcher: dispatcher
+        )
+        let sessionConfig = URLSessionConfiguration.ephemeral
+        let dummySession = URLSession(configuration: sessionConfig)
+        let dummyTask = dummySession.dataTask(with: url)
+        defer {
+            source.stop()
+            dummySession.invalidateAndCancel()
+        }
+
+        source.start(request: URLRequest(url: url), sessionConfig: sessionConfig, connectionTimeout: 15.0)
+
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 403,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        var disposition: URLSession.ResponseDisposition?
+        source.urlSession(dummySession, dataTask: dummyTask, didReceive: response) { disposition = $0 }
+        XCTAssertEqual(disposition, .allow)
+
+        source.urlSession(dummySession, dataTask: dummyTask, didReceive: "{\"partial\":".data(using: .utf8)!)
+        dispatcher.executeDelayedBlocks()
+
+        XCTAssertTrue(delegate.didFailCalled)
+        XCTAssertEqual(delegate.failedResponse?.statusCode, 403)
+        XCTAssertEqual(delegate.failedErrorBody, "{\"partial\":")
+
+        // stop() mid-read of 403 body suppresses connectionDidFail
+        let stopDelegate = TestDelegate()
+        let stopSource = RealSseEventSource(
+            delegate: stopDelegate,
+            attemptVersion: 1,
+            dispatcher: dispatcher
+        )
+        let stopTask = dummySession.dataTask(with: url)
+        stopSource.start(request: URLRequest(url: url), sessionConfig: sessionConfig, connectionTimeout: 15.0)
+        stopSource.urlSession(dummySession, dataTask: stopTask, didReceive: response) { _ in }
+        stopSource.urlSession(dummySession, dataTask: stopTask, didReceive: "{\"partial\":".data(using: .utf8)!)
+        stopSource.stop()
+        dispatcher.executeDelayedBlocks()
+        XCTAssertFalse(stopDelegate.didFailCalled)
+    }
 }
