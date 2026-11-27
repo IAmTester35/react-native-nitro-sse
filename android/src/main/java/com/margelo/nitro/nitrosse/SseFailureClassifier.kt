@@ -54,20 +54,36 @@ private fun isTimeoutThrowable(t: Throwable?): Boolean =
         t is InterruptedIOException ||
         t?.message?.contains("timeout", ignoreCase = true) == true
 
+private const val MAX_ERROR_MESSAGE_BODY_CHARS = 256
+
+private fun formatErrorBodyPreview(errorBody: String?): String? {
+    val trimmed = errorBody?.trim()?.ifEmpty { null } ?: return null
+    return if (trimmed.length > MAX_ERROR_MESSAGE_BODY_CHARS) {
+        "${trimmed.take(MAX_ERROR_MESSAGE_BODY_CHARS)}…"
+    } else {
+        trimmed
+    }
+}
+
 private fun formatTransientErrorMessage(
     t: Throwable?,
     statusCode: Int,
     reportedStatusCode: Double?,
     errorBody: String?
-): String = when {
-    statusCode >= SseHttpStatus.INTERNAL_ERROR && !errorBody.isNullOrBlank() ->
-        "Server Error ($statusCode): ${errorBody.trim()}"
-    else ->
-        t?.message ?: if (reportedStatusCode != null) {
+): String {
+    val bodyPreview = if (statusCode >= SseHttpStatus.INTERNAL_ERROR) {
+        formatErrorBodyPreview(errorBody)
+    } else {
+        null
+    }
+    return when {
+        bodyPreview != null -> "Server Error ($statusCode): $bodyPreview"
+        else -> t?.message ?: if (reportedStatusCode != null) {
             "Link lost (${reportedStatusCode.toInt()})"
         } else {
             "Link lost"
         }
+    }
 }
 
 internal sealed class SseFailureDecision {
@@ -149,9 +165,9 @@ internal object SseFailureClassifier {
                 // Parser resource violations (line length, event data size) are fatal and must not reconnect
                 SseFailureDecision.FailAndStop(context.throwable.message, statusDouble)
             isFatalClientError -> {
-                val sanitizedBody = context.errorBody?.trim()?.ifEmpty { null }
-                val finalMessage = if (sanitizedBody != null) {
-                    "Fatal Error ($statusCode): $sanitizedBody"
+                val bodyPreview = formatErrorBodyPreview(context.errorBody)
+                val finalMessage = if (bodyPreview != null) {
+                    "Fatal Error ($statusCode): $bodyPreview"
                 } else {
                     "Fatal Error ($statusCode). Stopping."
                 }

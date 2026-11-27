@@ -1718,13 +1718,24 @@ describe('useNitroSse Hook Tests', () => {
           type: 'error',
           message: 'Network lost',
           statusCode: 503,
+          data: '{"secret":"sensitive-body"}',
         };
         nativeCallback([errEvent]);
         nativeCallback([errEvent]);
         expect(warnSpy).toHaveBeenCalledTimes(1);
         expect(warnSpy).toHaveBeenCalledWith(
           expect.stringContaining('[useNitroSse] Unhandled SSE error:'),
-          errEvent
+          {
+            type: 'error',
+            statusCode: 503,
+            message: 'Network lost',
+            retry: undefined,
+            hasData: true,
+            dataLength: errEvent.data.length,
+          }
+        );
+        expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(
+          'sensitive-body'
         );
         expect(errorSpy).not.toHaveBeenCalled();
 

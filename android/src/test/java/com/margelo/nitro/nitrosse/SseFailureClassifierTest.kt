@@ -157,5 +157,31 @@ class SseFailureClassifierTest {
             SseFailureDecision.TransientRetry("Timed out", null, true),
             SseFailureClassifier.classify(ctxTimeout, policy)
         )
+
+        // Retry-After: 0 with 500ms jitter must still enforce 1000ms minimum floor
+        val minFloorPolicy = SseFailurePolicyInput(
+            hasInterceptor = false,
+            nextAuthAttempt = 1,
+            maxAuthRetries = 3,
+            maxRetryIntervalMs = 10_000L,
+            retryAfterJitterMs = 500L
+        )
+        val ctx429Zero = SseFailureClassifier.buildContext(
+            null,
+            makeResponse(429, mapOf("Retry-After" to "0")),
+            null
+        )
+        assertEquals(
+            SseFailureDecision.RetryAfter("Retry-After received: 1s", 429.0, 1_000L),
+            SseFailureClassifier.classify(ctx429Zero, minFloorPolicy)
+        )
+
+        // Large 400/500 body is truncated to 256 chars in message preview
+        val longBody = "A".repeat(400)
+        val ctxLong400 = SseFailureClassifier.buildContext(null, makeResponse(400), longBody)
+        assertEquals(
+            SseFailureDecision.FailAndStop("Fatal Error (400): ${"A".repeat(256)}…", 400.0),
+            SseFailureClassifier.classify(ctxLong400, policy)
+        )
     }
 }

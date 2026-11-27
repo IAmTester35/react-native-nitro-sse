@@ -4,6 +4,18 @@ import NitroModules
 
 class NitroSseCoordinatorTests: XCTestCase {
     private let TEST_URL = "http://localhost:33333/events"
+
+    override func tearDown() {
+        MockURLProtocol.reset()
+        super.tearDown()
+    }
+
+    private func makeRealDispatcher() -> SseDispatchQueueDispatcher {
+        let queue = DispatchQueue(label: "com.margelo.nitro.sse.test.\(UUID().uuidString)")
+        let key = DispatchSpecificKey<Void>()
+        queue.setSpecific(key: key, value: ())
+        return SseDispatchQueueDispatcher(queue: queue, queueKey: key)
+    }
     
     private func createMockConfig(maxReconnectAttempts: Double = 2) -> SseConfig {
         return SseConfig(
@@ -854,7 +866,11 @@ class NitroSseCoordinatorTests: XCTestCase {
         
         XCTAssertFalse(sse.isConnected())
         XCTAssertEqual(try! sse.getState(), .failed)
-        XCTAssertTrue(emittedEvents.contains { $0.type == .error && $0.message == "Fatal Error (400): \(jsonErrorBody)" })
+        XCTAssertTrue(emittedEvents.contains {
+            $0.type == .error &&
+                $0.message == "Fatal Error (400): \(jsonErrorBody)" &&
+                $0.data == jsonErrorBody
+        })
     }
 
     func testCoordinatorMasksHtmlErrorBody() {
@@ -1629,6 +1645,348 @@ class NitroSseCoordinatorTests: XCTestCase {
         XCTAssertEqual(try! sse.getStats().connectionAttempts, 0, "Interceptor resolution after stop() must not establish a connection")
         XCTAssertFalse(sse.isConnected())
         XCTAssertEqual(try! sse.getState(), .closed)
+    }
+
+    func testCoordinatorPreservesErrorBodyDataOnHttp403WithoutInterceptor() {
+        let dispatcher = MockSseDispatcher()
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig().copyWith(batchingIntervalMs: 0.0)
+
+        var emittedEvents: [SseEvent] = []
+        try! sse.setup(config: config) { events in
+            emittedEvents.append(contentsOf: events)
+        }
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+
+        let error = NSError(domain: "NitroSse", code: 403, userInfo: nil)
+        let response = HTTPURLResponse(
+            url: URL(string: TEST_URL)!,
+            statusCode: 403,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )
+        let jsonErrorBody = "{\"code\":\"input_rejected\",\"message\":\"输入包含违规内容\",\"risk\":100}"
+
+        sse.connectionDidFail(
+            error: error,
+            response: response,
+            errorBody: jsonErrorBody,
+            attemptVersion: sse.connectionAttemptVersion
+        )
+        dispatcher.executeAllPendingBlocks()
+        sse.flush()
+
+        XCTAssertFalse(sse.isConnected())
+        XCTAssertEqual(try! sse.getState(), .failed)
+        XCTAssertEqual(emittedEvents.map { $0.type }, [.state, .error, .state])
+        let errorEvent = emittedEvents.first { $0.type == .error }
+        XCTAssertNotNil(errorEvent)
+        XCTAssertEqual(errorEvent?.statusCode, 403)
+        XCTAssertEqual(errorEvent?.message, "Auth Error (403) - No interceptor provided. Stopping.")
+        XCTAssertEqual(errorEvent?.data, jsonErrorBody)
+        XCTAssertNil(errorEvent?.parsedData)
+    }
+
+    func testCoordinatorPreservesErrorBodyDataOnHttp403AuthRetryAndLimitReached() {
+        let jsonErrorBody = "{\"code\":\"forbidden\",\"message\":\"访问受限\"}"
+        var authHeadersReceived: [String] = []
+        MockURLProtocol.setHandler { request in
+            authHeadersReceived.append(request.value(forHTTPHeaderField: "Authorization") ?? "")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 403,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, [jsonErrorBody.data(using: .utf8)!], 0.0)
+        }
+
+        let sse = NitroSse(dispatcher: makeRealDispatcher(), protocolClasses: [MockURLProtocol.self])
+        let config = createMockConfig().copyWith(
+            batchingIntervalMs: 0.0,
+            retryIntervalMs: 1000.0,
+            jitterFactor: 0.0,
+            maxAuthRetries: 1
+        )
+        var interceptorCallCount = 0
+        let interceptor = { () -> Promise<Promise<Dictionary<String, String>>> in
+            interceptorCallCount += 1
+            let idx = interceptorCallCount
+            return Promise<Promise<Dictionary<String, String>>>.async {
+                return Promise<Dictionary<String, String>>.async { ["Authorization": "Bearer fresh-\(idx)"] }
+            }
+        }
+
+        let failedExp = expectation(description: "Auth retries exhaust via real backoff and interceptor")
+        var emittedEvents: [SseEvent] = []
+        var didFulfill = false
+        let lock = NSLock()
+        try! sse.setup(config: config, onEvent: { events in
+            lock.lock()
+            emittedEvents.append(contentsOf: events)
+            let shouldFulfill = !didFulfill && emittedEvents.contains { $0.type == .state && $0.state == .failed }
+            if shouldFulfill { didFulfill = true }
+            lock.unlock()
+            if shouldFulfill {
+                failedExp.fulfill()
+            }
+        }, onBeforeRequest: interceptor)
+        try! sse.start()
+
+        wait(for: [failedExp], timeout: 5.0)
+        XCTAssertEqual(try! sse.getState(), .failed)
+        XCTAssertEqual(authHeadersReceived, ["Bearer fresh-1", "Bearer fresh-2"])
+
+        let errorEvents = emittedEvents.filter { $0.type == .error }
+        XCTAssertEqual(errorEvents.count, 2)
+        XCTAssertEqual(errorEvents[0].statusCode, 403)
+        XCTAssertEqual(errorEvents[0].message, "Auth Error (403) - Retry 1/1. Refreshing token...")
+        XCTAssertEqual(errorEvents[0].data, jsonErrorBody)
+        XCTAssertNil(errorEvents[0].parsedData)
+        XCTAssertEqual(errorEvents[1].statusCode, 403)
+        XCTAssertEqual(errorEvents[1].message, "Auth Error (403) - Retry limit reached (1). Stopping.")
+        XCTAssertEqual(errorEvents[1].data, jsonErrorBody)
+        XCTAssertNil(errorEvents[1].parsedData)
+        sse.dispose()
+    }
+
+    func testCoordinatorPreservesErrorBodyDataMessagesRetryAndOrderAcrossStatuses() {
+        let dispatcher = MockSseDispatcher()
+        dispatcher.executeImmediately = true
+        let sse = NitroSse(dispatcher: dispatcher)
+        let config = createMockConfig(maxReconnectAttempts: 10).copyWith(batchingIntervalMs: 0.0, autoParseJSON: true)
+        let interceptor = { () -> Promise<Promise<Dictionary<String, String>>> in
+            return Promise<Promise<Dictionary<String, String>>>.async {
+                return Promise<Dictionary<String, String>>.async { ["Authorization": "Bearer ok"] }
+            }
+        }
+
+        var emittedEvents: [SseEvent] = []
+        try! sse.setup(config: config, onEvent: { events in
+            emittedEvents.append(contentsOf: events)
+        }, onBeforeRequest: interceptor)
+        try! sse.start()
+        dispatcher.executeAllPendingBlocks()
+
+        // 1. 401 Auth Retry
+        let resp401 = HTTPURLResponse(url: URL(string: TEST_URL)!, statusCode: 401, httpVersion: "HTTP/1.1", headerFields: nil)
+        sse.connectionDidFail(error: NSError(domain: "NitroSse", code: 401), response: resp401, errorBody: "{\"error\":\"unauth\"}", attemptVersion: sse.connectionAttemptVersion)
+
+        // 2. 408 Request Timeout
+        let resp408 = HTTPURLResponse(url: URL(string: TEST_URL)!, statusCode: 408, httpVersion: "HTTP/1.1", headerFields: nil)
+        sse.connectionDidFail(error: NSError(domain: "NitroSse", code: 408, userInfo: [NSLocalizedDescriptionKey: "HTTP 408"]), response: resp408, errorBody: "timeout-body", attemptVersion: sse.connectionAttemptVersion)
+
+        // 3. 429 with Retry-After
+        let resp429Ra = HTTPURLResponse(url: URL(string: TEST_URL)!, statusCode: 429, httpVersion: "HTTP/1.1", headerFields: ["Retry-After": "2"])
+        sse.connectionDidFail(error: NSError(domain: "NitroSse", code: 429), response: resp429Ra, errorBody: "{\"error\":\"retry_after\"}", attemptVersion: sse.connectionAttemptVersion)
+        let delayAfter429 = try! sse.getStats().lastReconnectDelayMs ?? 0
+
+        // 4. 429 without Retry-After
+        let resp429 = HTTPURLResponse(url: URL(string: TEST_URL)!, statusCode: 429, httpVersion: "HTTP/1.1", headerFields: nil)
+        sse.connectionDidFail(error: NSError(domain: "NitroSse", code: 429), response: resp429, errorBody: "{\"error\":\"rate_limit\"}", attemptVersion: sse.connectionAttemptVersion)
+
+        // 5. 500 Server Error
+        let resp500 = HTTPURLResponse(url: URL(string: TEST_URL)!, statusCode: 500, httpVersion: "HTTP/1.1", headerFields: nil)
+        sse.connectionDidFail(error: NSError(domain: "NitroSse", code: 500), response: resp500, errorBody: "Gateway Down", attemptVersion: sse.connectionAttemptVersion)
+
+        // 6. 503 with Retry-After
+        let resp503Ra = HTTPURLResponse(url: URL(string: TEST_URL)!, statusCode: 503, httpVersion: "HTTP/1.1", headerFields: ["Retry-After": "3"])
+        sse.connectionDidFail(error: NSError(domain: "NitroSse", code: 503), response: resp503Ra, errorBody: "<html>maintenance</html>", attemptVersion: sse.connectionAttemptVersion)
+
+        // 7. 503 without Retry-After
+        let resp503 = HTTPURLResponse(url: URL(string: TEST_URL)!, statusCode: 503, httpVersion: "HTTP/1.1", headerFields: nil)
+        sse.connectionDidFail(error: NSError(domain: "NitroSse", code: 503), response: resp503, errorBody: "Overloaded", attemptVersion: sse.connectionAttemptVersion)
+
+        // 8. Empty error body normalizes to nil
+        let resp403Empty = HTTPURLResponse(url: URL(string: TEST_URL)!, statusCode: 403, httpVersion: "HTTP/1.1", headerFields: nil)
+        sse.connectionDidFail(error: NSError(domain: "NitroSse", code: 403), response: resp403Empty, errorBody: "", attemptVersion: sse.connectionAttemptVersion)
+        sse.flush()
+
+        let errorEvents = emittedEvents.filter { $0.type == .error }
+        XCTAssertEqual(errorEvents.count, 8)
+
+        XCTAssertEqual(errorEvents[0].statusCode, 401)
+        XCTAssertEqual(errorEvents[0].message, "Auth Error (401) - Retry 1/3. Refreshing token...")
+        XCTAssertEqual(errorEvents[0].data, "{\"error\":\"unauth\"}")
+        XCTAssertNil(errorEvents[0].parsedData)
+
+        XCTAssertEqual(errorEvents[1].statusCode, 408)
+        XCTAssertEqual(errorEvents[1].message, "HTTP 408")
+        XCTAssertEqual(errorEvents[1].data, "timeout-body")
+        XCTAssertNil(errorEvents[1].parsedData)
+
+        XCTAssertEqual(errorEvents[2].statusCode, 429)
+        XCTAssertGreaterThanOrEqual(errorEvents[2].retry ?? 0, 2500)
+        XCTAssertLessThanOrEqual(errorEvents[2].retry ?? 0, 3500)
+        XCTAssertEqual(errorEvents[2].retry ?? 0, delayAfter429, accuracy: 0.01)
+        XCTAssertTrue(errorEvents[2].message?.hasPrefix("Retry-After received:") == true)
+        XCTAssertEqual(errorEvents[2].data, "{\"error\":\"retry_after\"}")
+        XCTAssertNil(errorEvents[2].parsedData)
+
+        XCTAssertEqual(errorEvents[3].statusCode, 429)
+        XCTAssertEqual(errorEvents[3].message, "Rate Limited (429). Retrying with backoff...")
+        XCTAssertEqual(errorEvents[3].data, "{\"error\":\"rate_limit\"}")
+        XCTAssertNil(errorEvents[3].parsedData)
+
+        XCTAssertEqual(errorEvents[4].statusCode, 500)
+        XCTAssertEqual(errorEvents[4].message, "Server Error (500): Gateway Down")
+        XCTAssertEqual(errorEvents[4].data, "Gateway Down")
+        XCTAssertNil(errorEvents[4].parsedData)
+
+        XCTAssertEqual(errorEvents[5].statusCode, 503)
+        XCTAssertGreaterThanOrEqual(errorEvents[5].retry ?? 0, 3500)
+        XCTAssertLessThanOrEqual(errorEvents[5].retry ?? 0, 4500)
+        XCTAssertEqual(errorEvents[5].data, "<html>maintenance</html>")
+        XCTAssertNil(errorEvents[5].parsedData)
+
+        XCTAssertEqual(errorEvents[6].statusCode, 503)
+        XCTAssertEqual(errorEvents[6].message, "Server Error (503): Overloaded")
+        XCTAssertEqual(errorEvents[6].data, "Overloaded")
+        XCTAssertNil(errorEvents[6].parsedData)
+
+        XCTAssertEqual(errorEvents[7].statusCode, 403)
+        XCTAssertNil(errorEvents[7].data)
+        XCTAssertNil(errorEvents[7].parsedData)
+
+        sse.stop()
+    }
+
+    func testEndToEndMockURLProtocolHttp403Utf8JsonAndAuthRecoveryAndStopMidBody() {
+        // 1. E2E: HTTP 403 UTF-8 JSON without interceptor reaches JS callback
+        let json403 = "{\"code\":\"input_rejected\",\"message\":\"输入包含违规内容\",\"risk\":100}"
+        MockURLProtocol.setHandler { request in
+            let resp = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 403,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (resp, [json403.data(using: .utf8)!], 0.0)
+        }
+
+        let sse1 = NitroSse(dispatcher: makeRealDispatcher(), protocolClasses: [MockURLProtocol.self])
+        var events1: [SseEvent] = []
+        let failExp1 = expectation(description: "E2E 403 fails")
+        var didFulfill1 = false
+        let lock1 = NSLock()
+        try! sse1.setup(config: createMockConfig().copyWith(batchingIntervalMs: 0.0, autoParseJSON: true)) { events in
+            lock1.lock()
+            events1.append(contentsOf: events)
+            let done = !didFulfill1 && events1.contains { $0.type == .state && $0.state == .failed }
+            if done { didFulfill1 = true }
+            lock1.unlock()
+            if done { failExp1.fulfill() }
+        }
+        try! sse1.start()
+        wait(for: [failExp1], timeout: 3.0)
+        XCTAssertEqual(events1.map { $0.type }, [.state, .error, .state])
+        let err1 = events1.first { $0.type == .error }
+        XCTAssertEqual(err1?.statusCode, 403)
+        XCTAssertEqual(err1?.message, "Auth Error (403) - No interceptor provided. Stopping.")
+        XCTAssertEqual(err1?.data, json403)
+        XCTAssertNil(err1?.parsedData)
+        sse1.dispose()
+
+        // 2. E2E: 403 -> interceptor refreshes token -> 200 stream opens -> consecutiveAuthErrors resets
+        let expiredBody = "{\"code\":\"token_expired\"}"
+        var attempt = 0
+        var authHeaders: [String] = []
+        MockURLProtocol.setHandler { request in
+            attempt += 1
+            authHeaders.append(request.value(forHTTPHeaderField: "Authorization") ?? "")
+            if attempt == 1 || attempt >= 3 {
+                let resp = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 403,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "application/json"]
+                )!
+                return (resp, [expiredBody.data(using: .utf8)!], 0.0)
+            }
+            let resp200 = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            return (resp200, ["data: recovered\n\n".data(using: .utf8)!], 0.0)
+        }
+
+        let sse2 = NitroSse(dispatcher: makeRealDispatcher(), protocolClasses: [MockURLProtocol.self])
+        var events2: [SseEvent] = []
+        let second403Exp = expectation(description: "Recovered then hit 403 again starting at Retry 1/1")
+        var didFulfill2 = false
+        let lock2 = NSLock()
+        var tokenIdx = 0
+        let interceptor = { () -> Promise<Promise<Dictionary<String, String>>> in
+            tokenIdx += 1
+            let idx = tokenIdx
+            return Promise<Promise<Dictionary<String, String>>>.async {
+                return Promise<Dictionary<String, String>>.async { ["Authorization": "Bearer token-\(idx)"] }
+            }
+        }
+        try! sse2.setup(
+            config: createMockConfig(maxReconnectAttempts: 5).copyWith(
+                batchingIntervalMs: 0.0,
+                retryIntervalMs: 1000.0,
+                jitterFactor: 0.0,
+                maxAuthRetries: 1
+            ),
+            onEvent: { events in
+                lock2.lock()
+                events2.append(contentsOf: events)
+                let errorCount = events2.filter { $0.type == .error }.count
+                let shouldFulfill = !didFulfill2 && errorCount >= 2
+                if shouldFulfill { didFulfill2 = true }
+                lock2.unlock()
+                if shouldFulfill {
+                    second403Exp.fulfill()
+                }
+            },
+            onBeforeRequest: interceptor
+        )
+        try! sse2.start()
+        wait(for: [second403Exp], timeout: 5.0)
+
+        XCTAssertEqual(authHeaders.prefix(2), ["Bearer token-1", "Bearer token-2"])
+        XCTAssertTrue(events2.contains { $0.type == .open })
+        XCTAssertEqual(events2.first { $0.type == .message }?.data, "recovered")
+        let errs2 = events2.filter { $0.type == .error }
+        XCTAssertEqual(errs2[0].message, "Auth Error (403) - Retry 1/1. Refreshing token...")
+        XCTAssertEqual(errs2[0].data, expiredBody)
+        XCTAssertEqual(errs2[1].message, "Auth Error (403) - Retry 1/1. Refreshing token...")
+        XCTAssertEqual(errs2[1].data, expiredBody)
+        sse2.dispose()
+
+        // 3. E2E: stop() mid-read of delayed 403 response suppresses error event
+        MockURLProtocol.setHandler { request in
+            let resp = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 403,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (resp, ["{\"partial\":1}".data(using: .utf8)!], 0.5)
+        }
+        let sse3 = NitroSse(dispatcher: makeRealDispatcher(), protocolClasses: [MockURLProtocol.self])
+        var events3: [SseEvent] = []
+        let lock3 = NSLock()
+        try! sse3.setup(config: createMockConfig().copyWith(batchingIntervalMs: 0.0)) { events in
+            lock3.lock()
+            events3.append(contentsOf: events)
+            lock3.unlock()
+        }
+        try! sse3.start()
+        Thread.sleep(forTimeInterval: 0.05)
+        sse3.stop()
+        Thread.sleep(forTimeInterval: 0.1)
+        XCTAssertEqual(try! sse3.getState(), .closed)
+        lock3.lock()
+        let hadError3 = events3.contains { $0.type == .error }
+        lock3.unlock()
+        XCTAssertFalse(hadError3)
+        sse3.dispose()
     }
 }
 

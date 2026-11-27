@@ -188,26 +188,26 @@ sse.start();
 
 `SseClientOptions` is the configuration object accepted by `setup()` and `useNitroSse()`. It extends the native data struct `SseConfig` with dynamic client interceptors:
 
-| Parameter              | Type                                    | Default  | Description                                                                                        |
-| :--------------------- | :-------------------------------------- | :------- | :------------------------------------------------------------------------------------------------- |
-| `url`                  | `string`                                | —        | **Required**. Target SSE endpoint URL.                                                             |
-| `method`               | `'get' \| 'post'`                       | `'get'`  | HTTP method.                                                                                       |
-| `headers`              | `Record<string, string>`                | `{}`     | Request headers.                                                                                   |
-| `body`                 | `string`                                | —        | Body for POST requests.                                                                            |
-| `backgroundExecution`  | `boolean`                               | `false`  | (iOS) Continues streaming while app is in background.                                              |
-| `batchingIntervalMs`   | `number`                                | `0`      | Batching delay in ms (`0` dispatches immediately).                                                 |
-| `maxBufferSize`        | `number`                                | `1000`   | Max buffer size before forcing event dispatch.                                                     |
-| `connectionTimeoutMs`  | `number`                                | `15000`  | Socket connection timeout in ms.                                                                   |
-| `readTimeoutMs`        | `number`                                | `300000` | Inactivity timeout in ms before reconnecting.                                                      |
-| `retryIntervalMs`      | `number`                                | `1000`   | Base reconnect delay in ms. All platforms (iOS, Android, Web) enforce a `1000ms` minimum effective floor (including server `retry:` directives). |
-| `maxRetryIntervalMs`   | `number`                                | `30000`  | Maximum exponential backoff delay in ms.                                                           |
-| `jitterFactor`         | `number`                                | `0.5`    | Jitter factor applied to reconnect delay (`0.0` to `1.0`).                                         |
-| `maxReconnectAttempts` | `number`                                | `-1`     | Max reconnect retries (`-1` = infinite, `0` = disabled).                                           |
-| `maxAuthRetries`       | `number`                                | `3`      | Max retry attempts for 401/403 responses using `onBeforeRequest`.                                  |
-| `autoParseJSON`        | `boolean`                               | `false`  | Parses JSON root objects (`'{...}'`) into `parsedData`. If `false`, use `data` and parse manually. |
-| `monitorNetwork`       | `boolean`                               | `true`   | Automatically pauses/resumes on network changes.                                                   |
-| `onBeforeRequest`      | `() => Promise<Record<string, string>>` | —        | Async hook to refresh headers prior to connection attempts.                                        |
-| `mock`                 | `SseMockConfig`                         | —        | Mock stream configuration (development only).                                                      |
+| Parameter              | Type                                    | Default  | Description                                                                                                                  |
+| :--------------------- | :-------------------------------------- | :------- | :--------------------------------------------------------------------------------------------------------------------------- |
+| `url`                  | `string`                                | —        | **Required**. Target SSE endpoint URL.                                                                                       |
+| `method`               | `'get' \| 'post'`                       | `'get'`  | HTTP method.                                                                                                                 |
+| `headers`              | `Record<string, string>`                | `{}`     | Request headers.                                                                                                             |
+| `body`                 | `string`                                | —        | Body for POST requests.                                                                                                      |
+| `backgroundExecution`  | `boolean`                               | `false`  | (iOS) Continues streaming while app is in background.                                                                        |
+| `batchingIntervalMs`   | `number`                                | `0`      | Batching delay in ms (`0` dispatches immediately).                                                                           |
+| `maxBufferSize`        | `number`                                | `1000`   | Max buffer size before forcing event dispatch.                                                                               |
+| `connectionTimeoutMs`  | `number`                                | `15000`  | Socket connection timeout in ms.                                                                                             |
+| `readTimeoutMs`        | `number`                                | `300000` | Inactivity timeout in ms before reconnecting.                                                                                |
+| `retryIntervalMs`      | `number`                                | `1000`   | Base reconnect delay in ms. All platforms enforce a `1000ms` minimum effective floor (including server `retry:` directives). |
+| `maxRetryIntervalMs`   | `number`                                | `30000`  | Maximum exponential backoff delay in ms.                                                                                     |
+| `jitterFactor`         | `number`                                | `0.5`    | Jitter factor applied to reconnect delay (`0.0` to `1.0`).                                                                   |
+| `maxReconnectAttempts` | `number`                                | `-1`     | Max reconnect retries (`-1` = infinite, `0` = disabled).                                                                     |
+| `maxAuthRetries`       | `number`                                | `3`      | Max retry attempts for 401/403 responses using `onBeforeRequest`.                                                            |
+| `autoParseJSON`        | `boolean`                               | `false`  | Parses JSON root objects (`'{...}'`) into `parsedData`. If `false`, use `data` and parse manually.                           |
+| `monitorNetwork`       | `boolean`                               | `true`   | Automatically pauses/resumes on network changes.                                                                             |
+| `onBeforeRequest`      | `() => Promise<Record<string, string>>` | —        | Async hook to refresh headers prior to connection attempts.                                                                  |
+| `mock`                 | `SseMockConfig`                         | —        | Mock stream configuration (development only).                                                                                |
 
 </details>
 
@@ -253,6 +253,29 @@ try {
 | `NitroSseValidationError`     | `INVALID_CONFIG` \| `INVALID_ARGUMENT` | Invalid argument or configuration parameter.                          |
 | `NitroSseStateError`          | `INVALID_STATE`                        | Method invoked in an invalid state (e.g. `start()` before `setup()`). |
 | `NitroSseDisposedError`       | `CLIENT_DISPOSED`                      | Method invoked on an already disposed client instance.                |
+
+### HTTP Error Response Bodies (`event.data`)
+
+When the server responds with an HTTP error (`statusCode >= 400`, including `401`/`403`/`408`/`429`/`503` and `4xx`/`5xx`), `error` events include the raw response body in `event.data` (up to **8192 UTF-8 bytes**, or `undefined` if the body is empty). `parsedData` is omitted on `error` events.
+
+- `event.data` is attached to **both retryable and terminal** HTTP error events so apps using `onBeforeRequest` can inspect rejection payloads immediately. Do not treat `event.data` alone as a terminal failure—check `sse.getState()` (or `onStateChange`) for `'reconnecting'` vs `'failed'`.
+- Payloads larger than 8192 UTF-8 bytes are truncated at the byte boundary, so always wrap `JSON.parse(event.data)` in `try/catch`.
+
+```ts
+sse.addEventListener('error', (event) => {
+  if (event.statusCode === 403 && event.data) {
+    try {
+      const payload = JSON.parse(event.data);
+      if (payload.code === 'input_rejected') {
+        sse.stop(); // Stop immediately instead of retrying auth
+        showAlert(payload.message);
+      }
+    } catch {
+      // Body was non-JSON (e.g. HTML) or truncated at 8192 bytes
+    }
+  }
+});
+```
 
 </details>
 

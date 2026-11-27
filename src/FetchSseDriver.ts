@@ -43,6 +43,18 @@ function isValidNonNegative(val: unknown): val is number {
 const DEFAULT_MAX_BUFFER_SIZE = 1000;
 /** Hard upper bound on buffered events, matching SseEventBuffer on Android (Kotlin) and iOS (Swift). */
 const HARD_MAX_BUFFER_SIZE = 10_000;
+/** Maximum UTF-8 bytes to read from HTTP error responses, matching native 8KB cap. */
+const MAX_ERROR_BODY_BYTES = 8192;
+/** Maximum characters of error body preview included in `event.message` (`event.data` retains the full 8KB body). */
+const MAX_ERROR_MESSAGE_BODY_CHARS = 256;
+
+function formatErrorBodyPreview(errorBody?: string): string | undefined {
+  const trimmed = errorBody?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > MAX_ERROR_MESSAGE_BODY_CHARS
+    ? `${trimmed.slice(0, MAX_ERROR_MESSAGE_BODY_CHARS)}…`
+    : trimmed;
+}
 
 function resolveMaxBufferSize(val: unknown): number {
   return typeof val === 'number' && Number.isFinite(val) && val > 0
@@ -156,6 +168,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
   private _activeReader?: ReadableStreamDefaultReader<Uint8Array>;
   private _activeParser?: SseEventParser;
   private _connectionTimer?: ReturnType<typeof setTimeout>;
+  private _errorBodyTimer?: ReturnType<typeof setTimeout>;
   private _readTimeoutTimer?: ReturnType<typeof setTimeout>;
   private _reconnectTimer?: ReturnType<typeof setTimeout>;
   private _batchTimer?: ReturnType<typeof setTimeout>;
@@ -471,13 +484,16 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     this._abortController = abortController;
 
     const connectionTimeoutMs = config.connectionTimeoutMs ?? 15000;
-    this._connectionTimer = setTimeout(() => {
-      this._connectionTimer = undefined;
-      if (attemptVersion === this._connectionAttemptVersion) {
-        this._disconnectReason = 'timeout';
-        abortController.abort();
-      }
-    }, connectionTimeoutMs);
+    const requestStartTime = Date.now();
+    if (connectionTimeoutMs > 0) {
+      this._connectionTimer = setTimeout(() => {
+        this._connectionTimer = undefined;
+        if (attemptVersion === this._connectionAttemptVersion) {
+          this._disconnectReason = 'timeout';
+          abortController.abort();
+        }
+      }, connectionTimeoutMs);
+    }
 
     const method = (config.method ?? 'get').toUpperCase();
     const fetchOptions: RequestInit = {
@@ -502,7 +518,10 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     try {
       response = await fetch(config.url, fetchOptions);
     } catch (err) {
-      clearTimeout(this._connectionTimer);
+      if (this._connectionTimer) {
+        clearTimeout(this._connectionTimer);
+        this._connectionTimer = undefined;
+      }
       if (this._isStale(attemptVersion)) return;
 
       const isAborted = abortController.signal.aborted;
@@ -521,35 +540,24 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
       return;
     }
 
-    clearTimeout(this._connectionTimer);
+    if (this._connectionTimer) {
+      clearTimeout(this._connectionTimer);
+      this._connectionTimer = undefined;
+    }
     if (this._isStale(attemptVersion)) return;
 
     const statusCode = response.status;
     this._lastStatusCode = statusCode;
 
     let errorBody: string | undefined;
-    if (
-      response.status >= 400 &&
-      response.status !== 401 &&
-      response.status !== 403 &&
-      response.status !== 408 &&
-      response.status !== 429 &&
-      response.status !== 503
-    ) {
-      const bodyTimeoutMs =
-        connectionTimeoutMs > 0 ? connectionTimeoutMs : 15000;
-      const bodyTimer = setTimeout(
-        () => abortController.abort(),
-        bodyTimeoutMs
+    if (statusCode >= 400) {
+      errorBody = await this._readBoundedErrorBody(
+        response,
+        connectionTimeoutMs,
+        requestStartTime,
+        abortController,
+        attemptVersion
       );
-      try {
-        const raw = await response.text();
-        errorBody = raw.length > 1024 ? `${raw.slice(0, 1024)}…` : raw;
-      } catch {
-        // Ignore body reading error
-      } finally {
-        clearTimeout(bodyTimer);
-      }
       if (this._isStale(attemptVersion)) return;
     }
 
@@ -586,7 +594,8 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         this._disconnectReason = 'server_error';
         this._failAndStop(
           `Auth Error (${statusCode}) - No interceptor provided. Stopping.`,
-          statusCode
+          statusCode,
+          errorBody
         );
         return;
       }
@@ -596,7 +605,8 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         this._disconnectReason = 'server_error';
         this._failAndStop(
           `Auth Error (${statusCode}) - Retry limit reached (${maxAuthRetries}). Stopping.`,
-          statusCode
+          statusCode,
+          errorBody
         );
         return;
       }
@@ -606,6 +616,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         type: 'error',
         statusCode,
         message: `Auth Error (${statusCode}) - Retry ${this._consecutiveAuthErrors}/${maxAuthRetries}. Refreshing token...`,
+        ...(errorBody !== undefined ? { data: errorBody } : {}),
       });
       this._scheduleReconnect(true, undefined, attemptVersion, config);
       return;
@@ -618,6 +629,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         type: 'error',
         statusCode: 408,
         message: 'HTTP 408',
+        ...(errorBody !== undefined ? { data: errorBody } : {}),
       });
       this._scheduleReconnect(true, undefined, attemptVersion, config);
       return;
@@ -642,6 +654,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
           statusCode,
           retry: totalDelayMs,
           message: `Retry-After received: ${Math.round(totalDelayMs / 1000)}s`,
+          ...(errorBody !== undefined ? { data: errorBody } : {}),
         });
         this._scheduleReconnect(true, totalDelayMs, attemptVersion, config);
         return;
@@ -652,6 +665,7 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
           type: 'error',
           statusCode: 429,
           message: 'Rate Limited (429). Retrying with backoff...',
+          ...(errorBody !== undefined ? { data: errorBody } : {}),
         });
         this._scheduleReconnect(true, undefined, attemptVersion, config);
         return;
@@ -661,30 +675,32 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
         type: 'error',
         statusCode,
         message: `HTTP ${statusCode}`,
+        ...(errorBody !== undefined ? { data: errorBody } : {}),
       });
       this._scheduleReconnect(true, undefined, attemptVersion, config);
       return;
     } else if (statusCode >= 400 && statusCode <= 499) {
       // 3f. Fatal client error (e.g. 400 Bad Request, 404 Not Found, 405 Method Not Allowed)
       this._disconnectReason = 'server_error';
-      const bodyText = errorBody?.trim();
-      const fatalMessage = bodyText
-        ? `Fatal Error (${statusCode}): ${bodyText}`
+      const bodyPreview = formatErrorBodyPreview(errorBody);
+      const fatalMessage = bodyPreview
+        ? `Fatal Error (${statusCode}): ${bodyPreview}`
         : `Fatal Error (${statusCode}). Stopping.`;
-      this._failAndStop(fatalMessage, statusCode);
+      this._failAndStop(fatalMessage, statusCode, errorBody);
       return;
     } else if (statusCode >= 500) {
       // 3g. Server error: Recoverable
       this._disconnectReason = 'server_error';
       this._recordError(`Server Error (${statusCode})`, String(statusCode));
-      const bodyText = errorBody?.trim();
-      const errorMsg = bodyText
-        ? `Server Error (${statusCode}): ${bodyText}`
+      const bodyPreview = formatErrorBodyPreview(errorBody);
+      const errorMsg = bodyPreview
+        ? `Server Error (${statusCode}): ${bodyPreview}`
         : `Server Error (${statusCode})`;
       this._pushEvent({
         type: 'error',
         statusCode,
         message: errorMsg,
+        ...(errorBody !== undefined ? { data: errorBody } : {}),
       });
       this._scheduleReconnect(true, undefined, attemptVersion, config);
       return;
@@ -836,12 +852,21 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     }
   }
 
-  private _failAndStop(message: string, statusCode?: number): void {
+  private _failAndStop(
+    message: string,
+    statusCode?: number,
+    data?: string
+  ): void {
     this._recordError(
       message,
       statusCode !== undefined ? String(statusCode) : undefined
     );
-    this._pushEvent({ type: 'error', message, statusCode });
+    this._pushEvent({
+      type: 'error',
+      message,
+      statusCode,
+      ...(data !== undefined ? { data } : {}),
+    });
     this._updateState('failed');
     this._stopInternal(false);
   }
@@ -875,10 +900,164 @@ export class FetchSseDriver implements SseDriver, SseEventParserDelegate {
     }
   }
 
+  private async _readBoundedErrorBody(
+    response: Response,
+    connectionTimeoutMs: number,
+    requestStartTime: number,
+    abortController: AbortController,
+    attemptVersion: number
+  ): Promise<string | undefined> {
+    const effectiveTimeoutMs =
+      connectionTimeoutMs > 0 ? connectionTimeoutMs : 15000;
+    const remainingTimeoutMs = Math.max(
+      0,
+      effectiveTimeoutMs - (Date.now() - requestStartTime)
+    );
+    if (remainingTimeoutMs <= 0) {
+      try {
+        response.body?.cancel?.().catch(() => {});
+      } catch {
+        // Ignore cancellation errors
+      }
+      return undefined;
+    }
+
+    if (response.body && typeof response.body.getReader === 'function') {
+      const reader = response.body.getReader();
+      this._activeReader = reader;
+      const chunks: Uint8Array[] = [];
+      let totalBytes = 0;
+      let timedOut = false;
+
+      const timeoutPromise = new Promise<{ value: undefined; done: true }>(
+        (resolve) => {
+          this._errorBodyTimer = setTimeout(() => {
+            this._errorBodyTimer = undefined;
+            timedOut = true;
+            resolve({ value: undefined, done: true });
+            try {
+              reader.cancel().catch(() => {});
+            } catch {
+              // Ignore reader cancellation errors
+            }
+            try {
+              abortController.abort();
+            } catch {
+              // Ignore abort errors
+            }
+          }, remainingTimeoutMs);
+        }
+      );
+
+      try {
+        while (
+          totalBytes < MAX_ERROR_BODY_BYTES &&
+          !timedOut &&
+          !this._isStale(attemptVersion)
+        ) {
+          const { value, done } = await Promise.race([
+            reader.read(),
+            timeoutPromise,
+          ]);
+          if (timedOut || this._isStale(attemptVersion) || done) {
+            break;
+          }
+          if (value && value.byteLength > 0) {
+            const remaining = MAX_ERROR_BODY_BYTES - totalBytes;
+            const slice =
+              value.byteLength > remaining
+                ? value.subarray(0, remaining)
+                : value;
+            chunks.push(slice);
+            totalBytes += slice.byteLength;
+          }
+        }
+      } catch {
+        // Preserve already-buffered partial error body bytes before disconnect/abort
+      } finally {
+        if (this._errorBodyTimer) {
+          clearTimeout(this._errorBodyTimer);
+          this._errorBodyTimer = undefined;
+        }
+        if (this._activeReader === reader) {
+          this._activeReader = undefined;
+        }
+        try {
+          reader.cancel().catch(() => {});
+        } catch {
+          // Ignore reader cancellation errors
+        }
+        try {
+          reader.releaseLock();
+        } catch {
+          // Ignore releaseLock errors
+        }
+      }
+
+      if (this._isStale(attemptVersion) || totalBytes === 0) {
+        return undefined;
+      }
+
+      let combined: Uint8Array;
+      if (chunks.length === 1 && chunks[0]) {
+        combined = chunks[0];
+      } else {
+        combined = new Uint8Array(totalBytes);
+        let offset = 0;
+        for (const chunk of chunks) {
+          combined.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+      }
+      const decoded = new TextDecoder('utf-8').decode(combined);
+      return decoded.length > 0 ? decoded : undefined;
+    }
+
+    // Fallback for environments without ReadableStream body support
+    const fallbackTimeoutPromise = new Promise<undefined>((resolve) => {
+      this._errorBodyTimer = setTimeout(() => {
+        this._errorBodyTimer = undefined;
+        resolve(undefined);
+        try {
+          abortController.abort();
+        } catch {
+          // Ignore abort errors
+        }
+      }, remainingTimeoutMs);
+    });
+
+    let raw: string | undefined;
+    try {
+      raw = await Promise.race([response.text(), fallbackTimeoutPromise]);
+    } catch {
+      // Ignore body reading error
+    } finally {
+      if (this._errorBodyTimer) {
+        clearTimeout(this._errorBodyTimer);
+        this._errorBodyTimer = undefined;
+      }
+    }
+
+    if (this._isStale(attemptVersion) || !raw) {
+      return undefined;
+    }
+    const encoded = new TextEncoder().encode(raw);
+    const bounded =
+      encoded.byteLength > MAX_ERROR_BODY_BYTES
+        ? encoded.subarray(0, MAX_ERROR_BODY_BYTES)
+        : encoded;
+    const decoded = new TextDecoder('utf-8').decode(bounded);
+    return decoded.length > 0 ? decoded : undefined;
+  }
+
   private _cleanupTimers(): void {
     if (this._connectionTimer) {
       clearTimeout(this._connectionTimer);
       this._connectionTimer = undefined;
+    }
+    if (this._errorBodyTimer) {
+      clearTimeout(this._errorBodyTimer);
+      this._errorBodyTimer = undefined;
     }
     if (this._readTimeoutTimer) {
       clearTimeout(this._readTimeoutTimer);
