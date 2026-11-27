@@ -23,6 +23,25 @@ describe('FetchSseDriver', () => {
     jest.useRealTimers();
   });
 
+  function createRawStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
+    let index = 0;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (index < chunks.length) {
+          controller.enqueue(chunks[index++]);
+        } else {
+          controller.close();
+        }
+      },
+    });
+  }
+
+  async function flushMicrotasks(rounds = 25): Promise<void> {
+    for (let i = 0; i < rounds; i++) {
+      await Promise.resolve();
+    }
+  }
+
   function createMockStream(chunks: string[]): ReadableStream<Uint8Array> {
     const encoder = new TextEncoder();
     let index = 0;
@@ -134,12 +153,11 @@ describe('FetchSseDriver', () => {
     globalThis.fetch = jest.fn().mockResolvedValue({
       status: 400,
       headers: new Headers(),
-      body: null,
+      body: createMockStream([]),
     });
 
     driver.start();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(driver.getState()).toBe('failed');
     const errorEvent = dispatchedEvents.find((e) => e.type === 'error');
@@ -153,12 +171,11 @@ describe('FetchSseDriver', () => {
     globalThis.fetch = jest.fn().mockResolvedValue({
       status: 401,
       headers: new Headers(),
-      body: null,
+      body: createMockStream([]),
     });
 
     driver.start();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(driver.getState()).toBe('failed');
     const errorEvent = dispatchedEvents.find((e) => e.type === 'error');
@@ -177,17 +194,11 @@ describe('FetchSseDriver', () => {
     };
     driver.setup(config, interceptor);
 
-    globalThis.fetch = jest.fn().mockResolvedValue({
+    globalThis.fetch = jest.fn().mockImplementation(async () => ({
       status: 401,
       headers: new Headers(),
-      body: null,
-    });
-
-    const flushMicrotasks = async () => {
-      for (let i = 0; i < 10; i++) {
-        await Promise.resolve();
-      }
-    };
+      body: createMockStream([]),
+    }));
 
     driver.start();
     await flushMicrotasks();
@@ -354,12 +365,11 @@ describe('FetchSseDriver', () => {
     globalThis.fetch = jest.fn().mockResolvedValue({
       status: 408,
       headers: new Headers(),
-      body: null,
+      body: createMockStream([]),
     });
 
     driver.start();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(driver.getState()).toBe('reconnecting');
     expect(driver.getStats().disconnectReason).toBe('timeout');
@@ -376,17 +386,11 @@ describe('FetchSseDriver', () => {
     };
     driver.setup(config);
 
-    globalThis.fetch = jest.fn().mockResolvedValue({
+    globalThis.fetch = jest.fn().mockImplementation(async () => ({
       status: 429,
       headers: new Headers({ 'Retry-After': '2' }),
-      body: null,
-    });
-
-    const flushMicrotasks = async () => {
-      for (let i = 0; i < 5; i++) {
-        await Promise.resolve();
-      }
-    };
+      body: createMockStream([]),
+    }));
 
     driver.start();
     await flushMicrotasks();
@@ -734,8 +738,7 @@ describe('FetchSseDriver', () => {
     });
 
     driver.start();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(driver.getState()).toBe('failed');
     const err = dispatchedEvents.find((e) => e.type === 'error');
@@ -756,8 +759,7 @@ describe('FetchSseDriver', () => {
     });
 
     driver.start();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(driver.getState()).toBe('reconnecting');
     const err = dispatchedEvents.find((e) => e.type === 'error');
@@ -856,12 +858,11 @@ describe('FetchSseDriver', () => {
     globalThis.fetch = jest.fn().mockResolvedValue({
       status: 429,
       headers: new Headers({ 'Retry-After': futureDate }),
-      body: null,
+      body: createMockStream([]),
     });
 
     driver.start();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(driver.getState()).toBe('reconnecting');
     const errorEvent = dispatchedEvents.find((e) => e.type === 'error');
@@ -881,12 +882,11 @@ describe('FetchSseDriver', () => {
     globalThis.fetch = jest.fn().mockResolvedValue({
       status: 429,
       headers: new Headers({ 'Retry-After': '999999' }), // extreme delay
-      body: null,
+      body: createMockStream([]),
     });
 
     driver.start();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     const errorEvent = dispatchedEvents.find((e) => e.type === 'error');
     expect(errorEvent?.retry).toBeGreaterThanOrEqual(5500); // clamped to 5000 + 500..1500 jitter
@@ -1049,12 +1049,11 @@ describe('FetchSseDriver', () => {
       globalThis.fetch = jest.fn().mockResolvedValue({
         status: code,
         headers: new Headers(),
-        body: null,
+        body: createMockStream([]),
       });
 
       testDriver.start();
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushMicrotasks();
 
       expect(testDriver.getState()).toBe('failed');
       expect(testDriver.getStats().disconnectReason).toBe('server_error');
@@ -1339,29 +1338,558 @@ describe('FetchSseDriver', () => {
     }
   );
 
-  test('does not read unused response.text() body on HTTP 503', async () => {
-    for (const headers of [
-      new Headers(),
-      new Headers({ 'Retry-After': '2' }),
-    ]) {
-      const textSpy = jest.fn().mockResolvedValue('Service Unavailable');
-      const d503 = new FetchSseDriver((events) =>
-        dispatchedEvents.push(...events)
-      );
-      d503.setup({ url: TEST_URL, maxReconnectAttempts: 0 });
-      globalThis.fetch = jest.fn().mockResolvedValue({
+  test('preserves UTF-8 JSON error body in data on HTTP 403 without interceptor', async () => {
+    const jsonBody = JSON.stringify({
+      code: 'input_rejected',
+      message: '输入包含违规内容',
+      risk: 100,
+    });
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 403,
+      headers: new Headers({ 'Content-Type': 'application/json' }),
+      body: createMockStream([jsonBody]),
+    });
+
+    driver.setup({ url: TEST_URL });
+    driver.start();
+    await flushMicrotasks();
+
+    expect(driver.getState()).toBe('failed');
+    expect(dispatchedEvents.map((e) => e.type)).toEqual([
+      'state',
+      'error',
+      'state',
+    ]);
+    const errorEvent = dispatchedEvents.find((e) => e.type === 'error');
+    expect(errorEvent).toBeDefined();
+    expect(errorEvent?.statusCode).toBe(403);
+    expect(errorEvent?.message).toBe(
+      'Auth Error (403) - No interceptor provided. Stopping.'
+    );
+    expect(errorEvent?.data).toBe(jsonBody);
+    expect(errorEvent?.parsedData).toBeUndefined();
+    expect(errorEvent?.retry).toBeUndefined();
+  });
+
+  test('preserves error body in data on HTTP 403 auth retries and retry limit reached', async () => {
+    const jsonBody = '{"code":"forbidden","message":"访问受限"}';
+    const interceptor = jest
+      .fn()
+      .mockResolvedValue({ Authorization: 'Bearer refreshed' });
+
+    globalThis.fetch = jest.fn().mockImplementation(async () => ({
+      status: 403,
+      headers: new Headers({ 'Content-Type': 'application/json' }),
+      body: createMockStream([jsonBody]),
+    }));
+
+    driver.setup(
+      {
+        url: TEST_URL,
+        maxAuthRetries: 1,
+        retryIntervalMs: 1000,
+        jitterFactor: 0,
+      },
+      interceptor
+    );
+
+    driver.start();
+    await flushMicrotasks();
+
+    expect(driver.getState()).toBe('reconnecting');
+
+    jest.advanceTimersByTime(2000);
+    await flushMicrotasks();
+
+    expect(driver.getState()).toBe('failed');
+    const errorEvents = dispatchedEvents.filter((e) => e.type === 'error');
+    expect(errorEvents.length).toBe(2);
+    expect(errorEvents[0]?.statusCode).toBe(403);
+    expect(errorEvents[0]?.message).toBe(
+      'Auth Error (403) - Retry 1/1. Refreshing token...'
+    );
+    expect(errorEvents[0]?.data).toBe(jsonBody);
+    expect(errorEvents[0]?.parsedData).toBeUndefined();
+    expect(errorEvents[1]?.statusCode).toBe(403);
+    expect(errorEvents[1]?.message).toBe(
+      'Auth Error (403) - Retry limit reached (1). Stopping.'
+    );
+    expect(errorEvents[1]?.data).toBe(jsonBody);
+    expect(errorEvents[1]?.parsedData).toBeUndefined();
+  });
+
+  test('403 with onBeforeRequest recovers to 200 stream and resets consecutiveAuthErrors', async () => {
+    const jsonBody = '{"code":"token_expired"}';
+    let callCount = 0;
+    const interceptor = jest.fn().mockImplementation(async () => ({
+      Authorization: `Bearer token-${interceptor.mock.calls.length}`,
+    }));
+
+    globalThis.fetch = jest.fn().mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          status: 403,
+          headers: new Headers({ 'Content-Type': 'application/json' }),
+          body: createMockStream([jsonBody]),
+        };
+      }
+      if (callCount === 2) {
+        return {
+          status: 200,
+          headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+          body: createMockStream(['data: recovered\n\n']),
+        };
+      }
+      return {
+        status: 403,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        body: createMockStream([jsonBody]),
+      };
+    });
+
+    driver.setup(
+      {
+        url: TEST_URL,
+        maxAuthRetries: 1,
+        retryIntervalMs: 1000,
+        jitterFactor: 0,
+      },
+      interceptor
+    );
+
+    driver.start();
+    await flushMicrotasks();
+
+    expect(driver.getState()).toBe('reconnecting');
+    const firstErr = dispatchedEvents.find((e) => e.type === 'error');
+    expect(firstErr?.data).toBe(jsonBody);
+    expect(firstErr?.message).toBe(
+      'Auth Error (403) - Retry 1/1. Refreshing token...'
+    );
+
+    // Backoff fires -> interceptor refreshes token -> 200 stream opens, then EOF schedules reconnect
+    jest.advanceTimersByTime(1000);
+    await flushMicrotasks(20);
+
+    const fetchCalls = (globalThis.fetch as jest.Mock).mock.calls;
+    expect(fetchCalls.length).toBeGreaterThanOrEqual(2);
+    expect(fetchCalls[1]?.[1]?.headers?.Authorization).toBe('Bearer token-2');
+    expect(dispatchedEvents.some((e) => e.type === 'open')).toBe(true);
+    expect(dispatchedEvents.find((e) => e.type === 'message')?.data).toBe(
+      'recovered'
+    );
+
+    // Clean EOF reconnect hits 403 again: consecutiveAuthErrors was reset so it starts at Retry 1/1 again
+    jest.advanceTimersByTime(1000);
+    await flushMicrotasks();
+
+    const errorEvents = dispatchedEvents.filter((e) => e.type === 'error');
+    expect(errorEvents.length).toBe(2);
+    expect(errorEvents[1]?.message).toBe(
+      'Auth Error (403) - Retry 1/1. Refreshing token...'
+    );
+    expect(errorEvents[1]?.data).toBe(jsonBody);
+  });
+
+  test('preserves error body, message, retry, parsedData, and event order across 401, 403, 408, 429, 500, and 503', async () => {
+    const cases: Array<{
+      status: number;
+      headers?: Record<string, string>;
+      body: string;
+      withInterceptor?: boolean;
+      expectedMessage: string | RegExp;
+      expectedEvents: string[];
+      expectRetry?: boolean;
+    }> = [
+      {
+        status: 401,
+        body: '{"error":"unauthorized"}',
+        withInterceptor: true,
+        expectedMessage: 'Auth Error (401) - Retry 1/2. Refreshing token...',
+        expectedEvents: ['state', 'error', 'state'],
+      },
+      {
+        status: 403,
+        body: '{"error":"forbidden"}',
+        expectedMessage:
+          'Auth Error (403) - No interceptor provided. Stopping.',
+        expectedEvents: ['state', 'error', 'state'],
+      },
+      {
+        status: 408,
+        body: 'Request Timeout Body',
+        expectedMessage: 'HTTP 408',
+        expectedEvents: ['state', 'state', 'error', 'state'],
+      },
+      {
+        status: 429,
+        headers: { 'Retry-After': '2' },
+        body: '{"error":"rate_limited_retry_after"}',
+        expectedMessage: /^Retry-After received: [23]s$/,
+        expectedEvents: ['state', 'error', 'state'],
+        expectRetry: true,
+      },
+      {
+        status: 429,
+        body: '{"error":"rate_limited"}',
+        expectedMessage: 'Rate Limited (429). Retrying with backoff...',
+        expectedEvents: ['state', 'error', 'state'],
+      },
+      {
+        status: 500,
+        body: 'Internal Server Error',
+        expectedMessage: 'Server Error (500): Internal Server Error',
+        expectedEvents: ['state', 'error', 'state'],
+      },
+      {
         status: 503,
-        headers,
-        text: textSpy,
+        headers: { 'Retry-After': '2' },
+        body: 'Service Unavailable Retry',
+        expectedMessage: /^Retry-After received: [23]s$/,
+        expectedEvents: ['state', 'error', 'state'],
+        expectRetry: true,
+      },
+      {
+        status: 503,
+        body: 'Service Unavailable',
+        expectedMessage: 'HTTP 503',
+        expectedEvents: ['state', 'error', 'state'],
+      },
+    ];
+
+    for (const c of cases) {
+      const localEvents: SseEvent[] = [];
+      const localDriver = new FetchSseDriver((events) =>
+        localEvents.push(...events)
+      );
+      localDriver.setup(
+        {
+          url: TEST_URL,
+          maxReconnectAttempts: 1,
+          maxAuthRetries: 2,
+          retryIntervalMs: 1000,
+          jitterFactor: 0,
+        },
+        c.withInterceptor
+          ? jest.fn().mockResolvedValue({ Authorization: 'Bearer ok' })
+          : undefined
+      );
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        status: c.status,
+        headers: new Headers(c.headers),
+        body: createMockStream([c.body]),
       });
 
-      d503.start();
-      for (let i = 0; i < 6; i++) {
-        await Promise.resolve();
-      }
+      localDriver.start();
+      await flushMicrotasks();
 
-      expect(textSpy).not.toHaveBeenCalled();
-      d503.dispose();
+      expect(localEvents.map((e) => e.type)).toEqual(c.expectedEvents);
+      const errorEvents = localEvents.filter((e) => e.type === 'error');
+      expect(errorEvents.length).toBe(1);
+      const errorEvent = errorEvents[0];
+      expect(errorEvent?.statusCode).toBe(c.status);
+      expect(errorEvent?.data).toBe(c.body);
+      expect(errorEvent?.parsedData).toBeUndefined();
+      if (typeof c.expectedMessage === 'string') {
+        expect(errorEvent?.message).toBe(c.expectedMessage);
+      } else {
+        expect(errorEvent?.message).toMatch(c.expectedMessage);
+      }
+      if (c.expectRetry) {
+        expect(errorEvent?.retry).toBeGreaterThanOrEqual(2500);
+        expect(errorEvent?.retry).toBeLessThanOrEqual(3500);
+        expect(localDriver.getStats().lastReconnectDelayMs).toBe(
+          errorEvent?.retry
+        );
+      } else {
+        expect(errorEvent?.retry).toBeUndefined();
+      }
+      localDriver.dispose();
     }
+  });
+
+  test('normalizes empty streaming body to undefined and enforces 8192/8193 UTF-8 byte cap in streaming and fallback', async () => {
+    // 1. Empty streaming body -> undefined
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 403,
+      headers: new Headers(),
+      body: createMockStream([]),
+    });
+
+    driver.setup({ url: TEST_URL });
+    driver.start();
+    await flushMicrotasks();
+
+    const emptyErrorEvent = dispatchedEvents.find((e) => e.type === 'error');
+    expect(emptyErrorEvent?.statusCode).toBe(403);
+    expect(emptyErrorEvent?.data).toBeUndefined();
+
+    // 2. Exact 8192 bytes intact & 8193 bytes truncated to 8192 + reader cancelled
+    for (const byteLen of [8192, 8193]) {
+      const localEvents: SseEvent[] = [];
+      const localDriver = new FetchSseDriver((events) =>
+        localEvents.push(...events)
+      );
+      const cancelSpy = jest.fn().mockResolvedValue(undefined);
+      const payload = new Uint8Array(byteLen).fill(0x58); // 'X'
+      let pulled = false;
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (!pulled) {
+            pulled = true;
+            controller.enqueue(payload);
+          } else {
+            return new Promise(() => {});
+          }
+          return undefined;
+        },
+        cancel: cancelSpy,
+      });
+
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        status: 403,
+        headers: new Headers(),
+        body: stream,
+      });
+
+      localDriver.setup({ url: TEST_URL });
+      localDriver.start();
+      await flushMicrotasks();
+
+      const errEvent = localEvents.find((e) => e.type === 'error');
+      const expectedBytes = Math.min(byteLen, 8192);
+      expect(errEvent?.data).toBe('X'.repeat(expectedBytes));
+      expect(new TextEncoder().encode(errEvent?.data).length).toBe(
+        expectedBytes
+      );
+      expect(cancelSpy).toHaveBeenCalled();
+      localDriver.dispose();
+    }
+
+    // 3. Fallback response.text() truncates by UTF-8 bytes (Chinese 3-byte chars)
+    const fallbackEvents: SseEvent[] = [];
+    const fallbackDriver = new FetchSseDriver((events) =>
+      fallbackEvents.push(...events)
+    );
+    const largeChinese = '中'.repeat(4000); // 12,000 UTF-8 bytes
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 403,
+      headers: new Headers(),
+      body: null,
+      text: jest.fn().mockResolvedValue(largeChinese),
+    });
+
+    fallbackDriver.setup({ url: TEST_URL });
+    fallbackDriver.start();
+    await flushMicrotasks();
+
+    const fallbackErr = fallbackEvents.find((e) => e.type === 'error');
+    expect(fallbackErr?.data).toBeDefined();
+    // 8192 / 3 = 2730 full chars (8190 bytes) + 2 truncated bytes -> U+FFFD
+    expect(fallbackErr?.data).toBe(`${'中'.repeat(2730)}\uFFFD`);
+    fallbackDriver.dispose();
+  });
+
+  test('handles 3-byte Chinese and 4-byte emoji UTF-8 boundaries at 8192 bytes without lone surrogates', async () => {
+    // 8189 ASCII + '中' (3 bytes) = exactly 8192 bytes (intact)
+    // 8190 ASCII + '中' (3 bytes) = 8193 bytes -> truncated at 8192 -> 'A'.repeat(8190) + '\uFFFD'
+    // 8190 ASCII + '😀' (4 bytes) = 8194 bytes -> truncated at 8192 -> 'A'.repeat(8190) + '\uFFFD' (no lone surrogate)
+    const cases = [
+      {
+        label: 'exact-8192-chinese',
+        input: `${'A'.repeat(8189)}中`,
+        expected: `${'A'.repeat(8189)}中`,
+      },
+      {
+        label: 'straddle-8192-chinese',
+        input: `${'A'.repeat(8190)}中`,
+        expected: `${'A'.repeat(8190)}\uFFFD`,
+      },
+      {
+        label: 'straddle-8192-emoji',
+        input: `${'A'.repeat(8190)}😀`,
+        expected: `${'A'.repeat(8190)}\uFFFD`,
+      },
+    ];
+
+    const hasLoneSurrogate = (s: string): boolean => {
+      for (let i = 0; i < s.length; i++) {
+        const code = s.charCodeAt(i);
+        if (code >= 0xd800 && code <= 0xdbff) {
+          const next = s.charCodeAt(i + 1);
+          if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+          i++;
+        } else if (code >= 0xdc00 && code <= 0xdfff) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    for (const c of cases) {
+      const localEvents: SseEvent[] = [];
+      const localDriver = new FetchSseDriver((events) =>
+        localEvents.push(...events)
+      );
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        status: 403,
+        headers: new Headers(),
+        body: createRawStream([new TextEncoder().encode(c.input)]),
+      });
+
+      localDriver.setup({ url: TEST_URL });
+      localDriver.start();
+      await flushMicrotasks();
+
+      const errEvent = localEvents.find((e) => e.type === 'error');
+      expect(errEvent?.data).toBe(c.expected);
+      expect(hasLoneSurrogate(errEvent?.data ?? '')).toBe(false);
+      localDriver.dispose();
+    }
+  });
+
+  test('autoParseJSON: true preserves raw HTML, malformed JSON, and valid JSON error bodies without setting parsedData', async () => {
+    const bodies = [
+      '<html><body>403 Forbidden</body></html>',
+      '{"broken": ',
+      '{"code":"input_rejected","risk":100}',
+    ];
+
+    for (const body of bodies) {
+      const localEvents: SseEvent[] = [];
+      const localDriver = new FetchSseDriver((events) =>
+        localEvents.push(...events)
+      );
+      localDriver.setup({ url: TEST_URL, autoParseJSON: true });
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        status: 403,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        body: createMockStream([body]),
+      });
+
+      localDriver.start();
+      await flushMicrotasks();
+
+      const errEvent = localEvents.find((e) => e.type === 'error');
+      expect(errEvent?.statusCode).toBe(403);
+      expect(errEvent?.data).toBe(body);
+      expect(errEvent?.parsedData).toBeUndefined();
+      localDriver.dispose();
+    }
+  });
+
+  test('stop() and dispose() mid-read of stalled 403 body emit no error event and clean up timers', async () => {
+    for (const method of ['stop', 'dispose'] as const) {
+      const localEvents: SseEvent[] = [];
+      const localDriver = new FetchSseDriver((events) =>
+        localEvents.push(...events)
+      );
+      const cancelSpy = jest.fn().mockResolvedValue(undefined);
+      let readController!: ReadableStreamDefaultController<Uint8Array>;
+      const stalledStream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          readController = controller;
+          controller.enqueue(new TextEncoder().encode('{"partial":'));
+        },
+        pull() {
+          // Hang waiting for more bytes
+          return new Promise(() => {});
+        },
+        cancel: cancelSpy,
+      });
+
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        status: 403,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        body: stalledStream,
+      });
+
+      localDriver.setup({ url: TEST_URL, connectionTimeoutMs: 5000 });
+      localDriver.start();
+      await flushMicrotasks();
+
+      if (method === 'stop') {
+        localDriver.stop();
+      } else {
+        localDriver.dispose();
+      }
+      try {
+        readController.close();
+      } catch {
+        // Already cancelled
+      }
+      await flushMicrotasks();
+
+      expect(localEvents.some((e) => e.type === 'error')).toBe(false);
+      expect(cancelSpy).toHaveBeenCalled();
+      expect((localDriver as any)._errorBodyTimer).toBeUndefined();
+      expect((localDriver as any)._connectionTimer).toBeUndefined();
+      localDriver.dispose();
+    }
+  });
+
+  test('stalled 403 error body preserves partial data within single shared connectionTimeoutMs budget and supports 0 timeout', async () => {
+    // 1. Shared budget: connectionTimeoutMs=1000, fetch takes 400ms -> body times out after remaining 600ms
+    const cancelSpy = jest.fn().mockResolvedValue(undefined);
+    const stalledStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"partial":"chunk"'));
+      },
+      pull() {
+        return new Promise(() => {});
+      },
+      cancel: cancelSpy,
+    });
+
+    globalThis.fetch = jest.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => {
+            resolve({
+              status: 403,
+              headers: new Headers({ 'Content-Type': 'application/json' }),
+              body: stalledStream,
+            });
+          }, 400);
+        })
+    );
+
+    driver.setup({ url: TEST_URL, connectionTimeoutMs: 1000 });
+    driver.start();
+
+    // Advance 400ms so fetch resolves, leaving 600ms for error body read
+    jest.advanceTimersByTime(400);
+    await flushMicrotasks();
+    expect(dispatchedEvents.some((e) => e.type === 'error')).toBe(false);
+
+    // Advance remaining 600ms (total 1000ms, NOT 1400ms) -> body timer fires and preserves partial body
+    jest.advanceTimersByTime(600);
+    await flushMicrotasks();
+
+    expect(driver.getState()).toBe('failed');
+    const errEvent = dispatchedEvents.find((e) => e.type === 'error');
+    expect(errEvent?.statusCode).toBe(403);
+    expect(errEvent?.data).toBe('{"partial":"chunk"');
+    expect(cancelSpy).toHaveBeenCalled();
+
+    // 2. connectionTimeoutMs: 0 does not abort error body read immediately
+    const zeroEvents: SseEvent[] = [];
+    const zeroDriver = new FetchSseDriver((events) =>
+      zeroEvents.push(...events)
+    );
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      status: 403,
+      headers: new Headers(),
+      body: createMockStream(['{"ok":"slow-error"}']),
+    });
+    zeroDriver.setup({ url: TEST_URL, connectionTimeoutMs: 0 });
+    zeroDriver.start();
+    await flushMicrotasks();
+
+    const zeroErr = zeroEvents.find((e) => e.type === 'error');
+    expect(zeroErr?.statusCode).toBe(403);
+    expect(zeroErr?.data).toBe('{"ok":"slow-error"}');
+    zeroDriver.dispose();
   });
 });

@@ -12,7 +12,15 @@ import type {
 export interface SseEvent {
   /** The type of the event. */
   type: SseEventType;
-  /** The data payload of the event as a raw string. */
+  /**
+   * The raw payload of the event.
+   * - For `message` events: holds the SSE `data` field.
+   * - For HTTP `error` events (`statusCode >= 400`): holds the bounded raw HTTP error response body
+   *   (up to 8192 UTF-8 bytes; `undefined` when empty). Attached to both retryable and terminal error
+   *   events (`data` does not indicate a terminal failure—check connection `state` to distinguish
+   *   `'reconnecting'` vs `'failed'`). Responses exceeding 8192 UTF-8 bytes are truncated, so wrap
+   *   `JSON.parse(event.data)` in `try/catch`.
+   */
   data?: string;
   /** The parsed JSON data, if autoParseJSON is enabled and parsing succeeds. */
   parsedData?: AnyMap;
