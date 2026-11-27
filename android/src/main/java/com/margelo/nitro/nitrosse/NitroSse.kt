@@ -648,30 +648,31 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
     private fun pushErrorEvent(
         message: String,
         statusCode: Double?,
-        retry: Double? = null
+        retry: Double? = null,
+        data: String? = null
     ) {
-        eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, message, statusCode, retry, null))
+        eventBuffer.push(SseEvent(SseEventType.ERROR, data, null, null, null, message, statusCode, retry, null))
     }
 
-    private fun applyFailureDecision(decision: SseFailureDecision) {
+    private fun applyFailureDecision(decision: SseFailureDecision, errorBody: String?) {
         when (decision) {
             is SseFailureDecision.FailAndStop ->
-                failAndStop(decision.message, decision.statusCode)
+                failAndStop(decision.message, decision.statusCode, errorBody)
             is SseFailureDecision.AuthLimitReached -> {
                 consecutiveAuthErrors.incrementAndGet()
-                failAndStop(decision.message, decision.statusCode)
+                failAndStop(decision.message, decision.statusCode, errorBody)
             }
             is SseFailureDecision.AuthRetry -> {
                 consecutiveAuthErrors.incrementAndGet()
-                pushErrorEvent(decision.message, decision.statusCode)
+                pushErrorEvent(decision.message, decision.statusCode, data = errorBody)
                 scheduleReconnect(true, connectionAttemptVersion.get())
             }
             is SseFailureDecision.RetryAfter -> {
-                pushErrorEvent(decision.message, decision.statusCode, decision.delayMs.toDouble())
+                pushErrorEvent(decision.message, decision.statusCode, decision.delayMs.toDouble(), data = errorBody)
                 scheduleReconnect(true, connectionAttemptVersion.get(), decision.delayMs)
             }
             is SseFailureDecision.RateLimitBackoff -> {
-                pushErrorEvent(decision.message, decision.statusCode)
+                pushErrorEvent(decision.message, decision.statusCode, data = errorBody)
                 scheduleReconnect(true, connectionAttemptVersion.get())
             }
             is SseFailureDecision.TransientRetry -> {
@@ -680,7 +681,7 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 if (decision.markStale) {
                     updateState(SseState.STALE)
                 }
-                pushErrorEvent(decision.message, decision.statusCode)
+                pushErrorEvent(decision.message, decision.statusCode, data = errorBody)
                 scheduleReconnect(true, connectionAttemptVersion.get())
             }
         }
@@ -714,7 +715,8 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
                 maxAuthRetries = maxAuthRetries,
                 maxRetryIntervalMs = maxRetryIntervalMs
             )
-            applyFailureDecision(SseFailureClassifier.classify(context, policy))
+            val normalizedErrorBody = errorBody?.takeIf { it.isNotEmpty() }
+            applyFailureDecision(SseFailureClassifier.classify(context, policy), normalizedErrorBody)
         }
     }
 
@@ -727,8 +729,8 @@ class NitroSse @DoNotStrip constructor() : HybridNitroSseSpec(), SseConnectionDe
         }
     }
 
-    private fun failAndStop(message: String, statusCode: Double? = null) {
-        eventBuffer.push(SseEvent(SseEventType.ERROR, null, null, null, null, message, statusCode, null, null))
+    private fun failAndStop(message: String, statusCode: Double? = null, data: String? = null) {
+        eventBuffer.push(SseEvent(SseEventType.ERROR, data, null, null, null, message, statusCode, null, null))
         updateState(SseState.FAILED)
         stopInternal()
     }

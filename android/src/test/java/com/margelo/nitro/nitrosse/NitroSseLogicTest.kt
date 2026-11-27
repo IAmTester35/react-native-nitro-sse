@@ -541,18 +541,29 @@ class NitroSseLogicTest {
     }
 
     @Test
-    fun testErrorBodySkippedForUnusedStatusesAndPreservesPartialBodyOnIOException() {
-        val skippedCases = listOf(401 to null, 403 to null, 408 to null, 429 to null, 503 to "5")
-        for ((code, retryAfter) in skippedCases) {
-            var bodyReadAttempted = false
-            val trackingBody = object : ResponseBody() {
-                override fun contentType() = "text/plain".toMediaType()
-                override fun contentLength() = 11L
+    fun testErrorBodyCapturedForHttpErrorStatusesSkippedFor204AndPreservesPartialBodyOnIOException() {
+        val utf8Json = """{"code":"input_rejected","message":"输入包含违规内容","risk":100}"""
+        val capturedCases = listOf(
+            Triple(401, null, """{"error":"unauthorized"}"""),
+            Triple(403, null, utf8Json),
+            Triple(408, null, "Request Timeout"),
+            Triple(429, null, """{"error":"rate_limited"}"""),
+            Triple(503, "5", "Service Unavailable")
+        )
+        for ((code, retryAfter, expectedBody) in capturedCases) {
+            val expectedBytes = expectedBody.toByteArray(Charsets.UTF_8)
+            val body = object : ResponseBody() {
+                override fun contentType() = "application/json".toMediaType()
+                override fun contentLength() = expectedBytes.size.toLong()
                 override fun source(): BufferedSource {
+                    var offset = 0
                     val src = object : Source {
                         override fun read(sink: Buffer, byteCount: Long): Long {
-                            bodyReadAttempted = true
-                            return -1L
+                            if (offset >= expectedBytes.size) return -1L
+                            val len = minOf(byteCount.toInt(), expectedBytes.size - offset)
+                            sink.write(expectedBytes, offset, len)
+                            offset += len
+                            return len.toLong()
                         }
                         override fun timeout() = Timeout.NONE
                         override fun close() {}
@@ -567,7 +578,7 @@ class NitroSseLogicTest {
                         .protocol(Protocol.HTTP_1_1)
                         .code(code)
                         .message("Err")
-                        .body(trackingBody)
+                        .body(body)
                     if (retryAfter != null) {
                         builder.header("Retry-After", retryAfter)
                     }
@@ -576,7 +587,7 @@ class NitroSseLogicTest {
                 .build()
 
             val latch = CountDownLatch(1)
-            var capturedBody: String? = "sentinel"
+            var capturedBody: String? = null
             val handler = SseConnectionHandler(object : SseConnectionDelegate {
                 override fun connectionDidOpen(response: Response, requestId: String) {}
                 override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, requestId: String) {}
@@ -586,11 +597,101 @@ class NitroSseLogicTest {
                     latch.countDown()
                 }
             })
-            handler.createEventSource(client, Request.Builder().url(TEST_URL).build(), "req-skip-$code")
+            handler.createEventSource(client, Request.Builder().url(TEST_URL).build(), "req-capture-$code")
             assertTrue(latch.await(5, TimeUnit.SECONDS))
-            assertFalse("Status $code should not read error body", bodyReadAttempted)
-            assertNull("Status $code should pass null errorBody", capturedBody)
+            assertEquals("Status $code should capture errorBody", expectedBody, capturedBody)
         }
+
+        // HTTP 204 No Content must not attempt to read a response body
+        var bodyReadAttempted204 = false
+        val tracking204Body = object : ResponseBody() {
+            override fun contentType() = "text/plain".toMediaType()
+            override fun contentLength() = 0L
+            override fun source(): BufferedSource {
+                val src = object : Source {
+                    override fun read(sink: Buffer, byteCount: Long): Long {
+                        bodyReadAttempted204 = true
+                        return -1L
+                    }
+                    override fun timeout() = Timeout.NONE
+                    override fun close() {}
+                }
+                return src.buffer()
+            }
+        }
+        val client204 = OkHttpClient.Builder()
+            .addInterceptor(Interceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(204)
+                    .message("No Content")
+                    .body(tracking204Body)
+                    .build()
+            })
+            .build()
+        val latch204 = CountDownLatch(1)
+        var captured204Body: String? = "sentinel"
+        val handler204 = SseConnectionHandler(object : SseConnectionDelegate {
+            override fun connectionDidOpen(response: Response, requestId: String) {}
+            override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, requestId: String) {}
+            override fun connectionDidClose(requestId: String) {}
+            override fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {
+                captured204Body = errorBody
+                latch204.countDown()
+            }
+        })
+        handler204.createEventSource(client204, Request.Builder().url(TEST_URL).build(), "req-204")
+        assertTrue(latch204.await(5, TimeUnit.SECONDS))
+        assertFalse("Status 204 should not read error body", bodyReadAttempted204)
+        assertNull("Status 204 should pass null errorBody", captured204Body)
+
+        // Error body larger than MAX_ERROR_BODY_BYTES (8192) is truncated cleanly at 8192 bytes
+        val largeBytes = ByteArray(16384) { 'A'.code.toByte() }
+        val largeBody = object : ResponseBody() {
+            override fun contentType() = "text/plain".toMediaType()
+            override fun contentLength() = largeBytes.size.toLong()
+            override fun source(): BufferedSource {
+                var offset = 0
+                val src = object : Source {
+                    override fun read(sink: Buffer, byteCount: Long): Long {
+                        if (offset >= largeBytes.size) return -1L
+                        val len = minOf(byteCount.toInt(), largeBytes.size - offset)
+                        sink.write(largeBytes, offset, len)
+                        offset += len
+                        return len.toLong()
+                    }
+                    override fun timeout() = Timeout.NONE
+                    override fun close() {}
+                }
+                return src.buffer()
+            }
+        }
+        val client403Large = OkHttpClient.Builder()
+            .addInterceptor(Interceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(403)
+                    .message("Forbidden")
+                    .body(largeBody)
+                    .build()
+            })
+            .build()
+        val latchLarge = CountDownLatch(1)
+        var capturedLargeBody: String? = null
+        val handlerLarge = SseConnectionHandler(object : SseConnectionDelegate {
+            override fun connectionDidOpen(response: Response, requestId: String) {}
+            override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, requestId: String) {}
+            override fun connectionDidClose(requestId: String) {}
+            override fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {
+                capturedLargeBody = errorBody
+                latchLarge.countDown()
+            }
+        })
+        handlerLarge.createEventSource(client403Large, Request.Builder().url(TEST_URL).build(), "req-403-large")
+        assertTrue(latchLarge.await(5, TimeUnit.SECONDS))
+        assertEquals(8192, capturedLargeBody?.toByteArray(Charsets.UTF_8)?.size)
 
         // HTTP 500 with mid-stream IOException should preserve already-buffered partial error body
         val partialErrorBody = object : ResponseBody() {
@@ -639,6 +740,173 @@ class NitroSseLogicTest {
         handler500.createEventSource(client500, Request.Builder().url(TEST_URL).build(), "req-500")
         assertTrue(latch500.await(5, TimeUnit.SECONDS))
         assertEquals("partial-500-err", captured500Body)
+    }
+
+    @Test
+    fun testErrorBodyBoundarySizesUtf8EmptyAndCancelMidRead() {
+        fun executeHandlerWithBytes(
+            statusCode: Int,
+            bytes: ByteArray,
+            reportedContentLength: Long = bytes.size.toLong()
+        ): String? {
+            val body = object : ResponseBody() {
+                override fun contentType() = "application/json".toMediaType()
+                override fun contentLength() = reportedContentLength
+                override fun source(): BufferedSource {
+                    var offset = 0
+                    val src = object : Source {
+                        override fun read(sink: Buffer, byteCount: Long): Long {
+                            if (offset >= bytes.size) return -1L
+                            val len = minOf(byteCount.toInt(), bytes.size - offset)
+                            sink.write(bytes, offset, len)
+                            offset += len
+                            return len.toLong()
+                        }
+                        override fun timeout() = Timeout.NONE
+                        override fun close() {}
+                    }
+                    return src.buffer()
+                }
+            }
+            val client = OkHttpClient.Builder()
+                .addInterceptor(Interceptor { chain ->
+                    Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(statusCode)
+                        .message("Err")
+                        .body(body)
+                        .build()
+                })
+                .build()
+            val latch = CountDownLatch(1)
+            var captured: String? = "sentinel"
+            val handler = SseConnectionHandler(object : SseConnectionDelegate {
+                override fun connectionDidOpen(response: Response, requestId: String) {}
+                override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, requestId: String) {}
+                override fun connectionDidClose(requestId: String) {}
+                override fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {
+                    captured = errorBody
+                    latch.countDown()
+                }
+            })
+            handler.createEventSource(client, Request.Builder().url(TEST_URL).build(), "req-boundary-$statusCode")
+            assertTrue(latch.await(5, TimeUnit.SECONDS))
+            return captured
+        }
+
+        // Exact 8192 bytes intact; 8193 bytes truncated to 8192
+        val exact8192 = ByteArray(8192) { 'A'.code.toByte() }
+        assertEquals(String(exact8192, Charsets.UTF_8), executeHandlerWithBytes(403, exact8192))
+
+        val over8193 = ByteArray(8193) { 'A'.code.toByte() }
+        val captured8193 = executeHandlerWithBytes(403, over8193)
+        assertEquals(8192, captured8193?.toByteArray(Charsets.UTF_8)?.size)
+
+        // Multi-byte UTF-8 boundary: 3-byte Chinese ('中') & 4-byte emoji ('😀') straddling 8192
+        val exactChinese = ("A".repeat(8189) + "中").toByteArray(Charsets.UTF_8)
+        assertEquals(8192, exactChinese.size)
+        assertEquals("A".repeat(8189) + "中", executeHandlerWithBytes(403, exactChinese))
+
+        val straddleChinese = ("A".repeat(8190) + "中").toByteArray(Charsets.UTF_8)
+        assertEquals(8193, straddleChinese.size)
+        assertEquals("A".repeat(8190) + "\uFFFD", executeHandlerWithBytes(403, straddleChinese))
+
+        val straddleEmoji = ("A".repeat(8190) + "😀").toByteArray(Charsets.UTF_8)
+        assertEquals(8194, straddleEmoji.size)
+        assertEquals("A".repeat(8190) + "\uFFFD", executeHandlerWithBytes(403, straddleEmoji))
+
+        // Empty bodies through handler: Content-Length 0 and chunked empty (-1)
+        assertNull(executeHandlerWithBytes(403, ByteArray(0), 0L))
+        assertNull(executeHandlerWithBytes(403, ByteArray(0), -1L))
+
+        // Cancel mid-read of hanging 403 body must suppress connectionDidFail and close response
+        val readingStarted = CountDownLatch(1)
+        val bodyClosed = CountDownLatch(1)
+        val failInvoked = java.util.concurrent.atomic.AtomicBoolean(false)
+        val hangingBody = object : ResponseBody() {
+            override fun contentType() = "application/json".toMediaType()
+            override fun contentLength() = -1L
+            override fun source(): BufferedSource {
+                val src = object : Source {
+                    override fun read(sink: Buffer, byteCount: Long): Long {
+                        readingStarted.countDown()
+                        try {
+                            bodyClosed.await(2, TimeUnit.SECONDS)
+                        } catch (_: InterruptedException) {}
+                        throw IOException("cancelled")
+                    }
+                    override fun timeout() = Timeout.NONE
+                    override fun close() {
+                        bodyClosed.countDown()
+                    }
+                }
+                return src.buffer()
+            }
+        }
+        val cancelClient = OkHttpClient.Builder()
+            .addInterceptor(Interceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(403)
+                    .message("Forbidden")
+                    .body(hangingBody)
+                    .build()
+            })
+            .build()
+        val cancelHandler = SseConnectionHandler(object : SseConnectionDelegate {
+            override fun connectionDidOpen(response: Response, requestId: String) {}
+            override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, requestId: String) {}
+            override fun connectionDidClose(requestId: String) {}
+            override fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {
+                failInvoked.set(true)
+            }
+        })
+        val source = cancelHandler.createEventSource(cancelClient, Request.Builder().url(TEST_URL).build(), "req-cancel-403")
+        assertTrue(readingStarted.await(5, TimeUnit.SECONDS))
+        source.cancel()
+        assertTrue("Response body must be closed on cancel", bodyClosed.await(5, TimeUnit.SECONDS))
+        Thread.sleep(100)
+        assertFalse("connectionDidFail must not be called after cancel", failInvoked.get())
+    }
+
+    @Test
+    fun testStalled403ErrorBodyPreservesPartialBodyOnConnectTimeout() {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(403)
+                    .addHeader("Content-Type", "application/json")
+                    .setBody("{\"partial\":1234567890")
+                    .throttleBody(11, 2, TimeUnit.SECONDS)
+            )
+            val client = OkHttpClient.Builder()
+                .connectTimeout(250, TimeUnit.MILLISECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .build()
+            val latch = CountDownLatch(1)
+            var capturedStatus: Int? = null
+            var capturedBody: String? = null
+            val handler = SseConnectionHandler(object : SseConnectionDelegate {
+                override fun connectionDidOpen(response: Response, requestId: String) {}
+                override fun connectionDidReceiveMessage(id: String?, type: String?, data: String, requestId: String) {}
+                override fun connectionDidClose(requestId: String) {}
+                override fun connectionDidFail(t: Throwable?, response: Response?, errorBody: String?, requestId: String) {
+                    capturedStatus = response?.code
+                    capturedBody = errorBody
+                    latch.countDown()
+                }
+            })
+            handler.createEventSource(client, Request.Builder().url(server.url("/events")).build(), "req-stall-403")
+            assertTrue(latch.await(5, TimeUnit.SECONDS))
+            assertEquals(403, capturedStatus)
+            assertEquals("{\"partial\":", capturedBody)
+        } finally {
+            server.shutdown()
+        }
     }
 }
 

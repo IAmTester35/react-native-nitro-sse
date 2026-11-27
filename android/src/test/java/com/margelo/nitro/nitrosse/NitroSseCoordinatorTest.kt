@@ -969,6 +969,7 @@ class NitroSseCoordinatorTest {
         assertNotNull(errorEvent)
         assertEquals(400.0, errorEvent?.statusCode)
         assertEquals("Fatal Error (400): $jsonErrorBody", errorEvent?.message)
+        assertEquals(jsonErrorBody, errorEvent?.data)
     }
 
     @Test
@@ -1703,5 +1704,421 @@ class NitroSseCoordinatorTest {
         assertEquals(SseState.RECONNECTING, flattened[1].state)
         sse.dispose()
         drainLoopers()
+    }
+
+    private fun createResolvedInterceptorPromise(
+        headers: Map<String, String>
+    ): Promise<Promise<Map<String, String>>> {
+        @Suppress("UNCHECKED_CAST")
+        val p1 = org.mockito.Mockito.mock(Promise::class.java) as Promise<Promise<Map<String, String>>>
+        @Suppress("UNCHECKED_CAST")
+        val p2 = org.mockito.Mockito.mock(Promise::class.java) as Promise<Map<String, String>>
+        org.mockito.Mockito.`when`(p1.then(anyLambda())).thenAnswer { invocation ->
+            @Suppress("UNCHECKED_CAST")
+            val cb = invocation.getArgument<(Promise<Map<String, String>>) -> Unit>(0)
+            cb(p2)
+            p1
+        }
+        org.mockito.Mockito.`when`(p1.catch(anyLambda())).thenReturn(p1)
+        org.mockito.Mockito.`when`(p2.then(anyLambda())).thenAnswer { invocation ->
+            @Suppress("UNCHECKED_CAST")
+            val cb = invocation.getArgument<(Map<String, String>) -> Unit>(0)
+            cb(headers)
+            p2
+        }
+        org.mockito.Mockito.`when`(p2.catch(anyLambda())).thenReturn(p2)
+        return p1
+    }
+
+    private fun waitForCondition(timeoutMs: Long = 5000L, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            drainLoopers()
+            if (condition()) return
+            Thread.sleep(15)
+        }
+        drainLoopers()
+        assertTrue("Condition timed out after ${timeoutMs}ms", condition())
+    }
+
+    @Test
+    fun testCoordinatorPreservesErrorBodyDataOnHttp403WithoutInterceptor() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig()
+        val emittedEvents = mutableListOf<SseEvent>()
+
+        sse.setup(config) { events ->
+            emittedEvents.addAll(events)
+        }
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId").apply { isAccessible = true }
+        val actualReqId = reqIdField.get(sse) as String
+
+        val errorResponse = createResponse(403, "Forbidden")
+        val jsonErrorBody = """{"code":"input_rejected","message":"输入包含违规内容","risk":100}"""
+        sse.connectionDidFail(null, errorResponse, jsonErrorBody, actualReqId)
+        drainLoopers()
+
+        assertFalse(sse.isConnected())
+        assertEquals(SseState.FAILED, sse.getState())
+
+        val errorEvent = emittedEvents.find { it.type == SseEventType.ERROR }
+        assertNotNull(errorEvent)
+        assertEquals(403.0, errorEvent?.statusCode)
+        assertEquals("Auth Error (403) - No interceptor provided. Stopping.", errorEvent?.message)
+        assertEquals(jsonErrorBody, errorEvent?.data)
+        assertNull(errorEvent?.parsedData)
+        sse.dispose()
+        drainLoopers()
+    }
+
+    @Test
+    fun testCoordinatorPreservesErrorBodyDataOnHttp403AuthRetryAndLimitReached() {
+        val server = okhttp3.mockwebserver.MockWebServer()
+        server.start()
+        try {
+            val jsonErrorBody = """{"code":"forbidden","message":"访问受限"}"""
+            repeat(2) {
+                server.enqueue(
+                    okhttp3.mockwebserver.MockResponse()
+                        .setResponseCode(403)
+                        .addHeader("Content-Type", "application/json")
+                        .setBody(jsonErrorBody)
+                )
+            }
+            val sse = NitroSse(dispatcher)
+            val config = createMockConfig().copy(
+                url = server.url("/events").toString(),
+                maxAuthRetries = 1.0,
+                retryIntervalMs = 1000.0,
+                jitterFactor = 0.0
+            )
+            val emittedEvents = mutableListOf<SseEvent>()
+            var interceptorCalls = 0
+            val interceptor: () -> Promise<Promise<Map<String, String>>> = {
+                interceptorCalls++
+                createResolvedInterceptorPromise(mapOf("Authorization" to "Bearer attempt-$interceptorCalls"))
+            }
+
+            sse.setup(config, { events -> emittedEvents.addAll(events) }, interceptor)
+            drainLoopers()
+            sse.start()
+
+            waitForCondition { sse.getState() == SseState.RECONNECTING }
+            assertEquals(1, interceptorCalls)
+
+            // Trigger scheduled backoff reconnect -> hits 2nd 403 -> exceeds maxAuthRetries(1)
+            dispatcher.advanceTimeBy(2000L)
+            waitForCondition { sse.getState() == SseState.FAILED }
+            assertEquals(2, interceptorCalls)
+
+            val errorEvents = emittedEvents.filter { it.type == SseEventType.ERROR }
+            assertEquals(2, errorEvents.size)
+            assertEquals("Auth Error (403) - Retry 1/1. Refreshing token...", errorEvents[0].message)
+            assertEquals(jsonErrorBody, errorEvents[0].data)
+            assertNull(errorEvents[0].parsedData)
+            assertEquals("Auth Error (403) - Retry limit reached (1). Stopping.", errorEvents[1].message)
+            assertEquals(jsonErrorBody, errorEvents[1].data)
+            assertNull(errorEvents[1].parsedData)
+            sse.dispose()
+            drainLoopers()
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun testCoordinatorPreservesErrorBodyDataMessagesRetryAndOrderAcrossStatuses() {
+        val sse = NitroSse(dispatcher)
+        val config = createMockConfig().copy(maxReconnectAttempts = 10.0, autoParseJSON = true)
+        val emittedEvents = mutableListOf<SseEvent>()
+        val interceptor: () -> Promise<Promise<Map<String, String>>> = {
+            createResolvedInterceptorPromise(mapOf("Authorization" to "Bearer fresh"))
+        }
+
+        sse.setup(config, { events -> emittedEvents.addAll(events) }, interceptor)
+        detachRealNetwork(sse)
+        drainLoopers()
+        sse.start()
+        drainLoopers()
+
+        val reqIdField = NitroSse::class.java.getDeclaredField("requestId").apply { isAccessible = true }
+
+        // 1. 401 Auth Retry
+        reqIdField.set(sse, "req-401")
+        sse.connectionDidFail(null, createResponse(401, "Unauthorized"), """{"error":"unauth"}""", "req-401")
+        drainLoopers()
+
+        // 2. 408 Request Timeout
+        reqIdField.set(sse, "req-408")
+        sse.connectionDidFail(null, createResponse(408, "Request Timeout"), "timeout-body", "req-408")
+        drainLoopers()
+
+        // 3. 429 with Retry-After
+        val resp429RetryAfter = Response.Builder()
+            .request(Request.Builder().url(TEST_URL).build())
+            .protocol(Protocol.HTTP_1_1)
+            .code(429)
+            .message("Too Many Requests")
+            .header("Retry-After", "2")
+            .body("".toResponseBody(null))
+            .build()
+        reqIdField.set(sse, "req-429-ra")
+        sse.connectionDidFail(null, resp429RetryAfter, """{"error":"retry_after"}""", "req-429-ra")
+        drainLoopers()
+        val delayAfter429 = sse.getStats().lastReconnectDelayMs ?: 0.0
+
+        // 4. 429 without Retry-After
+        reqIdField.set(sse, "req-429")
+        sse.connectionDidFail(null, createResponse(429, "Too Many Requests"), """{"error":"rate_limit"}""", "req-429")
+        drainLoopers()
+
+        // 5. 500 Server Error
+        reqIdField.set(sse, "req-500")
+        sse.connectionDidFail(null, createResponse(500, "Server Error"), "Gateway Down", "req-500")
+        drainLoopers()
+
+        // 6. 503 with Retry-After
+        val resp503RetryAfter = Response.Builder()
+            .request(Request.Builder().url(TEST_URL).build())
+            .protocol(Protocol.HTTP_1_1)
+            .code(503)
+            .message("Service Unavailable")
+            .header("Retry-After", "3")
+            .body("".toResponseBody(null))
+            .build()
+        reqIdField.set(sse, "req-503-ra")
+        sse.connectionDidFail(null, resp503RetryAfter, "<html>maintenance</html>", "req-503-ra")
+        drainLoopers()
+
+        // 7. 503 without Retry-After
+        reqIdField.set(sse, "req-503")
+        sse.connectionDidFail(null, createResponse(503, "Service Unavailable"), "Overloaded", "req-503")
+        drainLoopers()
+
+        // 8. Empty error body normalizes to null (also verify invalid JSON & HTML with autoParseJSON=true)
+        reqIdField.set(sse, "req-403-empty")
+        sse.connectionDidFail(null, createResponse(403, "Forbidden"), "", "req-403-empty")
+        drainLoopers()
+
+        val errorEvents = emittedEvents.filter { it.type == SseEventType.ERROR }
+        assertEquals(8, errorEvents.size)
+
+        assertEquals(401.0, errorEvents[0].statusCode)
+        assertEquals("Auth Error (401) - Retry 1/3. Refreshing token...", errorEvents[0].message)
+        assertEquals("""{"error":"unauth"}""", errorEvents[0].data)
+        assertNull(errorEvents[0].parsedData)
+
+        assertEquals(408.0, errorEvents[1].statusCode)
+        assertEquals("Link lost (408)", errorEvents[1].message)
+        assertEquals("timeout-body", errorEvents[1].data)
+        assertNull(errorEvents[1].parsedData)
+
+        assertEquals(429.0, errorEvents[2].statusCode)
+        assertTrue(errorEvents[2].retry!! in 2500.0..3500.0)
+        assertEquals(errorEvents[2].retry!!, delayAfter429, 0.01)
+        assertTrue(errorEvents[2].message?.startsWith("Retry-After received:") == true)
+        assertEquals("""{"error":"retry_after"}""", errorEvents[2].data)
+        assertNull(errorEvents[2].parsedData)
+
+        assertEquals(429.0, errorEvents[3].statusCode)
+        assertEquals("Rate Limited (429). Retrying with backoff...", errorEvents[3].message)
+        assertEquals("""{"error":"rate_limit"}""", errorEvents[3].data)
+        assertNull(errorEvents[3].parsedData)
+
+        assertEquals(500.0, errorEvents[4].statusCode)
+        assertEquals("Server Error (500): Gateway Down", errorEvents[4].message)
+        assertEquals("Gateway Down", errorEvents[4].data)
+        assertNull(errorEvents[4].parsedData)
+
+        assertEquals(503.0, errorEvents[5].statusCode)
+        assertTrue(errorEvents[5].retry!! in 3500.0..4500.0)
+        assertEquals("<html>maintenance</html>", errorEvents[5].data)
+        assertNull(errorEvents[5].parsedData)
+
+        assertEquals(503.0, errorEvents[6].statusCode)
+        assertEquals("Server Error (503): Overloaded", errorEvents[6].message)
+        assertEquals("Overloaded", errorEvents[6].data)
+        assertNull(errorEvents[6].parsedData)
+
+        assertEquals(403.0, errorEvents[7].statusCode)
+        assertNull(errorEvents[7].data)
+        assertNull(errorEvents[7].parsedData)
+
+        sse.dispose()
+        drainLoopers()
+    }
+
+    @Test
+    fun testEndToEndMockWebServerHttp403Utf8JsonAndAuthRecoveryAndStopMidBody() {
+        val server = okhttp3.mockwebserver.MockWebServer()
+        server.start()
+        try {
+            // 1. E2E: HTTP 403 UTF-8 JSON without interceptor reaches JS callback
+            val json403 = """{"code":"input_rejected","message":"输入包含违规内容","risk":100}"""
+            server.enqueue(
+                okhttp3.mockwebserver.MockResponse()
+                    .setResponseCode(403)
+                    .addHeader("Content-Type", "application/json")
+                    .setBody(json403)
+            )
+            val sse1 = NitroSse(dispatcher)
+            val events1 = mutableListOf<SseEvent>()
+            sse1.setup(
+                createMockConfig().copy(
+                    url = server.url("/events").toString(),
+                    autoParseJSON = true
+                )
+            ) { events1.addAll(it) }
+            drainLoopers()
+            sse1.start()
+
+            waitForCondition { sse1.getState() == SseState.FAILED }
+            assertEquals(
+                listOf(SseEventType.STATE, SseEventType.ERROR, SseEventType.STATE),
+                events1.map { it.type }
+            )
+            val err1 = events1.first { it.type == SseEventType.ERROR }
+            assertEquals(403.0, err1.statusCode)
+            assertEquals("Auth Error (403) - No interceptor provided. Stopping.", err1.message)
+            assertEquals(json403, err1.data)
+            assertNull(err1.parsedData)
+            server.takeRequest()
+            sse1.dispose()
+            drainLoopers()
+
+            // 2. E2E: HTTP 403 with interceptor -> backoff -> 200 SSE stream -> consecutiveAuthErrors reset
+            val expiredBody = """{"code":"token_expired"}"""
+            server.enqueue(
+                okhttp3.mockwebserver.MockResponse()
+                    .setResponseCode(403)
+                    .addHeader("Content-Type", "application/json")
+                    .setBody(expiredBody)
+            )
+            server.enqueue(
+                okhttp3.mockwebserver.MockResponse()
+                    .setResponseCode(200)
+                    .addHeader("Content-Type", "text/event-stream")
+                    .setBody("data: recovered\n\n")
+            )
+            server.enqueue(
+                okhttp3.mockwebserver.MockResponse()
+                    .setResponseCode(403)
+                    .addHeader("Content-Type", "application/json")
+                    .setBody(expiredBody)
+            )
+
+            val sse2 = NitroSse(dispatcher)
+            val events2 = mutableListOf<SseEvent>()
+            var tokenIndex = 0
+            val interceptor: () -> Promise<Promise<Map<String, String>>> = {
+                tokenIndex++
+                createResolvedInterceptorPromise(mapOf("Authorization" to "Bearer token-$tokenIndex"))
+            }
+            sse2.setup(
+                createMockConfig().copy(
+                    url = server.url("/events").toString(),
+                    maxAuthRetries = 1.0,
+                    maxReconnectAttempts = 5.0,
+                    retryIntervalMs = 1000.0,
+                    jitterFactor = 0.0
+                ),
+                { events2.addAll(it) },
+                interceptor
+            )
+            drainLoopers()
+            sse2.start()
+
+            waitForCondition { sse2.getState() == SseState.RECONNECTING }
+            val firstAuthErr = events2.first { it.type == SseEventType.ERROR }
+            assertEquals(expiredBody, firstAuthErr.data)
+            assertEquals("Auth Error (403) - Retry 1/1. Refreshing token...", firstAuthErr.message)
+
+            // Backoff fires -> 200 stream opens -> message delivered -> EOF schedules reconnect
+            dispatcher.advanceTimeBy(1500L)
+            waitForCondition { events2.any { it.type == SseEventType.MESSAGE } }
+            val req1 = server.takeRequest()
+            val req2 = server.takeRequest()
+            assertEquals("Bearer token-1", req1.getHeader("Authorization"))
+            assertEquals("Bearer token-2", req2.getHeader("Authorization"))
+            assertEquals("recovered", events2.first { it.type == SseEventType.MESSAGE }.data)
+
+            // Next reconnect hits 403: because consecutiveAuthErrors reset on 200, it retries 1/1 instead of failing
+            dispatcher.advanceTimeBy(1500L)
+            waitForCondition { events2.count { it.type == SseEventType.ERROR } >= 2 }
+            val secondAuthErr = events2.filter { it.type == SseEventType.ERROR }[1]
+            assertEquals("Auth Error (403) - Retry 1/1. Refreshing token...", secondAuthErr.message)
+            assertEquals(expiredBody, secondAuthErr.data)
+            server.takeRequest()
+            sse2.dispose()
+            drainLoopers()
+
+            // 3. E2E: stop() mid-read of stalled 403 body emits no error event
+            server.enqueue(
+                okhttp3.mockwebserver.MockResponse()
+                    .setResponseCode(403)
+                    .addHeader("Content-Type", "application/json")
+                    .setBody("{\"partial\":1234567890")
+                    .throttleBody(11, 5, java.util.concurrent.TimeUnit.SECONDS)
+            )
+            val sse3 = NitroSse(dispatcher)
+            val events3 = mutableListOf<SseEvent>()
+            sse3.setup(
+                createMockConfig().copy(
+                    url = server.url("/events").toString(),
+                    connectionTimeoutMs = 5000.0
+                )
+            ) { events3.addAll(it) }
+            drainLoopers()
+            sse3.start()
+            drainLoopers()
+            Thread.sleep(100)
+            sse3.stop()
+            drainLoopers()
+            Thread.sleep(50)
+            drainLoopers()
+
+            assertEquals(SseState.CLOSED, sse3.getState())
+            assertFalse(
+                "stop() mid-403-body must not emit ERROR event",
+                events3.any { it.type == SseEventType.ERROR }
+            )
+            sse3.dispose()
+            drainLoopers()
+
+            // 4. E2E: stalled 403 body past connectionTimeoutMs arrives quickly with partial data
+            server.enqueue(
+                okhttp3.mockwebserver.MockResponse()
+                    .setResponseCode(403)
+                    .addHeader("Content-Type", "application/json")
+                    .setBody("{\"partial\":1234567890")
+                    .throttleBody(11, 2, java.util.concurrent.TimeUnit.SECONDS)
+            )
+            val sse4 = NitroSse(dispatcher)
+            val events4 = mutableListOf<SseEvent>()
+            sse4.setup(
+                createMockConfig().copy(
+                    url = server.url("/events").toString(),
+                    connectionTimeoutMs = 300.0,
+                    readTimeoutMs = 300000.0
+                )
+            ) { events4.addAll(it) }
+            drainLoopers()
+            val startMs = System.currentTimeMillis()
+            sse4.start()
+            waitForCondition(timeoutMs = 3000L) { sse4.getState() == SseState.FAILED }
+            val elapsedMs = System.currentTimeMillis() - startMs
+            assertTrue("Stalled 403 must complete near connectionTimeoutMs, not readTimeoutMs (elapsed=${elapsedMs}ms)", elapsedMs < 3000L)
+            val err4 = events4.first { it.type == SseEventType.ERROR }
+            assertEquals(403.0, err4.statusCode)
+            assertEquals("{\"partial\":", err4.data)
+            sse4.dispose()
+            drainLoopers()
+        } finally {
+            server.shutdown()
+        }
     }
 }
