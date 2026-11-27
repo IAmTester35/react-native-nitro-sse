@@ -592,13 +592,13 @@ extension NitroSse {
         self.reconnectStrategy.reset()
     }
 
-    private func failAndStop(message: String, statusCode: Double? = nil) {
+    private func failAndStop(message: String, statusCode: Double? = nil, data: String? = nil) {
         dispatcher.assertOnQueue()
         self.connectionAttemptVersion += 1
         self.eventBuffer.push(
             SseEvent(
                 type: .error,
-                data: nil,
+                data: data,
                 parsedData: nil,
                 id: nil,
                 event: nil,
@@ -816,6 +816,7 @@ extension NitroSse: SseConnectionDelegate {
         )
         reportFailureToInspector(response: response, httpStatusCode: context.httpStatusCode)
 
+        let normalizedErrorBody = (errorBody?.isEmpty == false) ? errorBody : nil
         let policy = SseFailurePolicyInput(
             hasInterceptor: self.requestInterceptor != nil,
             nextAuthAttempt: self.consecutiveAuthErrors + 1,
@@ -827,41 +828,42 @@ extension NitroSse: SseConnectionDelegate {
         )
         applyFailureDecision(
             SseFailureClassifier.classify(context: context, policy: policy),
+            errorBody: normalizedErrorBody,
             attemptVersion: attemptVersion
         )
     }
 
-    private func applyFailureDecision(_ decision: SseFailureDecision, attemptVersion: Int) {
+    private func applyFailureDecision(_ decision: SseFailureDecision, errorBody: String?, attemptVersion: Int) {
         switch decision {
         case let .failAndStop(message, statusCode):
-            self.failAndStop(message: message, statusCode: statusCode)
+            self.failAndStop(message: message, statusCode: statusCode, data: errorBody)
         case let .authLimitReached(message, statusCode):
             self.consecutiveAuthErrors += 1
-            self.failAndStop(message: message, statusCode: statusCode)
+            self.failAndStop(message: message, statusCode: statusCode, data: errorBody)
         case let .authRetry(message, statusCode):
             self.consecutiveAuthErrors += 1
-            pushErrorEvent(message: message, statusCode: statusCode)
+            pushErrorEvent(message: message, statusCode: statusCode, data: errorBody)
             self.scheduleAutomaticReconnect(isError: true, attemptVersion: attemptVersion)
         case let .retryAfter(message, statusCode, delaySeconds):
-            pushErrorEvent(message: message, statusCode: statusCode, retry: delaySeconds * 1000.0)
+            pushErrorEvent(message: message, statusCode: statusCode, retry: delaySeconds * 1000.0, data: errorBody)
             self.scheduleAutomaticReconnect(isError: true, fixedDelay: delaySeconds, attemptVersion: attemptVersion)
         case let .rateLimitBackoff(message, statusCode):
-            pushErrorEvent(message: message, statusCode: statusCode)
+            pushErrorEvent(message: message, statusCode: statusCode, data: errorBody)
             self.scheduleAutomaticReconnect(isError: true, attemptVersion: attemptVersion)
         case let .transientRetry(message, statusCode, markStale):
             if markStale {
                 self.updateState(.stale)
             }
-            pushErrorEvent(message: message, statusCode: statusCode)
+            pushErrorEvent(message: message, statusCode: statusCode, data: errorBody)
             self.scheduleAutomaticReconnect(isError: true, attemptVersion: attemptVersion)
         }
     }
 
-    private func pushErrorEvent(message: String, statusCode: Double?, retry: Double? = nil) {
+    private func pushErrorEvent(message: String, statusCode: Double?, retry: Double? = nil, data: String? = nil) {
         self.eventBuffer.push(
             SseEvent(
                 type: .error,
-                data: nil,
+                data: data,
                 parsedData: nil,
                 id: nil,
                 event: nil,
